@@ -36,7 +36,7 @@ in
 
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ ];
+      default = [ "--systemd" ];
       description = "Additional command-line arguments passed to the ananicy-rs daemon.";
     };
 
