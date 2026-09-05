@@ -1,8 +1,9 @@
 [package]
 name = "ananicy-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
@@ -12,9 +13,9 @@ thiserror = { workspace = true }
 arc-swap = "1.9.2"
 walkdir = "2.5.0"
 pcre2 = "0.2.11"
-lru = "0.18.3"
+lru.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 proptest = "1.11.0"
-tempfile = "3.27.0"
+tempfile.workspace = true

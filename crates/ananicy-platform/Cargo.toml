@@ -1,21 +1,22 @@
 [package]
 name = "ananicy-platform"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-ananicy-core = { version = "0.1.0", path = "../ananicy-core" }
+ananicy-core.workspace = true
 tracing = { workspace = true }
 thiserror = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true, features = ["process", "fs", "net", "event", "time", "thread"] }
-neli = "0.7.4"
-lru = "0.18.3"
+neli.workspace = true
+lru.workspace = true
 
 [features]
 default = ["netlink"]
 netlink = []
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile.workspace = true

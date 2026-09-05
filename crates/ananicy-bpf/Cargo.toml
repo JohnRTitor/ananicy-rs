@@ -1,12 +1,13 @@
 [package]
 name = "ananicy-bpf"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-ananicy-core = { version = "0.1.0", path = "../ananicy-core" }
-ananicy-platform = { version = "0.1.0", path = "../ananicy-platform" }
+ananicy-core = { workspace = true }
+ananicy-platform = { workspace = true }
 libbpf-rs = { version = "0.27.0", default-features = false }
 tracing = { workspace = true }
 
