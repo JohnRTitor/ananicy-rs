@@ -60,11 +60,6 @@ fn main() {
         }
     };
 
-    if args.force_remove_semaphore {
-        tracing::info!("Force removed IPC semaphore. Exiting.");
-        std::process::exit(0);
-    }
-
     let (tx, rx) = mpsc::channel::<Process>();
     let rules = Arc::new(RwLock::new(rules_obj));
     let platform = Arc::new(ananicy_platform::LinuxPlatform::new());

@@ -1,42 +1,41 @@
-# ananicy-rs Differences from the Reference Implementation
+# Behavioral Differences: ananicy-rs vs ananicy-cpp
 
-## 1. Purpose
+This document outlines intentional behavioral differences and improvements in `ananicy-rs` compared to the reference `ananicy-cpp` implementation.
 
-This document explicitly records meaningful implementation, runtime, and CLI differences between `ananicy-rs` and the `ananicy-cpp` reference implementation.
+## BPF → Netlink Runtime Fallback
 
-The goal of `ananicy-rs` is to maintain behavioral parity with the reference implementation while leveraging Rust for memory safety and improved daemon architecture. However, due to language characteristics, safety guarantees, or architectural improvements, a few differences exist.
+- **C++**: The process discovery mechanism is compile-time only (`#if defined(USE_BPF_PROC_IMPL)`). If BPF fails to load at runtime on a system compiled with it, the daemon fails.
+- **Rust**: The daemon utilizes a runtime fallback. It attempts to load the eBPF program, and if the kernel lacks support or restricts it, `ananicy-rs` gracefully degrades to the Netlink-based process monitor. It also includes an auto-restart capability if the Netlink connector dies, running a procfs recovery scan.
 
-## 2. Behavioral Differences
+## Cgroup v2 Delegation and Ownership Model
 
-| Area | Reference behavior | ananicy-rs behavior | Reason | Impact |
-| ---- | ------------------ | ------------------- | ------ | ------ |
-| Cgroup V2 limitations | "Limited support" | Retains the exact same limitations as the reference implementation. | Parity with reference. | Cannot arbitrarily mutate foreign Cgroups v2 safely. Requires systemd delegation. |
-| Process Events | C++ custom epoll/netlink loop | Uses Netlink or eBPF (via `libbpf-rs`). | Architectural choice for safety and maintainability. | None; should perform identically or better. |
+- **C++**: Performs raw writes to `cgroup.procs` and controller limits without verifying ownership of the subtree. This violates the cgroups v2 single-writer rule if modifying `system.slice` subtrees managed by systemd.
+- **Rust**: Implements a strict ownership model. It classifies target cgroup paths as `Legacy` (v1), `Owned` (v2 delegated root), or `Foreign` (v2 systemd-managed). 
+  - Structural modifications (like writing to `cpu.max` or `cgroup.subtree_control`) are **refused** on `Foreign` cgroups to prevent breaking systemd's state tracking.
+  - Rust also explicitly enables controllers via `cgroup.subtree_control` (`+cpu`) before creating child groups in V2.
 
-## 3. CLI Differences
+## TGID Resolution and PID-Reuse Guard
 
-The `ananicy-rs` binary has a few differences in its CLI interface compared to the reference implementation.
+- **C++**: Writes the raw process ID (PID) to `cgroup.procs`.
+- **Rust**: Resolves the Thread Group ID (TGID) via `/proc/[pid]/status` for V2 writes. Furthermore, it reads the process start time (`/proc/[pid]/stat`) before and after the move operation to ensure the PID has not been recycled by the kernel during the operation, preventing accidental moves of innocent processes.
 
-- **Configuration Flags:** Instead of relying entirely on environment variables, `ananicy-rs` adds explicit `--config <PATH>` and `--config-dir <PATH>` flags for better UX. The environment variables have been renamed to `ANANICY_RS_CONF` and `ANANICY_RS_CONFDIR` (replacing the `ANANICY_CPP_*` prefix).
+## Cpuset Trailing-Comma Acceptance
 
-## 4. Configuration Differences
+- **C++**: Strict parsing. A trailing comma in a cpuset definition (e.g., `0,1,`) causes the entire string to be rejected.
+- **Rust**: Lenient parsing. Trailing commas are explicitly ignored, improving user experience when manually writing rules.
 
-There are no significant differences in the configuration parsing logic. `ananicy-rs` implements identical logic for `.rules`, `.types`, and `.cgroups` files, including the handling of fallbacks, trailing commas, and default overrides.
+## Rule-Directory Load Order Determinism
 
-All named CPU topology aliases (like `big-cores`, `x3d-cache`, etc.) behave identically.
+- **C++**: Relies on the OS filesystem iteration order (`readdir`), which is non-deterministic. If multiple rules share the same name, the "winner" depends on file system layout.
+- **Rust**: Explicitly sorts files alphabetically before loading. This guarantees deterministic rule application across different machines and deployments.
 
-## 5. Runtime Differences
+## Worker Error-Path Control Flow (Realtime Workaround)
 
-The core daemon lifecycle is very similar:
-- Both implement `sd_notify` for systemd integration.
-- Both use an IPC semaphore for `--reload` logic.
+- **C++**: If `apply_rule` fails for any reason (including Permission Denied), the worker `continue`s immediately and skips the rest of the loop.
+- **Rust**: If `apply_rule` fails with a `PermissionDenied` error, the worker logs the failure but *falls through* to execute the realtime cgroup workaround. This ensures that even if standard priority changes are rejected by the kernel, the fallback logic is still evaluated.
 
-## 6. Build Differences
+## Execution Inside Transient Scopes (e.g., from a terminal)
 
-- **Build System:** `ananicy-rs` uses `cargo` instead of `cmake`.
-- **BPF Dependencies:** Building with BPF (`--features bpf`) requires `cargo` to invoke `clang` via a `build.rs` script, utilizing `libbpf-rs` and `libbpf-sys`.
-- **Packaging:** `ananicy-rs` does not ship with `.spec` files or AUR helpers in the source tree; instead it provides a Nix flake (`flake.nix`) alongside the standard `cargo` workflows.
-
-## 7. Known Non-Parity Areas
-
-Currently, there are no known areas where `ananicy-rs` intentionally lacks parity with the core feature set of the reference implementation. If any deviation is discovered in process matching, rules loading, or topology detection, it is considered a bug.
+When `ananicy-rs` is executed manually from a terminal using `sudo`, systemd places the shell (and therefore the daemon) inside a transient `.scope` cgroup (like `session-2.scope`).
+- **Rust**: The daemon detects this by parsing `/proc/self/cgroup` and explicitly rejects using a `.scope` as a delegated root, because scopes are strictly managed by `systemd-logind`. As a result, **all cgroup structural mutations are silently disabled** when running manually.
+- **Note for testing**: To properly test cgroup v2 functionality, `ananicy-rs` MUST be run as a systemd `.service` with `Delegate=yes` configured. Running from a terminal will intentionally not work for cgroup management.

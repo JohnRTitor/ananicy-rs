@@ -100,10 +100,16 @@ impl ProcfsScanner {
 
 pub fn get_start_time(pid: i32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
-    // start time is the 22nd field (0-indexed 21)
-    let parts: Vec<&str> = stat.split_whitespace().collect();
-    if parts.len() > 21 {
-        parts[21].parse::<u64>().ok()
+    // The comm field (2nd field) is enclosed in parentheses and can contain spaces.
+    // We must find the last ')' to skip over it to prevent field shifting.
+    let rparen = stat.rfind(')')?;
+
+    // The fields after the comm field start with a space, then the state.
+    // Field 3 (state) is index 0 in the new split array.
+    // start time is field 22. 22 - 3 = 19. So it's index 19.
+    let fields_after_comm: Vec<&str> = stat[rparen + 1..].split_whitespace().collect();
+    if fields_after_comm.len() > 19 {
+        fields_after_comm[19].parse::<u64>().ok()
     } else {
         None
     }

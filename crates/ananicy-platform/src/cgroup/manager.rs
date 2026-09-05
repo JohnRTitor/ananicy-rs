@@ -280,18 +280,23 @@ impl CgroupController for CgroupManager {
         let logical_cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1) as u32;
-        let quota_val = (quota * logical_cores * 10000).max(10000); // 1,000,000 period base
+        let clamped_quota = quota.clamp(0, 100);
 
         if self.info.version == CgroupVersion::V2 {
+            let period = 100_000u32;
+            let quota_val = period * logical_cores * clamped_quota / 100;
             let max_file = target.join("cpu.max");
             if let Ok(mut f) = OpenOptions::new().write(true).open(&max_file) {
-                let buf = format!("{} 1000000\n", quota_val);
+                let buf = format!("{} {}\n", quota_val, period);
                 let _ = f.write_all(buf.as_bytes());
             }
         } else {
+            let period = 1_000_000u32;
+            let quota_val = period * logical_cores * clamped_quota / 100;
             let period_file = target.join("cpu.cfs_period_us");
             if let Ok(mut f) = OpenOptions::new().write(true).open(&period_file) {
-                let _ = f.write_all(b"1000000\n");
+                let buf = format!("{}\n", period);
+                let _ = f.write_all(buf.as_bytes());
             }
             let quota_file = target.join("cpu.cfs_quota_us");
             if let Ok(mut f) = OpenOptions::new().write(true).open(&quota_file) {

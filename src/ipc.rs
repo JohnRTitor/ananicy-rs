@@ -18,6 +18,8 @@ pub(crate) fn check_singleton(force_remove: bool) -> Result<IpcSingletonGuard, S
 
     if force_remove {
         let _ = shm::unlink(IPC_NAME);
+        tracing::info!("Force removed IPC semaphore. Exiting.");
+        std::process::exit(0);
     }
 
     match shm::open(IPC_NAME, ShmOFlags::RDWR, Mode::empty()) {
