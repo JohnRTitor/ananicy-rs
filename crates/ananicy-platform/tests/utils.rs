@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 // C++ tests:
 // Utils -> Get Environment
 // Utils -> Get error string (not applicable, Rust uses std::io::Error)
@@ -23,7 +21,7 @@ fn test_convert_to_int() {
     let to_int_i8 = |s: &str| s.parse::<i8>().unwrap_or(0);
     assert_eq!(to_int_i8("500"), 0); // overflow
     assert_eq!(to_int_i8("2"), 2);
-    
+
     let to_int_u8 = |s: &str| s.parse::<u8>().unwrap_or(0);
     assert_eq!(to_int_u8("-5"), 0); // invalid
 
@@ -32,7 +30,12 @@ fn test_convert_to_int() {
     // Rust's parse() requires strict numeric format, so "15 foo" won't parse unless we split,
     // which aligns with std functionality over custom parsers.
     let s = "15 foo";
-    let first_num = s.split_whitespace().next().unwrap_or("").parse::<i32>().unwrap_or(0);
+    let first_num = s
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .parse::<i32>()
+        .unwrap_or(0);
     assert_eq!(first_num, 15);
 
     assert_eq!(to_int_i32("40"), 40);

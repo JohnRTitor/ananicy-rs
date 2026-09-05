@@ -33,14 +33,14 @@ impl CgroupManager {
             None
         };
 
-        if info.version == CgroupVersion::V2 {
-            if let Some(ref root) = delegated_root {
-                debug!("Cgroup v2: Discovered delegated root at {:?}", root);
-            } else {
-                warn!(
-                    "Cgroup v2: No writable delegated root discovered. Cgroup modifications will be disabled. Please run ananicy-rs as a systemd service with `Delegate=yes`."
-                );
-            }
+        if info.version == CgroupVersion::V2
+            && let Some(ref root) = delegated_root
+        {
+            debug!("Cgroup v2: Discovered delegated root at {:?}", root);
+        } else if info.version == CgroupVersion::V2 {
+            warn!(
+                "Cgroup v2: No writable delegated root discovered. Cgroup modifications will be disabled. Please run ananicy-rs as a systemd service with `Delegate=yes`."
+            );
         }
 
         Self {
@@ -243,7 +243,10 @@ impl CgroupController for CgroupManager {
                         return false;
                     }
                     (Some(before), Some(after)) => {
-                        warn!("move_pid: PID {} was reused during move operation! ({} -> {})", pid, before, after);
+                        warn!(
+                            "move_pid: PID {} was reused during move operation! ({} -> {})",
+                            pid, before, after
+                        );
                         return false;
                     }
                     _ => return false,

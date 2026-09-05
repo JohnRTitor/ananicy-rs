@@ -81,10 +81,11 @@ fn get_node_id(base: &std::path::Path) -> i32 {
     if let Ok(entries) = fs::read_dir(base) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("node") && name.len() > 4 {
-                if let Ok(id) = name[4..].parse::<i32>() {
-                    return id;
-                }
+            if name.starts_with("node")
+                && name.len() > 4
+                && let Ok(id) = name[4..].parse::<i32>()
+            {
+                return id;
             }
         }
     }
@@ -184,44 +185,45 @@ pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
     if let Ok(entries) = fs::read_dir(sys_root.join("devices/system/cpu")) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("cpu") && name.len() > 3 {
-                if let Ok(cpu_id) = name[3..].parse::<u32>() {
-                    let base = entry.path();
+            if name.starts_with("cpu")
+                && name.len() > 3
+                && let Ok(cpu_id) = name[3..].parse::<u32>()
+            {
+                let base = entry.path();
 
-                    all_cores.insert(cpu_id);
+                all_cores.insert(cpu_id);
 
-                    let node_id = get_node_id(&base);
-                    let llc_id = get_llc_id(&base, &mut llc_map);
+                let node_id = get_node_id(&base);
+                let llc_id = get_llc_id(&base, &mut llc_map);
 
-                    node_groups.entry(node_id).or_default().insert(cpu_id);
-                    llc_groups.entry(llc_id).or_default().insert(cpu_id);
+                node_groups.entry(node_id).or_default().insert(cpu_id);
+                llc_groups.entry(llc_id).or_default().insert(cpu_id);
 
-                    if let Ok(l3_str) = fs::read_to_string(base.join("cache/index3/size")) {
-                        llc_l3_size.insert(llc_id, parse_size_string(&l3_str));
+                if let Ok(l3_str) = fs::read_to_string(base.join("cache/index3/size")) {
+                    llc_l3_size.insert(llc_id, parse_size_string(&l3_str));
+                }
+
+                let paths = [
+                    "cpufreq/amd_pstate_prefcore_ranking",
+                    "cpufreq/amd_pstate_highest_perf",
+                    "acpi_cppc/highest_perf",
+                    "cpu_capacity",
+                    "cpufreq/cpuinfo_max_freq",
+                ];
+
+                let mut metric = None;
+                for p in paths {
+                    let cap_path = base.join(p);
+                    if let Ok(cap_str) = fs::read_to_string(&cap_path)
+                        && let Ok(cap) = cap_str.trim().parse::<u64>()
+                    {
+                        metric = Some(cap);
+                        break;
                     }
+                }
 
-                    let paths = [
-                        "cpufreq/amd_pstate_prefcore_ranking",
-                        "cpufreq/amd_pstate_highest_perf",
-                        "acpi_cppc/highest_perf",
-                        "cpu_capacity",
-                        "cpufreq/cpuinfo_max_freq",
-                    ];
-
-                    let mut metric = None;
-                    for p in paths {
-                        let cap_path = base.join(p);
-                        if let Ok(cap_str) = fs::read_to_string(&cap_path) {
-                            if let Ok(cap) = cap_str.trim().parse::<u64>() {
-                                metric = Some(cap);
-                                break;
-                            }
-                        }
-                    }
-
-                    if let Some(val) = metric {
-                        metric_to_cores.entry(val).or_default().insert(cpu_id);
-                    }
+                if let Some(val) = metric {
+                    metric_to_cores.entry(val).or_default().insert(cpu_id);
                 }
             }
         }

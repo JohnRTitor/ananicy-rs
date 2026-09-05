@@ -33,7 +33,10 @@ pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
     }
 }
 
-pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn add_pid_to_cgroup(
+    pid: i32,
+    cgroup_name: &str,
+) -> Result<(), ananicy_core::worker::PlatformError> {
     let manager = get_manager();
 
     // We assume the caller or `create_cgroup` has already ensured the target directory exists,

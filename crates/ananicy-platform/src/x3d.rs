@@ -39,14 +39,14 @@ fn get_x3d_mode_path() -> Option<PathBuf> {
 }
 
 pub fn get_driver_mode() -> Option<X3DMode> {
-    if let Some(mode_path) = get_x3d_mode_path() {
-        if let Ok(content) = fs::read_to_string(&mode_path) {
-            let trimmed = content.trim();
-            if trimmed == "cache" {
-                return Some(X3DMode::Cache);
-            } else if trimmed == "frequency" {
-                return Some(X3DMode::Frequency);
-            }
+    if let Some(mode_path) = get_x3d_mode_path()
+        && let Ok(content) = fs::read_to_string(&mode_path)
+    {
+        let trimmed = content.trim();
+        if trimmed == "cache" {
+            return Some(X3DMode::Cache);
+        } else if trimmed == "frequency" {
+            return Some(X3DMode::Frequency);
         }
     }
     None
@@ -106,34 +106,35 @@ fn detect_x3d_topology_impl(sys_root: &Path, proc_root: &Path) -> Option<X3DTopo
     if let Ok(entries) = fs::read_dir(&sys_cpu_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("cpu") && name.len() > 3 {
-                if let Ok(cpu_id) = name[3..].parse::<u32>() {
-                    let mut die_id = None;
+            if name.starts_with("cpu")
+                && name.len() > 3
+                && let Ok(cpu_id) = name[3..].parse::<u32>()
+            {
+                let mut die_id = None;
 
-                    let die_path = entry.path().join("topology/die_id");
-                    if let Ok(die_str) = fs::read_to_string(&die_path) {
-                        die_id = die_str.trim().parse::<i32>().ok();
+                let die_path = entry.path().join("topology/die_id");
+                if let Ok(die_str) = fs::read_to_string(&die_path) {
+                    die_id = die_str.trim().parse::<i32>().ok();
+                }
+
+                if die_id.is_none() || die_id == Some(-1) {
+                    let cluster_path = entry.path().join("topology/cluster_id");
+                    if let Ok(cluster_str) = fs::read_to_string(&cluster_path) {
+                        die_id = cluster_str.trim().parse::<i32>().ok();
                     }
+                }
 
-                    if die_id.is_none() || die_id == Some(-1) {
-                        let cluster_path = entry.path().join("topology/cluster_id");
-                        if let Ok(cluster_str) = fs::read_to_string(&cluster_path) {
-                            die_id = cluster_str.trim().parse::<i32>().ok();
-                        }
-                    }
+                let die_id = die_id.unwrap_or(0) as u32;
 
-                    let die_id = die_id.unwrap_or(0) as u32;
+                die_to_cores.entry(die_id).or_default().insert(cpu_id);
 
-                    die_to_cores.entry(die_id).or_default().insert(cpu_id);
-
-                    // Read L3 cache size (index3 is usually L3)
-                    let cache_path = entry.path().join("cache/index3/size");
-                    if let Ok(cache_str) = fs::read_to_string(&cache_path) {
-                        // "98304K" -> parse out K
-                        let val_str = cache_str.trim().trim_end_matches('K');
-                        if let Ok(cache_size) = val_str.parse::<u64>() {
-                            die_to_cache.insert(die_id, cache_size);
-                        }
+                // Read L3 cache size (index3 is usually L3)
+                let cache_path = entry.path().join("cache/index3/size");
+                if let Ok(cache_str) = fs::read_to_string(&cache_path) {
+                    // "98304K" -> parse out K
+                    let val_str = cache_str.trim().trim_end_matches('K');
+                    if let Ok(cache_size) = val_str.parse::<u64>() {
+                        die_to_cache.insert(die_id, cache_size);
                     }
                 }
             }

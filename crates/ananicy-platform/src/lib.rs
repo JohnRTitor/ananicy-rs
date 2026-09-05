@@ -33,7 +33,6 @@ impl LinuxPlatform {
     }
 }
 
-
 impl PlatformActions for LinuxPlatform {
     fn is_realtime(&self, pid: i32) -> bool {
         // Read /proc/<pid>/stat and check the policy field (policy is field 41)
@@ -65,27 +64,53 @@ impl PlatformActions for LinuxPlatform {
         priority::set_priority(pid, nice)
     }
 
-    fn set_latency_nice(&self, pid: i32, lat_nice: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_latency_nice(
+        &self,
+        pid: i32,
+        lat_nice: i32,
+    ) -> Result<(), ananicy_core::worker::PlatformError> {
         priority::set_latency_nice(pid, lat_nice)
     }
 
-    fn set_sched(&self, pid: i32, sched: &str, rtprio: u32) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_sched(
+        &self,
+        pid: i32,
+        sched: &str,
+        rtprio: u32,
+    ) -> Result<(), ananicy_core::worker::PlatformError> {
         priority::set_sched(pid, sched, rtprio)
     }
 
-    fn set_io_priority(&self, pid: i32, ioclass: &str, ionice: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_io_priority(
+        &self,
+        pid: i32,
+        ioclass: &str,
+        ionice: i32,
+    ) -> Result<(), ananicy_core::worker::PlatformError> {
         priority::set_io_priority(pid, ioclass, ionice)
     }
 
-    fn set_oom_score_adj(&self, pid: i32, oom_score_adj: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_oom_score_adj(
+        &self,
+        pid: i32,
+        oom_score_adj: i32,
+    ) -> Result<(), ananicy_core::worker::PlatformError> {
         priority::set_oom_score_adjust(pid, oom_score_adj)
     }
 
-    fn add_pid_to_cgroup(&self, pid: i32, cgroup: &str) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn add_pid_to_cgroup(
+        &self,
+        pid: i32,
+        cgroup: &str,
+    ) -> Result<(), ananicy_core::worker::PlatformError> {
         cgroups::add_pid_to_cgroup(pid, cgroup)
     }
 
-    fn set_affinity(&self, pid: i32, cpuset: &CpuSet) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_affinity(
+        &self,
+        pid: i32,
+        cpuset: &CpuSet,
+    ) -> Result<(), ananicy_core::worker::PlatformError> {
         if let Err(e) = abi::affinity::set_affinity(pid, cpuset) {
             tracing::error!("set_affinity failed for pid {}: {}", pid, e);
             Err(ananicy_core::worker::PlatformError::Unsupported)

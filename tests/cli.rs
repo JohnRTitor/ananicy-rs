@@ -1,5 +1,4 @@
-use assert_cmd::Command;
-use predicates::prelude::*;
+use {assert_cmd::Command, predicates::prelude::*};
 
 #[test]
 fn test_cli_help() {
@@ -39,7 +38,9 @@ fn test_cli_unknown_action_non_root() {
     cmd.arg("nonsense")
         .assert()
         .failure()
-        .stdout(predicate::str::contains("Unknown action requested: nonsense"))
+        .stdout(predicate::str::contains(
+            "Unknown action requested: nonsense",
+        ))
         .stdout(predicate::str::contains("This program must be run as root"));
 }
 

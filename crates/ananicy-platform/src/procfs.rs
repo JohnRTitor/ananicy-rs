@@ -82,15 +82,15 @@ impl ProcfsScanner {
                 let pid_str = file_name.to_string_lossy();
 
                 // If it's a numeric directory, it's a PID
-                if pid_str.chars().all(|c| c.is_ascii_digit()) {
-                    if let Ok(pid) = pid_str.parse::<i32>() {
-                        let name = get_command_from_pid(pid);
-                        if tx
-                            .send(Process::new(ananicy_core::types::Pid(pid), name))
-                            .is_err()
-                        {
-                            break;
-                        }
+                if pid_str.chars().all(|c| c.is_ascii_digit())
+                    && let Ok(pid) = pid_str.parse::<i32>()
+                {
+                    let name = get_command_from_pid(pid);
+                    if tx
+                        .send(Process::new(ananicy_core::types::Pid(pid), name))
+                        .is_err()
+                    {
+                        break;
                     }
                 }
             }

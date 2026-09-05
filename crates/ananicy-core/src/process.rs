@@ -1,6 +1,5 @@
 use crate::types::Pid;
 
-
 /// ProcessIdentity wraps a Pid.
 /// (pidfd was removed as it caused FD leaks via unbounded channel queues,
 /// and PID recycling is already prevented via start_time checks).

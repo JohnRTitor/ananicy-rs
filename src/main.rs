@@ -39,10 +39,10 @@ fn check_ipc_singleton(force_remove: bool) -> Result<IpcSingletonGuard, String> 
         Ok(fd) => {
             let mut file = std::fs::File::from(fd);
             let mut buf = String::new();
-            if file.read_to_string(&mut buf).is_ok() {
-                if let Ok(old_pid) = buf.trim().parse::<i32>() {
-                    return Err(format!("Another instance is running (PID: {})", old_pid));
-                }
+            if file.read_to_string(&mut buf).is_ok()
+                && let Ok(old_pid) = buf.trim().parse::<i32>()
+            {
+                return Err(format!("Another instance is running (PID: {})", old_pid));
             }
             return Err("Another instance is running (PID: unknown)".to_string());
         }
@@ -76,7 +76,9 @@ fn main() {
         if let Ok(layer) = tracing_journald::layer() {
             use tracing_subscriber::layer::SubscriberExt;
             let subscriber = tracing_subscriber::Registry::default()
-                .with(tracing_subscriber::filter::LevelFilter::from_level(log_level))
+                .with(tracing_subscriber::filter::LevelFilter::from_level(
+                    log_level,
+                ))
                 .with(layer);
             let _ = tracing::subscriber::set_global_default(subscriber);
         } else {
@@ -117,19 +119,18 @@ fn main() {
             Ok(fd) => {
                 let mut file = std::fs::File::from(fd);
                 let mut buf = String::new();
-                if file.read_to_string(&mut buf).is_ok() {
-                    if let Ok(old_pid) = buf.trim().parse::<i32>() {
-                        if let Some(pid) = rustix::process::Pid::from_raw(old_pid) {
-                            if let Err(e) =
-                                rustix::process::kill_process(pid, rustix::process::Signal::USR1)
-                            {
-                                eprintln!("Failed to send reload signal: {}", e);
-                                std::process::exit(1);
-                            } else {
-                                println!("Reload signal sent to PID {}", old_pid);
-                                std::process::exit(0);
-                            }
-                        }
+                if file.read_to_string(&mut buf).is_ok()
+                    && let Ok(old_pid) = buf.trim().parse::<i32>()
+                    && let Some(pid) = rustix::process::Pid::from_raw(old_pid)
+                {
+                    if let Err(e) =
+                        rustix::process::kill_process(pid, rustix::process::Signal::USR1)
+                    {
+                        eprintln!("Failed to send reload signal: {}", e);
+                        std::process::exit(1);
+                    } else {
+                        println!("Reload signal sent to PID {}", old_pid);
+                        std::process::exit(0);
                     }
                 }
                 eprintln!("Unable to read PID from IPC singleton");
@@ -166,7 +167,10 @@ fn main() {
             info!("Config log_applied_rule: {}", snap.log_applied_rule);
             info!("Config type_load: {}", snap.type_load);
             info!("Config rule_load: {}", snap.rule_load);
-            info!("Config cgroup_realtime_workaround: {}", snap.cgroup_realtime_workaround);
+            info!(
+                "Config cgroup_realtime_workaround: {}",
+                snap.cgroup_realtime_workaround
+            );
             info!("Config check_freq: {}", snap.check_freq);
             info!("Config apply_cpuset: {}", snap.apply_cpuset);
             info!("Config apply_ionice: {}", snap.apply_ionice);
@@ -252,13 +256,13 @@ fn main() {
                         .and_then(|r| r.get("name"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    
+
                     if let Ok(entries) = std::fs::read_dir(format!("/proc/{}/task", pid)) {
                         for entry in entries.flatten() {
-                            if let Ok(file_name) = entry.file_name().into_string() {
-                                if let Ok(tid) = file_name.parse::<i32>() {
-                                    println!("{:<10} {:<10} {:<20} {}", pid, tid, p.name, rule_name);
-                                }
+                            if let Ok(file_name) = entry.file_name().into_string()
+                                && let Ok(tid) = file_name.parse::<i32>()
+                            {
+                                println!("{:<10} {:<10} {:<20} {}", pid, tid, p.name, rule_name);
                             }
                         }
                     } else {
@@ -389,7 +393,7 @@ fn main() {
         thread::sleep(std::time::Duration::from_millis(100));
         // Force redetect version and recreate
         ananicy_platform::mounts::reset_cgroup_info();
-        
+
         let rules_guard = match rules.read() {
             Ok(guard) => guard,
             Err(_) => {
@@ -414,7 +418,7 @@ fn main() {
             let freq = config_clone.get().check_freq;
             let check_freq = if freq > 0 { freq } else { 60 };
             let mut last_scan = std::time::Instant::now();
-            
+
             while !shutdown_scan.load(std::sync::atomic::Ordering::SeqCst) {
                 thread::sleep(std::time::Duration::from_secs(1));
                 if last_scan.elapsed().as_secs() >= check_freq as u64 {
@@ -503,7 +507,8 @@ fn main() {
 
                     if let Err(e) = nl.listen(tx_clone.clone(), shutdown_flag.clone()) {
                         warn!(
-                            "Netlink error: {}. Triggering full scan recovery and reconnect...", e
+                            "Netlink error: {}. Triggering full scan recovery and reconnect...",
+                            e
                         );
                         ProcfsScanner::full_scan(tx_clone.clone());
                         std::thread::sleep(std::time::Duration::from_secs(1));

@@ -2,23 +2,23 @@ use std::path::{Path, PathBuf};
 
 /// Represents the ownership classification of a target cgroup path.
 ///
-/// In cgroups v2, the kernel enforces a "single-writer rule", meaning a single subtree 
-/// should only be managed by one writer (e.g., systemd). Multiple concurrent writers 
-/// modifying the same cgroup directory will cause conflicts, race conditions, and 
+/// In cgroups v2, the kernel enforces a "single-writer rule", meaning a single subtree
+/// should only be managed by one writer (e.g., systemd). Multiple concurrent writers
+/// modifying the same cgroup directory will cause conflicts, race conditions, and
 /// undefined behavior in systemd's state tracking.
 ///
 /// `ananicy-rs` strictly adheres to this rule by only performing active cgroup mutations
-/// (like creating directories or modifying controllers) in its **Owned** delegated subtree 
+/// (like creating directories or modifying controllers) in its **Owned** delegated subtree
 /// (usually `/sys/fs/cgroup/system.slice/ananicy.service`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CgroupOwnership {
     /// Legacy cgroup v1 handling. We don't track delegation closely here.
     Legacy,
-    /// We own this v2 cgroup (it is at or below our delegated root). 
+    /// We own this v2 cgroup (it is at or below our delegated root).
     /// It is safe to perform mutations like creating directories and modifying controllers.
     Owned,
-    /// Foreign v2 cgroup (managed by systemd or another entity). 
-    /// We cannot safely write to this directory. `ananicy-rs` will refuse to perform 
+    /// Foreign v2 cgroup (managed by systemd or another entity).
+    /// We cannot safely write to this directory. `ananicy-rs` will refuse to perform
     /// any structural modifications here.
     Foreign,
 }
@@ -34,11 +34,11 @@ impl CgroupOwnership {
             return CgroupOwnership::Legacy;
         }
 
-        if let Some(root) = delegated_root {
+        if let Some(root) = delegated_root
+            && target_path.starts_with(root)
+        {
             // target_path must start with delegated_root to be Owned
-            if target_path.starts_with(root) {
-                return CgroupOwnership::Owned;
-            }
+            return CgroupOwnership::Owned;
         }
 
         CgroupOwnership::Foreign

@@ -1,6 +1,3 @@
-use std::fs;
-use tempfile::TempDir;
-
 // C++ tests:
 // Mounts -> Running systemd system
 // Mounts -> Cgroups on openrc
@@ -21,12 +18,12 @@ none /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_re
 "#;
 
 // We use ananicy_platform's internal mount parsing, if available.
-// If ananicy-rs doesn't do direct mtab parsing but relies on cgroup_fs, we assert 
+// If ananicy-rs doesn't do direct mtab parsing but relies on cgroup_fs, we assert
 // that we can at least simulate finding cgroup mounts correctly if we had to parse.
 
 #[test]
 fn test_mounts_running_systemd_system() {
-    // ananicy-rs doesn't expose mounts::parse_mtab_content like C++ does. 
+    // ananicy-rs doesn't expose mounts::parse_mtab_content like C++ does.
     // It relies on finding cgroups via sysfs directly or standard libraries.
     // We add this test to maintain semantic parity: ensure we know how to parse cgroup2
     // out of standard systemd mtab output.

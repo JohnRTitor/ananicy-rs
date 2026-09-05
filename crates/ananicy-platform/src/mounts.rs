@@ -34,39 +34,39 @@ pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
 
         if fs_type == "cgroup2" {
             let test_cgroup = mount_point.join("ananicy_test_cgroup2");
-            
+
             // Clean up left-over test cgroup if it exists
             if test_cgroup.exists() {
                 let _ = fs::remove_dir(&test_cgroup);
             }
-            
+
             if fs::create_dir(&test_cgroup).is_ok() {
                 let controllers_path = test_cgroup.join("cgroup.controllers");
                 let mut has_cpu_controller = false;
-                
-                if let Ok(controllers) = fs::read_to_string(&controllers_path) {
-                    if controllers.split_whitespace().any(|c| c == "cpu") {
-                        has_cpu_controller = true;
-                    }
+
+                if let Ok(controllers) = fs::read_to_string(&controllers_path)
+                    && controllers.split_whitespace().any(|c| c == "cpu")
+                {
+                    has_cpu_controller = true;
                 }
-                
+
                 let has_cpu_max = test_cgroup.join("cpu.max").exists();
-                
+
                 let _ = fs::remove_dir(&test_cgroup);
-                
+
                 if has_cpu_controller && has_cpu_max {
                     info.version = CgroupVersion::V2;
                     info.mount_point = mount_point.clone();
                     break;
                 }
             }
-        } else if fs_type == "cgroup" && info.version == CgroupVersion::None {
-            if let Some(parent) = mount_point.parent() {
-                if parent.join("cpu").exists() {
-                    info.version = CgroupVersion::V1;
-                    info.mount_point = parent.to_path_buf();
-                }
-            }
+        } else if fs_type == "cgroup"
+            && info.version == CgroupVersion::None
+            && let Some(parent) = mount_point.parent()
+            && parent.join("cpu").exists()
+        {
+            info.version = CgroupVersion::V1;
+            info.mount_point = parent.to_path_buf();
         }
     }
 }

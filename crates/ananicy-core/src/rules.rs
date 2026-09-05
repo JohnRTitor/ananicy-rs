@@ -75,12 +75,12 @@ impl Rules {
         // do expensive JSON merge-patches at runtime.
         let mut updated_programs = HashMap::new();
         for (name, mut rule) in self.programs.drain() {
-            if let Some(type_name) = rule.get("type").and_then(|v| v.as_str()) {
-                if let Some(type_rule) = self.types.get(&TypeName(type_name.to_string())) {
-                    let mut merged = type_rule.clone();
-                    merge_patch(&mut merged, &rule);
-                    rule = merged;
-                }
+            if let Some(type_name) = rule.get("type").and_then(|v| v.as_str())
+                && let Some(type_rule) = self.types.get(&TypeName(type_name.to_string()))
+            {
+                let mut merged = type_rule.clone();
+                merge_patch(&mut merged, &rule);
+                rule = merged;
             }
             updated_programs.insert(name, rule);
         }
@@ -179,10 +179,10 @@ impl Rules {
         // 0. Check cache
         let cache_key = name.to_string();
 
-        if let Ok(mut cache) = self.resolved_cache.lock() {
-            if let Some(cached_rule) = cache.get(&cache_key) {
-                return cached_rule.clone();
-            }
+        if let Ok(mut cache) = self.resolved_cache.lock()
+            && let Some(cached_rule) = cache.get(&cache_key)
+        {
+            return cached_rule.clone();
         }
 
         let best_match = self.find_best_match(name);
@@ -203,10 +203,10 @@ impl Rules {
 
         // 2. Regex fallback
         for (re, prog_name) in &self.regex_programs {
-            if re.is_match(target_name.as_bytes()).unwrap_or(false) {
-                if let Some(rule) = self.programs.get(&RuleName(prog_name.clone())) {
-                    return Some(rule.clone());
-                }
+            if re.is_match(target_name.as_bytes()).unwrap_or(false)
+                && let Some(rule) = self.programs.get(&RuleName(prog_name.clone()))
+            {
+                return Some(rule.clone());
             }
         }
 

@@ -7,7 +7,11 @@ use {
 
 // Note: In C++ original code, `test_errno` handles EPERM, ESRCH, etc.
 // We will replicate similar logic.
-fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+fn test_errno(
+    err: io::Error,
+    func_name: &str,
+    pid: i32,
+) -> Result<(), ananicy_core::worker::PlatformError> {
     if let Some(raw_os_error) = err.raw_os_error() {
         if raw_os_error == 0 {
             debug!("{}: Successfully applied to {}", func_name, pid);
@@ -37,14 +41,14 @@ pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), ananicy_core::worke
 
     if let Ok(entries) = fs::read_dir(&task_path) {
         for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string() {
-                if let Ok(tid) = file_name.parse::<i32>() {
-                    let who = Pid::from_raw(tid);
-                    if let Err(e) = setpriority_process(who, nice_value) {
-                        last_err = Some(e.into());
-                    } else {
-                        last_err = Some(io::Error::from_raw_os_error(0));
-                    }
+            if let Ok(file_name) = entry.file_name().into_string()
+                && let Ok(tid) = file_name.parse::<i32>()
+            {
+                let who = Pid::from_raw(tid);
+                if let Err(e) = setpriority_process(who, nice_value) {
+                    last_err = Some(e.into());
+                } else {
+                    last_err = Some(io::Error::from_raw_os_error(0));
                 }
             }
         }
@@ -59,7 +63,10 @@ pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), ananicy_core::worke
     }
 }
 
-pub fn set_latency_nice(pid: i32, latency_nice_value: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_latency_nice(
+    pid: i32,
+    latency_nice_value: i32,
+) -> Result<(), ananicy_core::worker::PlatformError> {
     // LATENCY_NICE is applied via sched_setattr
     let task_path = format!("/proc/{}/task", pid);
     let mut last_err = None;
@@ -72,20 +79,20 @@ pub fn set_latency_nice(pid: i32, latency_nice_value: i32) -> Result<(), ananicy
 
     if let Ok(entries) = fs::read_dir(&task_path) {
         for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string() {
-                if let Ok(tid) = file_name.parse::<i32>() {
-                    let attr = sched_attr {
-                        size: std::mem::size_of::<sched_attr>() as u32,
-                        sched_flags: SCHED_FLAG_LATENCY_NICE | SCHED_FLAG_KEEP_PARAMS,
-                        sched_latency_nice: latency_nice_value,
-                        ..Default::default()
-                    };
+            if let Ok(file_name) = entry.file_name().into_string()
+                && let Ok(tid) = file_name.parse::<i32>()
+            {
+                let attr = sched_attr {
+                    size: std::mem::size_of::<sched_attr>() as u32,
+                    sched_flags: SCHED_FLAG_LATENCY_NICE | SCHED_FLAG_KEEP_PARAMS,
+                    sched_latency_nice: latency_nice_value,
+                    ..Default::default()
+                };
 
-                    if let Err(e) = crate::abi::sched_attr::sched_setattr(tid, &attr, 0) {
-                        last_err = Some(e);
-                    } else {
-                        last_err = Some(io::Error::from_raw_os_error(0));
-                    }
+                if let Err(e) = crate::abi::sched_attr::sched_setattr(tid, &attr, 0) {
+                    last_err = Some(e);
+                } else {
+                    last_err = Some(io::Error::from_raw_os_error(0));
                 }
             }
         }
@@ -119,7 +126,11 @@ pub fn get_latency_nice(pid: i32) -> Option<i32> {
     }
 }
 
-pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_io_priority(
+    pid: i32,
+    io_class: &str,
+    value: i32,
+) -> Result<(), ananicy_core::worker::PlatformError> {
     let io_class_value = match io_class {
         "best-effort" => IOPRIO_CLASS_BE,
         "realtime" => IOPRIO_CLASS_RT,
@@ -140,7 +151,11 @@ pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), anani
     }
 }
 
-pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_sched(
+    pid: i32,
+    sched_name: &str,
+    rt_prio: u32,
+) -> Result<(), ananicy_core::worker::PlatformError> {
     let mut param = crate::abi::sched::SchedParam::default();
 
     let sched = match sched_name {
@@ -165,10 +180,13 @@ pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), ananicy
     };
 
     if let Err(e) = crate::abi::sched::sched_setscheduler(pid, sched as i32, &param) {
-        if let Some(raw) = e.raw_os_error() {
-            if raw != 0 && raw != rustix::io::Errno::SRCH.raw_os_error() && raw != rustix::io::Errno::PERM.raw_os_error() && raw != rustix::io::Errno::ACCESS.raw_os_error() {
-                tracing::error!("set_sched: Unknown error {} applying to {}", raw, pid);
-            }
+        if let Some(raw) = e.raw_os_error()
+            && raw != 0
+            && raw != rustix::io::Errno::SRCH.raw_os_error()
+            && raw != rustix::io::Errno::PERM.raw_os_error()
+            && raw != rustix::io::Errno::ACCESS.raw_os_error()
+        {
+            tracing::error!("set_sched: Unknown error {} applying to {}", raw, pid);
         }
         test_errno(e, "set_sched", pid)
     } else {
@@ -177,12 +195,16 @@ pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), ananicy
     }
 }
 
-pub fn set_oom_score_adjust(pid: i32, value: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_oom_score_adjust(
+    pid: i32,
+    value: i32,
+) -> Result<(), ananicy_core::worker::PlatformError> {
     let path = format!("/proc/{}/oom_score_adj", pid);
     if let Err(e) = fs::write(&path, value.to_string()) {
         if e.kind() == io::ErrorKind::NotFound {
             return Err(ananicy_core::worker::PlatformError::NotFound);
-        } else if e.kind() == io::ErrorKind::PermissionDenied {
+        }
+        if e.kind() == io::ErrorKind::PermissionDenied {
             return Err(ananicy_core::worker::PlatformError::PermissionDenied);
         }
         Err(ananicy_core::worker::PlatformError::Io(e))

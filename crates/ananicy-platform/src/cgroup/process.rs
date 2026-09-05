@@ -1,10 +1,12 @@
-use std::{
-    fs, io,
-    sync::RwLock,
-    time::{Duration, Instant},
+use {
+    lru::LruCache,
+    std::{
+        fs, io,
+        num::NonZeroUsize,
+        sync::RwLock,
+        time::{Duration, Instant},
+    },
 };
-use lru::LruCache;
-use std::num::NonZeroUsize;
 
 use {
     crate::cgroup::CgroupVersion,
@@ -42,17 +44,17 @@ impl CgroupProcessResolver for LinuxCgroupResolver {
 
         for line in content.lines() {
             // v2 looks like "0::/user.slice/..."
-            if line.starts_with("0::") {
-                if let Some(path_str) = line.strip_prefix("0::") {
-                    let path = path_str.trim_end_matches(" (deleted)");
-                    // Reject paths that start with /../ (escaping cgroup namespace)
-                    if path.starts_with("/../") {
-                        return Ok(None);
-                    }
-                    return Ok(Some(CgroupIdentity {
-                        path: CgroupPath::new(path),
-                    }));
+            if line.starts_with("0::")
+                && let Some(path_str) = line.strip_prefix("0::")
+            {
+                let path = path_str.trim_end_matches(" (deleted)");
+                // Reject paths that start with /../ (escaping cgroup namespace)
+                if path.starts_with("/../") {
+                    return Ok(None);
                 }
+                return Ok(Some(CgroupIdentity {
+                    path: CgroupPath::new(path),
+                }));
             }
         }
 
@@ -89,34 +91,35 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
                     return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
                 }
             };
-            if let Some(&(cached_start_time, ref cached_id, ref timestamp)) = cache.get(&pid) {
-                if cached_start_time == start_time_current && timestamp.elapsed() < self.ttl {
-                    return Ok(cached_id.clone());
-                }
+            if let Some(&(cached_start_time, ref cached_id, ref timestamp)) = cache.get(&pid)
+                && cached_start_time == start_time_current
+                && timestamp.elapsed() < self.ttl
+            {
+                return Ok(cached_id.clone());
             }
             drop(cache); // Release lock before resolving
 
             // Cache miss, expired, or start_time mismatch
             let resolved = self.inner.resolve(pid)?;
-            
+
             // Re-check start_time to prevent race condition during resolve
-            if let Some(start_time_after) = crate::procfs::get_start_time(pid) {
-                if start_time_current == start_time_after {
-                    let mut cache = match self.cache.write() {
-                        Ok(cache) => cache,
-                        Err(_) => {
-                            return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
-                        }
-                    };
-                    cache.put(pid, (start_time_current, resolved.clone(), Instant::now()));
-                    return Ok(resolved);
-                }
+            if let Some(start_time_after) = crate::procfs::get_start_time(pid)
+                && start_time_current == start_time_after
+            {
+                let mut cache = match self.cache.write() {
+                    Ok(cache) => cache,
+                    Err(_) => {
+                        return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
+                    }
+                };
+                cache.put(pid, (start_time_current, resolved.clone(), Instant::now()));
+                return Ok(resolved);
             }
-            
+
             // Start time changed during resolve, return None to skip
             return Ok(None);
         }
-        
+
         // Failed to get start time (process probably died), just return None
         Ok(None)
     }

@@ -33,8 +33,12 @@ impl NetlinkMonitor {
         use std::os::unix::io::AsRawFd;
         let fd = sock.as_raw_fd();
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
-        if let Err(e) = rustix::net::sockopt::set_socket_recv_buffer_size(borrowed, 8 * 1024 * 1024) {
-            tracing::warn!("Failed to set Netlink SO_RCVBUF to 8MB: {}. (ENOBUFS may be more frequent)", e);
+        if let Err(e) = rustix::net::sockopt::set_socket_recv_buffer_size(borrowed, 8 * 1024 * 1024)
+        {
+            tracing::warn!(
+                "Failed to set Netlink SO_RCVBUF to 8MB: {}. (ENOBUFS may be more frequent)",
+                e
+            );
         }
 
         let subscribe = NlmsghdrBuilder::default()
@@ -63,9 +67,8 @@ impl NetlinkMonitor {
         tx: Sender<Process>,
         shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<(), io::Error> {
-        use rustix::event::epoll;
-        use std::os::unix::io::AsRawFd;
-        
+        use {rustix::event::epoll, std::os::unix::io::AsRawFd};
+
         let fd = self.sock.as_raw_fd();
         let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
 
@@ -83,15 +86,18 @@ impl NetlinkMonitor {
 
         let mut event_list: Vec<epoll::Event> = Vec::with_capacity(1);
         let mut prev_pid = 0;
-        
+
         info!("Starting epoll-based Netlink event loop");
-        
+
         loop {
             if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 return Ok(());
             }
 
-            let timeout = rustix::time::Timespec { tv_sec: 0, tv_nsec: 100_000_000 };
+            let timeout = rustix::time::Timespec {
+                tv_sec: 0,
+                tv_nsec: 100_000_000,
+            };
             match epoll::wait(&epoll_fd, &mut event_list, Some(&timeout)) {
                 Ok(_) => {
                     if event_list.is_empty() {
@@ -111,7 +117,8 @@ impl NetlinkMonitor {
                     Ok(msgs) => msgs.0,
                     Err(e) => {
                         let err_str = e.to_string();
-                        if err_str.contains("No buffer space available") || err_str.contains("ENOBUFS")
+                        if err_str.contains("No buffer space available")
+                            || err_str.contains("ENOBUFS")
                         {
                             error!(
                                 "Netlink recv error (ENOBUFS): buffer overrun. Stopping listener for recovery."

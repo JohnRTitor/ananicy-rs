@@ -2,12 +2,8 @@
 use {
     crate::{config::Config, cpuset::CpuSet, process::Process, rules::Rules},
     serde_json::Value,
-    std::{
-        collections::HashMap,
-        sync::Arc,
-        thread::JoinHandle,
-    },
-    tracing::{debug, info, warn, error},
+    std::{collections::HashMap, sync::Arc, thread::JoinHandle},
+    tracing::{debug, error, info, warn},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -129,9 +125,14 @@ impl Worker {
                     info!("{}({})", p.name, p.identity.pid.0);
                 }
 
-                if let Err(e) = self.apply_rule(&p, &rule, &cfg, is_realtime, is_affected_by_cgroup_bug) {
+                if let Err(e) =
+                    self.apply_rule(&p, &rule, &cfg, is_realtime, is_affected_by_cgroup_bug)
+                {
                     if matches!(e, PlatformError::PermissionDenied) {
-                        error!("Failed to apply rule for {}({}): {}", p.name, p.identity.pid.0, e);
+                        error!(
+                            "Failed to apply rule for {}({}): {}",
+                            p.name, p.identity.pid.0, e
+                        );
                     } else {
                         continue;
                     }
@@ -146,7 +147,12 @@ impl Worker {
                     p.name, p.identity.pid.0
                 );
                 if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, "") {
-                    debug!(?e, "Failed to add realtime process {}({}) to root cgroup", p.name, p.identity.pid.0);
+                    debug!(
+                        ?e,
+                        "Failed to add realtime process {}({}) to root cgroup",
+                        p.name,
+                        p.identity.pid.0
+                    );
                 }
             }
         }
@@ -163,11 +169,14 @@ impl Worker {
         is_realtime: bool,
         is_affected_by_cgroup_bug: bool,
     ) -> Result<(), PlatformError> {
-        if cfg.apply_nice {
-            if let Some(nice) = rule.get("nice").and_then(|v| v.as_i64()) {
-                debug!("Setting priority of {}({}) to {}", p.name, p.identity.pid.0, nice);
-                self.platform.set_priority(p.identity.pid.0, nice as i32)?;
-            }
+        if cfg.apply_nice
+            && let Some(nice) = rule.get("nice").and_then(|v| v.as_i64())
+        {
+            debug!(
+                "Setting priority of {}({}) to {}",
+                p.name, p.identity.pid.0, nice
+            );
+            self.platform.set_priority(p.identity.pid.0, nice as i32)?;
         }
 
         if cfg.apply_latnice {
@@ -187,44 +196,52 @@ impl Worker {
             }
         }
 
-        if cfg.apply_sched {
-            if let Some(sched) = rule.get("sched").and_then(|v| v.as_str()) {
-                let rtprio = rule.get("rtprio").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                debug!("Setting scheduler of {}({}) to {}", p.name, p.identity.pid.0, sched);
-                self.platform.set_sched(p.identity.pid.0, sched, rtprio)?;
-            }
+        if cfg.apply_sched
+            && let Some(sched) = rule.get("sched").and_then(|v| v.as_str())
+        {
+            let rtprio = rule.get("rtprio").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            debug!(
+                "Setting scheduler of {}({}) to {}",
+                p.name, p.identity.pid.0, sched
+            );
+            self.platform.set_sched(p.identity.pid.0, sched, rtprio)?;
         }
 
-        if cfg.apply_ionice {
-            if let Some(ioclass) = rule.get("ioclass").and_then(|v| v.as_str()) {
-                let ionice = rule.get("ionice").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                debug!("Setting ioclass of {}({}) to {}", p.name, p.identity.pid.0, ioclass);
-                self.platform.set_io_priority(p.identity.pid.0, ioclass, ionice)?;
-            }
+        if cfg.apply_ionice
+            && let Some(ioclass) = rule.get("ioclass").and_then(|v| v.as_str())
+        {
+            let ionice = rule.get("ionice").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            debug!(
+                "Setting ioclass of {}({}) to {}",
+                p.name, p.identity.pid.0, ioclass
+            );
+            self.platform
+                .set_io_priority(p.identity.pid.0, ioclass, ionice)?;
         }
 
-        if cfg.apply_oom_score_adj {
-            if let Some(oom_adj) = rule.get("oom_score_adj").and_then(|v| v.as_i64()) {
-                debug!(
-                    "Setting OOM score adjustment of {}({}) to {}",
-                    p.name, p.identity.pid.0, oom_adj
-                );
-                self.platform.set_oom_score_adj(p.identity.pid.0, oom_adj as i32)?;
-            }
+        if cfg.apply_oom_score_adj
+            && let Some(oom_adj) = rule.get("oom_score_adj").and_then(|v| v.as_i64())
+        {
+            debug!(
+                "Setting OOM score adjustment of {}({}) to {}",
+                p.name, p.identity.pid.0, oom_adj
+            );
+            self.platform
+                .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)?;
         }
 
         if is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
             debug!(
                 "Cgroups are not compatible with realtime scheduling for now (linux limitation)"
             );
-        } else if cfg.apply_cgroups {
-            if let Some(cgroup) = rule.get("cgroup").and_then(|v| v.as_str()) {
-                debug!(
-                    "Adding process {}({}) to cgroup {}",
-                    p.name, p.identity.pid.0, cgroup
-                );
-                self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup)?;
-            }
+        } else if cfg.apply_cgroups
+            && let Some(cgroup) = rule.get("cgroup").and_then(|v| v.as_str())
+        {
+            debug!(
+                "Adding process {}({}) to cgroup {}",
+                p.name, p.identity.pid.0, cgroup
+            );
+            self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup)?;
         }
 
         if cfg.apply_cpuset {

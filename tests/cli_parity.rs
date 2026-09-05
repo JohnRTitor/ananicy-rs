@@ -12,7 +12,10 @@ fn test_cli_default_value() {
     // It should parse correctly and not throw a clap error (code 2).
     let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
     let exit_code = cmd.assert().get_output().status.code().unwrap_or(255);
-    assert_ne!(exit_code, 2, "Default execution should not be a clap argument error");
+    assert_ne!(
+        exit_code, 2,
+        "Default execution should not be a clap argument error"
+    );
 }
 
 #[test]
@@ -29,7 +32,10 @@ fn test_cli_string_argument_with_value() {
     // Using --help and providing a config string
     cmd.arg("--config").arg("fake_config.toml").arg("--help");
     let exit_code = cmd.assert().get_output().status.code().unwrap_or(255);
-    assert_eq!(exit_code, 0, "Should parse string argument successfully and exit 0 with help");
+    assert_eq!(
+        exit_code, 0,
+        "Should parse string argument successfully and exit 0 with help"
+    );
 }
 
 #[test]

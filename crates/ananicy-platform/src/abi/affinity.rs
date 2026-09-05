@@ -31,20 +31,15 @@ pub fn set_affinity(pid: i32, cpuset: &ananicy_core::cpuset::CpuSet) -> io::Resu
 
     if let Ok(entries) = fs::read_dir(&task_path) {
         for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string() {
-                if let Ok(tid) = file_name.parse::<i32>() {
-                    let ret = unsafe {
-                        sched_setaffinity(
-                            tid,
-                            num_bytes,
-                            mask.as_ptr() as *const cpu_set_t,
-                        )
-                    };
-                    if ret != 0 {
-                        last_err = Some(io::Error::last_os_error());
-                    } else {
-                        last_err = Some(io::Error::from_raw_os_error(0));
-                    }
+            if let Ok(file_name) = entry.file_name().into_string()
+                && let Ok(tid) = file_name.parse::<i32>()
+            {
+                let ret =
+                    unsafe { sched_setaffinity(tid, num_bytes, mask.as_ptr() as *const cpu_set_t) };
+                if ret != 0 {
+                    last_err = Some(io::Error::last_os_error());
+                } else {
+                    last_err = Some(io::Error::from_raw_os_error(0));
                 }
             }
         }

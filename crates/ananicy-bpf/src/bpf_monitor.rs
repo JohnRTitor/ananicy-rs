@@ -34,11 +34,11 @@ impl BpfMonitor {
             .open(open_object)
             .map_err(|e| io::Error::other(format!("Failed to open BPF skeleton: {}", e)))?;
 
-        if let Some(_min) = min_us {
+        if let Some(min) = min_us
+            && let Some(rodata) = open_skel.maps.rodata_data.as_mut()
+        {
             // Set the rate limit in BPF to prevent context switch event storms
-            if let Some(rodata) = open_skel.maps.rodata_data.as_mut() {
-                rodata.min_us = _min as u64;
-            }
+            rodata.min_us = min as u64;
         }
 
         let mut skel = open_skel
@@ -91,10 +91,7 @@ impl BpfMonitor {
                 let mut p = Process::new(ananicy_core::types::Pid(event.pid), name);
                 p.delta_us = Some(event.delta_us);
                 if tx_clone.send(p).is_err() {
-                    shutdown_on_channel_close.store(
-                        true,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
+                    shutdown_on_channel_close.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             })
             .lost_cb(|cpu: i32, count: u64| {

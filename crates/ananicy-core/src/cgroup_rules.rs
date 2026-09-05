@@ -170,13 +170,13 @@ mod tests {
         assert_eq!(exact.specificity(), 10000);
         assert_eq!(not_exact.specificity(), 10000);
         assert_eq!(glob.specificity(), 100);
-        
+
         // Shallow ancestor has 1 segment ("user.slice")
         assert_eq!(ancestor_shallow.specificity(), 1001);
-        
+
         // Deep ancestor has 2 segments ("user.slice", "app.slice")
         assert_eq!(ancestor_deep.specificity(), 1002);
-        
+
         assert!(exact.specificity() > ancestor_deep.specificity());
         assert!(ancestor_deep.specificity() > ancestor_shallow.specificity());
         assert!(ancestor_shallow.specificity() > glob.specificity());
