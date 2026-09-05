@@ -1,0 +1,19 @@
+[package]
+name = "ananicy-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+arc-swap = "1.9.2"
+walkdir = "2.5.0"
+pcre2 = "0.2.11"
+lru = "0.18.3"
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+proptest = "1.11.0"
+tempfile = "3.27.0"

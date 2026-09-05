@@ -1,0 +1,20 @@
+[package]
+name = "ananicy-platform-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ananicy-platform]
+path = ".."
+
+[[bin]]
+name = "parse_mounts"
+path = "fuzz_targets/parse_mounts.rs"
+test = false
+doc = false

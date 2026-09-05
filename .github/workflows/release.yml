@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libsystemd-dev libbpf-dev
+        
+      - name: Run sccache-cache
+        uses: mozilla-actions/sccache-action@v0.0.6
+        
+      - name: Build Release
+        run: cargo build --release --locked --all-features
+        
+      - name: Strip Binary
+        run: strip target/release/ananicy-rs
+        
+      - name: Package
+        run: |
+          tar -czvf ananicy-rs-linux-x86_64.tar.gz -C target/release ananicy-rs
+          sha256sum ananicy-rs-linux-x86_64.tar.gz > ananicy-rs-linux-x86_64.tar.gz.sha256
+          
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ananicy-rs-linux-x86_64.tar.gz
+            ananicy-rs-linux-x86_64.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

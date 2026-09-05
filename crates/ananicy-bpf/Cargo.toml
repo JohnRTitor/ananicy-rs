@@ -1,0 +1,14 @@
+[package]
+name = "ananicy-bpf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ananicy-core = { version = "0.1.0", path = "../ananicy-core" }
+ananicy-platform = { version = "0.1.0", path = "../ananicy-platform" }
+libbpf-rs = { version = "0.27.0", default-features = false }
+tracing = { workspace = true }
+
+[build-dependencies]
+libbpf-cargo = { version = "0.27.0", default-features = false }
+pkg-config = "0.3.34"

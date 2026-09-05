@@ -1,0 +1,32 @@
+name: NixOS CI
+
+on:
+  pull_request:
+    paths:
+      - "**.rs"
+      - "**Cargo.toml"
+      - "**Cargo.lock"
+      - "**.nix"
+      - "flake.lock"
+  push:
+    paths:
+      - "**.rs"
+      - "**Cargo.toml"
+      - "**Cargo.lock"
+      - "**.nix"
+      - "flake.lock"
+
+jobs:
+  nix-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install and Setup Nix
+        uses: DeterminateSystems/determinate-nix-action@main
+        
+      - name: Check Flake
+        run: nix flake check
+        
+      - name: Build
+        run: nix build

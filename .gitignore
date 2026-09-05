@@ -1,0 +1,11 @@
+.*
+!.gitignore
+!.github
+!.agents
+/target
+/build
+result
+scratch_src/
+cpp-copy
+crate-audit
+parity-audit-copy

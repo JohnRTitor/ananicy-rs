@@ -1,0 +1,54 @@
+[Unit]
+Description=Ananicy-Rs - ANother Auto NICe daemon in Rust
+After=local-fs.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+ExecStart=@bindir@/ananicy-rs start
+ExecReload=@bindir@/ananicy-rs --reload
+Nice=-5
+SuccessExitStatus=143
+OOMScoreAdjust=-999
+Restart=always
+RestartSec=10
+
+MemoryHigh=16M
+MemoryMax=64M
+
+# Hardening
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_RESOURCE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+NoNewPrivileges=yes
+
+RestrictSUIDSGID=yes
+RestrictNamespaces=cgroup
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# Required to see other processes
+PrivateUsers=no
+ProtectProc=default
+
+# Required for the process-listener socket to work
+PrivateNetwork=no
+
+# Required for control groups (obviously)
+ProtectControlGroups=no
+
+# Required for future use.
+RestrictRealtime=no
+
+[Install]
+WantedBy=multi-user.target
