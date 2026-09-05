@@ -17,7 +17,10 @@ mod startup;
 
 fn main() {
     let args = Args::parse();
+    #[cfg(feature = "systemd")]
     let is_systemd = args.systemd || std::env::var("NOTIFY_SOCKET").is_ok();
+    #[cfg(not(feature = "systemd"))]
+    let is_systemd = false;
     startup::init_logging(args.verbose, is_systemd);
 
     let (config_path, config_dir_path) = startup::resolve_config_paths(&args);

@@ -15,6 +15,7 @@ pub(crate) fn init_logging(verbose: bool, is_systemd: bool) {
         tracing::Level::INFO
     };
 
+    #[cfg(feature = "systemd")]
     if is_systemd {
         if let Ok(layer) = tracing_journald::layer() {
             use tracing_subscriber::layer::SubscriberExt;
@@ -24,18 +25,14 @@ pub(crate) fn init_logging(verbose: bool, is_systemd: bool) {
                 ))
                 .with(layer);
             let _ = tracing::subscriber::set_global_default(subscriber);
-        } else {
-            let subscriber = tracing_subscriber::FmtSubscriber::builder()
-                .with_max_level(log_level)
-                .finish();
-            let _ = tracing::subscriber::set_global_default(subscriber);
+            return;
         }
-    } else {
-        let subscriber = tracing_subscriber::FmtSubscriber::builder()
-            .with_max_level(log_level)
-            .finish();
-        let _ = tracing::subscriber::set_global_default(subscriber);
     }
+
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(log_level)
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
 pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {

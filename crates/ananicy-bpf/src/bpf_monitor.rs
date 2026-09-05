@@ -100,7 +100,10 @@ impl BpfMonitor {
             .build();
 
         let Ok(perf_buffer) = perf_buffer else {
-            error!("Failed to build BPF perf buffer: {}", perf_buffer.unwrap_err());
+            error!(
+                "Failed to build BPF perf buffer: {}",
+                perf_buffer.unwrap_err()
+            );
             return;
         };
 

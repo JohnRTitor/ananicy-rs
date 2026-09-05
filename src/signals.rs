@@ -35,6 +35,7 @@ pub(crate) fn install(
                     info!("Received termination signal. Shutting down...");
                     shutdown_flag.store(true, Ordering::SeqCst);
                     drop(tx);
+                    #[cfg(feature = "systemd")]
                     if is_systemd {
                         let _ = sd_notify::notify(&[sd_notify::NotifyState::Stopping]);
                     }

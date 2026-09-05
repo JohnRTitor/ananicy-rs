@@ -40,7 +40,7 @@ rustPlatform.buildRustPackage {
   ];
 
   buildNoDefaultFeatures = withBpf;
-  buildFeatures = lib.optionals withBpf [ "bpf" ];
+  buildFeatures = [ "systemd" ] ++ lib.optionals withBpf [ "bpf" ];
 
   checkFlags = [
     # Fails in Nix sandbox due to restricted permissions

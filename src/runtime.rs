@@ -33,6 +33,7 @@ pub(crate) fn run(
     let worker = Worker::new(config.clone(), rules.clone(), platform, aliases, rx);
     let worker_handle = worker.start();
 
+    #[cfg(feature = "systemd")]
     if is_systemd {
         info!("Notifying systemd of readiness...");
         let _ = sd_notify::notify(&[sd_notify::NotifyState::Ready]);

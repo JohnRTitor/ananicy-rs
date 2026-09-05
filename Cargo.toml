@@ -1,10 +1,10 @@
 [package]
 name = "ananicy-rs"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage"
-repository = "https://github.com/JohnRTitor/ananicy-rs"
-license = "GPL-3.0-only"
+repository.workspace = true
+license.workspace = true
 keywords = ["cgroup", "daemon", "nice", "scheduler"]
 categories = ["os::linux-apis", "system-tools"]
 
@@ -25,8 +25,8 @@ default-members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "GPL-3.0-only"
 repository = "https://github.com/JohnRTitor/ananicy-rs"
+license = "GPL-3.0-only"
 
 [workspace.dependencies]
 ananicy-bpf = { path = "crates/ananicy-bpf" }
@@ -53,10 +53,10 @@ ananicy-platform = { workspace = true }
 nanoargs = "0.6.0"
 neli = { workspace = true }
 rustix = { workspace = true, features = ["fs", "process", "shm"] }
-sd-notify = "0.5.0"
+sd-notify = { version = "0.5.0", optional = true }
 signal-hook = "0.4.4"
 tracing = { workspace = true }
-tracing-journald = "0.3.2"
+tracing-journald = { version = "0.3.2", optional = true }
 tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
@@ -66,7 +66,8 @@ predicates = "3.1.4"
 rstest = "0.26.1"
 
 [features]
-default = ["netlink"]
+default = ["netlink", "systemd"]
 ananicy-bpf = ["dep:ananicy-bpf"]
 bpf = ["ananicy-bpf"]
 netlink = ["ananicy-platform/netlink"]
+systemd = ["dep:sd-notify", "dep:tracing-journald"]
