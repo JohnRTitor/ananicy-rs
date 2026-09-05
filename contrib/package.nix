@@ -9,13 +9,20 @@
   zstd,
   libbpf,
   pcre2,
+  version ? "unstable",
   withBpf ? true,
 }:
 rustPlatform.buildRustPackage {
   pname = "ananicy-rs";
-  version = "0.1.0";
+  inherit version;
 
-  src = ../.;
+  strictDeps = true;
+  __structuredAttrs = true;
+
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.fileFilter ({ hasExt, ... }: !hasExt "nix") ../.;
+  };
 
   cargoLock = {
     lockFile = ../Cargo.lock;
@@ -44,7 +51,7 @@ rustPlatform.buildRustPackage {
 
   checkFlags = [
     # Fails in Nix sandbox due to restricted permissions
-    "--skip test_set_affinity_on_current_process"
+    "--skip=test_set_affinity_on_current_process"
   ];
 
   hardeningDisable = [

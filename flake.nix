@@ -15,6 +15,13 @@
 
   outputs =
     inputs@{ self, ... }:
+    let
+      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+
+      rev =
+        self.shortRev or self.dirtyShortRev or (inputs.nixpkgs.lib.substring 0 8 self.lastModifiedDate);
+      version = "${cargoToml.workspace.package.version}+${rev}";
+    in
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "x86_64-linux"
@@ -46,7 +53,7 @@
           formatter = pkgs.nixfmt-rfc-style;
 
           packages = {
-            default = pkgs.callPackage ./contrib/package.nix { };
+            default = pkgs.callPackage ./contrib/package.nix { inherit version; };
             ananicy-rs = config.packages.default;
           };
 
