@@ -63,8 +63,9 @@
               clippy
               # Include clang so that BPF compilation works outside of Nix build
               libbpf
-              llvmPackages.clang
+              llvmPackages.clang-unwrapped
             ];
+            hardeningDisable = [ "zerocallusedregs" ];
           };
         };
     };

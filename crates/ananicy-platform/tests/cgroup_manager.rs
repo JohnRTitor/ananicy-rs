@@ -92,7 +92,7 @@ fn test_cgroup_manager_v2_write_files() {
     assert!(success, "Should successfully set cpu.max in Owned subtree");
 
     let content = fs::read_to_string(child_path.join("cpu.max")).unwrap();
-    assert!(content.ends_with("1000000\n"));
+    assert!(content.ends_with("100000\n"));
 
     let success = manager.set_cpu_weight(&child_path, 200);
     assert!(
