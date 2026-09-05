@@ -105,6 +105,8 @@ pub(crate) fn load_topology_aliases(
             "AMD X3D detected: cache cores={}, frequency cores={}",
             x3d_top.cache_cores_str, x3d_top.frequency_cores_str
         );
+        // X3D topology overrides the generic largest-LLC alias because the V-Cache CCD
+        // is identified from X3D-specific die topology.
         aliases.insert("x3d-cache".to_string(), x3d_top.cache_cores_str);
         aliases.insert("x3d-frequency".to_string(), x3d_top.frequency_cores_str);
 

@@ -40,6 +40,8 @@ pub fn get_command_from_pid(pid: i32) -> String {
         }
     }
 
+    // Repeated EACCES usually means `/proc/<pid>/exe` is not readable to us; stop retrying
+    // it to avoid repeated procfs I/O on every event.
     // 2. Try exe (if we haven't failed too many times)
     if EXE_FAIL_COUNT.load(Ordering::Relaxed) < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
         match fs::read_link(format!("{}/exe", proc_dir)) {

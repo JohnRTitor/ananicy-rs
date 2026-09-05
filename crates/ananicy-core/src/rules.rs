@@ -75,6 +75,7 @@ impl Rules {
         // do expensive JSON merge-patches at runtime.
         let mut updated_programs = HashMap::new();
         for (name, mut rule) in self.programs.drain() {
+            // Merge into a clone so a program rule cannot mutate a shared type definition.
             if let Some(type_name) = rule.get("type").and_then(|v| v.as_str())
                 && let Some(type_rule) = self.types.get(&TypeName(type_name.to_string()))
             {
@@ -97,6 +98,7 @@ impl Rules {
         match fs::read_to_string(path) {
             Ok(content) => {
                 debug!("Loading rules from {:?}", path);
+                // Rule files may use CRLF line endings; `lines()` treats `\r\n` as one line ending.
                 for line in content.lines() {
                     if !self.load_rule_from_string(line) {
                         // We only log debug here since blank lines and comments are normal

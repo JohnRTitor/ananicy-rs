@@ -83,6 +83,7 @@ pub fn get_cgroup_info() -> CgroupInfo {
         mount_point: PathBuf::new(),
     };
 
+    // `/proc/self/mounts` is a pseudo-file; do not rely on metadata/file size before reading it.
     if let Ok(content) = fs::read_to_string("/proc/self/mounts") {
         parse_cgroups_from_str(&content, &mut info);
     }
