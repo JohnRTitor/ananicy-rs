@@ -59,7 +59,7 @@ rustPlatform.buildRustPackage {
   meta = {
     description = "Rewrite of ananicy in Rust for lower CPU and memory usage";
     homepage = "https://github.com/JohnRTitor/ananicy-rs";
-    license = lib.licenses.lgpl3Only;
+    license = lib.licenses.gpl3Only;
     platforms = lib.platforms.linux;
     mainProgram = "ananicy-rs";
   };
