@@ -214,7 +214,10 @@ impl CgroupController for CgroupManager {
         // If in CgroupV2, we must write the TGID (process ID), not the TID, to cgroup.procs
         // Writing a TID that is not a thread group leader to cgroup.procs fails with EINVAL (os error 22)
         let pid_to_write = if self.info.version == CgroupVersion::V2 {
-            crate::procfs::get_tgid(pid).unwrap_or(pid)
+            match crate::procfs::get_tgid(pid) {
+                Some(tgid) => tgid,
+                None => return false, // Process is dead, writing raw TID causes EINVAL (os error 22)
+            }
         } else {
             pid
         };

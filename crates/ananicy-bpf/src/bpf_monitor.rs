@@ -99,12 +99,9 @@ impl BpfMonitor {
             })
             .build();
 
-        let mut perf_buffer = match perf_buffer {
-            Ok(perf_buffer) => perf_buffer,
-            Err(e) => {
-                error!("Failed to build BPF perf buffer: {}", e);
-                return;
-            }
+        let Ok(perf_buffer) = perf_buffer else {
+            error!("Failed to build BPF perf buffer: {}", perf_buffer.unwrap_err());
+            return;
         };
 
         // Polling loop

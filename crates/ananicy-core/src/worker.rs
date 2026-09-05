@@ -146,7 +146,13 @@ impl Worker {
                     "Moving realtime process {}({}) to root cgroup",
                     p.name, p.identity.pid.0
                 );
-                if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, "") {
+                // CRITICAL: We must use "/" instead of "" for the target cgroup here.
+                // In Cgroup V2, "" is treated as a relative path and resolves to our delegated root
+                // (e.g. /system.slice/ananicy-rs.service). If we used "", this workaround would
+                // mistakenly hijack realtime processes (like Hyprland) into our own systemd service.
+                // Using "/" explicitly targets the global root, which safely fails (due to Foreign ownership protection)
+                // or succeeds if we genuinely have access, without polluting our own service cgroup.
+                if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, "/") {
                     debug!(
                         ?e,
                         "Failed to add realtime process {}({}) to root cgroup",
