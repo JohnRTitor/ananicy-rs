@@ -279,11 +279,12 @@ pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
     }
 
     let metrics: Vec<_> = metric_to_cores.keys().copied().collect();
-    let lowest_metric = metrics.first().unwrap();
-    let highest_metric = metrics.last().unwrap();
+    let (Some(&lowest_metric), Some(&highest_metric)) = (metrics.first(), metrics.last()) else {
+        return top;
+    };
 
     // C++ BIG_LITTLE_RATIO requires at least 1.3x difference
-    if (*highest_metric as f64) < (*lowest_metric as f64) * 1.3 {
+    if (highest_metric as f64) < (lowest_metric as f64) * 1.3 {
         debug!(
             "detect_topology: Max capacity ({}) is not >= 1.3x min capacity ({}). Assuming homogeneous.",
             highest_metric, lowest_metric
@@ -317,7 +318,10 @@ pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
     top.little_cores_str = format_cpuset(&little_cores);
     top.big_cores_str = format_cpuset(&big_cores);
 
-    let turbo_cores = metric_to_cores.get(highest_metric).unwrap();
+    let Some(turbo_cores) = metric_to_cores.get(&highest_metric) else {
+        warn!("detect_topology: highest metric disappeared before turbo-core selection");
+        return top;
+    };
     top.turbo_cores_str = format_cpuset(turbo_cores);
 
     debug!(

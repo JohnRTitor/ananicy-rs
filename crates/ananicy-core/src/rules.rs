@@ -5,7 +5,7 @@ use {
         types::{CgroupName, RuleName, TypeName},
     },
     serde_json::Value,
-    std::{collections::HashMap, fs, path::Path},
+    std::{collections::HashMap, fs, num::NonZeroUsize, path::Path},
     tracing::{debug, error, warn},
 };
 
@@ -29,7 +29,7 @@ impl Rules {
             cgroups: HashMap::new(),
             regex_programs: Vec::new(),
             resolved_cache: std::sync::Mutex::new(lru::LruCache::new(
-                std::num::NonZeroUsize::new(5000).unwrap(),
+                NonZeroUsize::new(5000).unwrap_or(NonZeroUsize::MIN),
             )),
         }
     }
@@ -236,7 +236,9 @@ fn merge_patch(target: &mut Value, patch: &Value) {
         if !target.is_object() {
             *target = Value::Object(serde_json::Map::new());
         }
-        let target_obj = target.as_object_mut().unwrap();
+        let Some(target_obj) = target.as_object_mut() else {
+            return;
+        };
 
         for (k, v) in patch_obj {
             if v.is_null() {

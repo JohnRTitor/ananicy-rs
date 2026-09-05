@@ -147,7 +147,10 @@ fn detect_x3d_topology_impl(sys_root: &Path, proc_root: &Path) -> Option<X3DTopo
 
     if die_to_cache.len() == 1 {
         // Single-CCD X3D part (like 7800X3D)
-        let only_die = die_to_cores.values().next().unwrap();
+        let Some(only_die) = die_to_cores.values().next() else {
+            warn!("detect_x3d_topology: cache information found without any CPU topology");
+            return None;
+        };
         let all_cores_str = format_cpuset(only_die);
         return Some(X3DTopology {
             cache_cores_str: all_cores_str.clone(),

@@ -14,8 +14,7 @@ impl CgroupMatch {
             return CgroupMatch::Not(Box::new(CgroupMatch::parse(rest)));
         }
 
-        if s.ends_with("/**") {
-            let prefix = s.strip_suffix("/**").unwrap();
+        if let Some(prefix) = s.strip_suffix("/**") {
             CgroupMatch::Ancestor(CgroupPath::new(prefix))
         } else if s.contains('*') || s.contains('?') {
             CgroupMatch::Glob(s.to_string())

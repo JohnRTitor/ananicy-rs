@@ -109,11 +109,14 @@ impl Worker {
                 }
             }
 
-            let rule = self
-                .rules
-                .read()
-                .unwrap()
-                .get_rule(&p.name);
+            let rules = match self.rules.read() {
+                Ok(rules) => rules,
+                Err(_) => {
+                    error!("Rules lock is poisoned; stopping worker loop");
+                    break;
+                }
+            };
+            let rule = rules.get_rule(&p.name);
             let is_realtime = self.platform.is_realtime(p.identity.pid.0);
 
             if let Some(rule) = rule {

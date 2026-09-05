@@ -69,9 +69,11 @@ pub struct CachingCgroupResolver<R: CgroupProcessResolver> {
 
 impl<R: CgroupProcessResolver> CachingCgroupResolver<R> {
     pub fn new(inner: R, capacity: usize, ttl: Duration) -> Self {
+        let capacity = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
+
         Self {
             inner,
-            cache: RwLock::new(LruCache::new(NonZeroUsize::new(capacity).unwrap())),
+            cache: RwLock::new(LruCache::new(capacity)),
             ttl,
         }
     }
@@ -81,7 +83,12 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
     fn resolve(&self, pid: i32) -> io::Result<Option<CgroupIdentity>> {
         // Try the cache first
         if let Some(start_time_current) = crate::procfs::get_start_time(pid) {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = match self.cache.write() {
+                Ok(cache) => cache,
+                Err(_) => {
+                    return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
+                }
+            };
             if let Some(&(cached_start_time, ref cached_id, ref timestamp)) = cache.get(&pid) {
                 if cached_start_time == start_time_current && timestamp.elapsed() < self.ttl {
                     return Ok(cached_id.clone());
@@ -95,7 +102,12 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
             // Re-check start_time to prevent race condition during resolve
             if let Some(start_time_after) = crate::procfs::get_start_time(pid) {
                 if start_time_current == start_time_after {
-                    let mut cache = self.cache.write().unwrap();
+                    let mut cache = match self.cache.write() {
+                        Ok(cache) => cache,
+                        Err(_) => {
+                            return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
+                        }
+                    };
                     cache.put(pid, (start_time_current, resolved.clone(), Instant::now()));
                     return Ok(resolved);
                 }

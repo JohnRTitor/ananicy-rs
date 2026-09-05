@@ -59,6 +59,7 @@ impl BpfMonitor {
         shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) {
         let tx_clone = tx.clone();
+        let shutdown_on_channel_close = shutdown_flag.clone();
 
         // Setup the PerfBuffer
         let perf_buffer = PerfBufferBuilder::new(&self.skel.maps.events)
@@ -89,13 +90,25 @@ impl BpfMonitor {
 
                 let mut p = Process::new(ananicy_core::types::Pid(event.pid), name);
                 p.delta_us = Some(event.delta_us);
-                tx_clone.send(p).expect("Worker thread died");
+                if tx_clone.send(p).is_err() {
+                    shutdown_on_channel_close.store(
+                        true,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
             })
             .lost_cb(|cpu: i32, count: u64| {
                 error!("Lost {} BPF events on CPU {}", count, cpu);
             })
-            .build()
-            .unwrap();
+            .build();
+
+        let mut perf_buffer = match perf_buffer {
+            Ok(perf_buffer) => perf_buffer,
+            Err(e) => {
+                error!("Failed to build BPF perf buffer: {}", e);
+                return;
+            }
+        };
 
         // Polling loop
         loop {

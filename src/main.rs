@@ -72,15 +72,19 @@ fn main() {
 
     let is_systemd = args.systemd || std::env::var("NOTIFY_SOCKET").is_ok();
 
-    if is_systemd && tracing_journald::layer().is_ok() {
-        use tracing_subscriber::layer::SubscriberExt;
-        let layer = tracing_journald::layer().unwrap();
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(tracing_subscriber::filter::LevelFilter::from_level(
-                log_level,
-            ))
-            .with(layer);
-        let _ = tracing::subscriber::set_global_default(subscriber);
+    if is_systemd {
+        if let Ok(layer) = tracing_journald::layer() {
+            use tracing_subscriber::layer::SubscriberExt;
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(tracing_subscriber::filter::LevelFilter::from_level(log_level))
+                .with(layer);
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        } else {
+            let subscriber = tracing_subscriber::FmtSubscriber::builder()
+                .with_max_level(log_level)
+                .finish();
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        }
     } else {
         let subscriber = tracing_subscriber::FmtSubscriber::builder()
             .with_max_level(log_level)
@@ -356,7 +360,14 @@ fn main() {
 
     // Create cgroups
     info!("Initializing cgroups based on rules");
-    for (name, value) in rules.read().unwrap().get_cgroups() {
+    let rules_guard = match rules.read() {
+        Ok(guard) => guard,
+        Err(_) => {
+            error!("Rules lock is poisoned; cannot initialize cgroups");
+            return;
+        }
+    };
+    for (name, value) in rules_guard.get_cgroups() {
         let quota = value
             .get("CPUQuota")
             .and_then(|v| v.as_u64())
@@ -379,7 +390,14 @@ fn main() {
         // Force redetect version and recreate
         ananicy_platform::mounts::reset_cgroup_info();
         
-        for (name, value) in rules.read().unwrap().get_cgroups() {
+        let rules_guard = match rules.read() {
+            Ok(guard) => guard,
+            Err(_) => {
+                error!("Rules lock is poisoned; cannot recreate cgroups");
+                return;
+            }
+        };
+        for (name, value) in rules_guard.get_cgroups() {
             let quota = value
                 .get("CPUQuota")
                 .and_then(|v| v.as_u64())

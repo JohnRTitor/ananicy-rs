@@ -197,8 +197,10 @@ impl Config {
                 info!("Default config:\n{}", config_string);
                 info!("Writing default config to {}", path.as_ref().display());
 
-                if path.as_ref().parent().is_some_and(|p| !p.exists() && fs::create_dir_all(p).is_err()) {
-                    error!("Cannot create config directory {}", path.as_ref().parent().unwrap().display());
+                if let Some(parent) = path.as_ref().parent() {
+                    if !parent.exists() && fs::create_dir_all(parent).is_err() {
+                        error!("Cannot create config directory {}", parent.display());
+                    }
                 }
 
                 if let Err(write_err) = fs::write(&path, config_string) {

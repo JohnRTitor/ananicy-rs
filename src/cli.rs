@@ -62,13 +62,19 @@ impl Args {
                     .required(),
             )
             .build()
-            .unwrap();
+            .unwrap_or_else(|e| {
+                eprintln!("internal CLI parser configuration error: {}", e);
+                std::process::exit(2);
+            });
 
         let start_parser = ArgBuilder::new()
             .name("start")
             .description("Start the daemon")
             .build()
-            .unwrap();
+            .unwrap_or_else(|e| {
+                eprintln!("internal CLI parser configuration error: {}", e);
+                std::process::exit(2);
+            });
 
         let parser = ArgBuilder::new()
             .name("ananicy-rs")
@@ -104,7 +110,10 @@ impl Args {
             .subcommand("dump", "Dump internal state", dump_parser)
             .subcommand("start", "Start the daemon", start_parser)
             .build()
-            .unwrap();
+            .unwrap_or_else(|e| {
+                eprintln!("internal CLI parser configuration error: {}", e);
+                std::process::exit(2);
+            });
 
         let args: Vec<String> = env::args().skip(1).collect();
         match parser.parse(args.clone()) {
@@ -147,7 +156,12 @@ impl Args {
                 let verbose = result.get_flag("verbose");
 
                 let command = if let Some(subcmd_name) = result.subcommand() {
-                    let sub_result = result.subcommand_result().unwrap();
+                    let Some(sub_result) = result.subcommand_result() else {
+                        eprintln!(
+                            "error: parser returned a subcommand name without its parsed arguments"
+                        );
+                        std::process::exit(2);
+                    };
                     if subcmd_name == "dump" {
                         let sub_action_str = sub_result.get_positionals()[0].to_string();
                         match sub_action_str.parse::<DumpTarget>() {
@@ -256,7 +270,10 @@ impl Args {
                     )
                     .positional(Pos::new("action").desc("Unknown action fallback"))
                     .build()
-                    .unwrap();
+                    .unwrap_or_else(|e| {
+                        eprintln!("internal CLI parser configuration error: {}", e);
+                        std::process::exit(2);
+                    });
 
                 match fallback_parser.parse(args) {
                     Ok(result) => {
