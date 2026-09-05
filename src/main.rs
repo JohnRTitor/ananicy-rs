@@ -236,7 +236,7 @@ fn main() {
             }
             cli::DumpTarget::Proc => {
                 let (tx_dump, rx_dump) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
+                ananicy_core::spawn_named_thread!("ananicy-dump", move || {
                     ProcfsScanner::full_scan(tx_dump);
                 });
                 println!("{:<10} {:<10} {:<20} {:<20}", "PID", "TID", "NAME", "RULES");
@@ -322,7 +322,7 @@ fn main() {
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
     ]) {
-        thread::spawn(move || {
+        ananicy_core::spawn_named_thread!("ananicy-signal", move || {
             for sig in signals.forever() {
                 if sig == signal_hook::consts::SIGUSR1 {
                     info!("Received SIGUSR1, reloading config...");
@@ -392,7 +392,7 @@ fn main() {
         let tx_scan = tx.clone();
         let shutdown_scan = shutdown_flag.clone();
         let config_clone = config.clone();
-        thread::spawn(move || {
+        ananicy_core::spawn_named_thread!("ananicy-scan", move || {
             let freq = config_clone.get().check_freq;
             let check_freq = if freq > 0 { freq } else { 60 };
             let mut last_scan = std::time::Instant::now();
@@ -423,7 +423,7 @@ fn main() {
                     let tx_scan = tx.clone();
 
                     info!("Running initial procfs full scan");
-                    thread::spawn(move || {
+                    ananicy_core::spawn_named_thread!("ananicy-init", move || {
                         ProcfsScanner::full_scan(tx_scan);
                     });
 
@@ -478,7 +478,7 @@ fn main() {
                         is_first = false;
                         let tx_scan = tx.clone();
                         info!("Running initial procfs full scan");
-                        thread::spawn(move || {
+                        ananicy_core::spawn_named_thread!("ananicy-init", move || {
                             ProcfsScanner::full_scan(tx_scan);
                         });
                     }

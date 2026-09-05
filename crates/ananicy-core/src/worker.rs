@@ -5,7 +5,7 @@ use {
     std::{
         collections::HashMap,
         sync::Arc,
-        thread::{self, JoinHandle},
+        thread::JoinHandle,
     },
     tracing::{debug, info, warn, error},
 };
@@ -82,7 +82,7 @@ impl Worker {
 
     /// Spawns a dedicated thread for the worker loop.
     pub fn start(self) -> JoinHandle<(usize, std::time::Duration)> {
-        thread::spawn(move || self.work_loop())
+        crate::spawn_named_thread!("ananicy-worker", move || self.work_loop())
     }
 
     pub fn work_loop(self) -> (usize, std::time::Duration) {
