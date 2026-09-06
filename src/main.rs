@@ -8,6 +8,7 @@ use {
 };
 
 mod cli;
+mod debug;
 mod dump;
 mod ipc;
 mod monitor;
@@ -21,7 +22,11 @@ fn main() {
     let is_systemd = args.systemd || std::env::var("NOTIFY_SOCKET").is_ok();
     #[cfg(not(feature = "systemd"))]
     let is_systemd = false;
-    startup::init_logging(args.verbose, is_systemd);
+    // Force trace-level logging for the whole `debug` action before
+    // dispatching to a sub-action so the debug module's diagnostics
+    // are actually emitted.
+    let force_trace = matches!(args.command, Some(Commands::Debug { .. }));
+    startup::init_logging(args.verbose, force_trace, is_systemd);
 
     let (config_path, config_dir_path) = startup::resolve_config_paths(&args);
 
@@ -39,6 +44,13 @@ fn main() {
 
     if let Some(Commands::Dump { sub_action }) = &args.command {
         dump::run(sub_action, &rules_obj);
+        return;
+    }
+
+    // Like `dump`, the `debug` action runs after config/rules
+    // initialization but exits before the root check and daemon startup.
+    if let Some(Commands::Debug { sub_action }) = &args.command {
+        debug::run(sub_action);
         return;
     }
 

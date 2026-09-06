@@ -44,9 +44,38 @@ impl std::str::FromStr for DumpTarget {
     }
 }
 
+/// Parses the raw string provided to `debug [sub_action]` on the CLI.
+/// Falls through to a silent success if it doesn't recognize the sub-action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DebugTarget {
+    Cgroups,
+    Unknown(String),
+}
+
+impl std::str::FromStr for DebugTarget {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "cgroups" => DebugTarget::Cgroups,
+            other => DebugTarget::Unknown(other.to_string()),
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum Commands {
-    Dump { sub_action: DumpTarget },
+    Dump {
+        sub_action: DumpTarget,
+    },
+    /// The undocumented `debug` action.
+    ///
+    /// Intentionally NOT registered as a formal `nanoargs` subcommand (see
+    /// the `NoSubcommand`/`UnknownSubcommand` fallback branch below) so it
+    /// [sub-action]` and `start`.
+    Debug {
+        sub_action: DebugTarget,
+    },
     Start,
     Unknown(String),
 }
@@ -269,6 +298,10 @@ impl Args {
                             .desc("Enable verbose output"),
                     )
                     .positional(Pos::new("action").desc("Unknown action fallback"))
+                    // Undocumented second positional used only by the `debug` action
+                    // (e.g. `debug cgroups`); intentionally not `.required()` so
+                    // plain unknown single-word actions (e.g. `nonsense`) keep working.
+                    .positional(Pos::new("sub_action").desc("Unknown action fallback"))
                     .build()
                     .unwrap_or_else(|e| {
                         eprintln!("internal CLI parser configuration error: {}", e);
@@ -278,10 +311,21 @@ impl Args {
                 match fallback_parser.parse(args) {
                     Ok(result) => {
                         let positionals = result.get_positionals();
-                        let command = if !positionals.is_empty() {
-                            Some(Commands::Unknown(positionals[0].to_string()))
-                        } else {
+                        let command = if positionals.is_empty() {
                             None
+                        } else if positionals[0] == "debug" {
+                            match positionals.get(1) {
+                                None => {
+                                    eprintln!("error: A sub-action must be specified for debug.");
+                                    std::process::exit(1);
+                                }
+                                Some(sub) => Some(Commands::Debug {
+                                    // infallible: see DebugTarget::from_str
+                                    sub_action: sub.parse().unwrap(),
+                                }),
+                            }
+                        } else {
+                            Some(Commands::Unknown(positionals[0].to_string()))
                         };
 
                         let systemd = result.get_flag("systemd");

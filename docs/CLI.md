@@ -5,6 +5,7 @@
 ## Running Manually
 
 You can start `ananicy-rs` manually for testing:
+
 ```bash
 sudo ananicy-rs start
 ```
@@ -17,11 +18,13 @@ sudo ananicy-rs start
 For production use, you should run `ananicy-rs` as a systemd service. The service file implements strict hardening and proper Cgroup v2 delegation.
 
 Enable and start the daemon:
+
 ```bash
 sudo systemctl enable --now ananicy-rs.service
 ```
 
 Reload rules and configuration without a full restart:
+
 ```bash
 sudo systemctl reload ananicy-rs.service
 # OR
@@ -33,6 +36,7 @@ sudo ananicy-rs --reload
 `ananicy-rs` supports the following CLI arguments and subcommands:
 
 ### Options
+
 - `--systemd`: Run as a systemd service (automatically sets up `sd_notify`).
 - `--daemon`: Run in daemon mode (currently warns and runs in the foreground).
 - `--config <CONFIG>`: Override the default config file path (default: `/etc/ananicy.d/ananicy.conf`).
@@ -46,6 +50,7 @@ sudo ananicy-rs --reload
 - `-v, --verbose`: Enable verbose output.
 
 ### Commands
+
 - `start`: Start the daemon (this is the default behavior if no command is specified, but explicitly using `start` is supported).
 - `dump <sub_action>`: Dump internal state. Sub-actions include:
   - `rules`: Dump parsed rules.
@@ -53,8 +58,10 @@ sudo ananicy-rs --reload
   - `cgroups`: Dump parsed cgroups.
   - `proc`: Dump process information cache.
   - `autogroup`: Dump autogroup status.
+- `debug cgroups`: Dump diagnostic information about the system's cgroup mounts.
 
 Example:
+
 ```bash
 sudo ananicy-rs dump rules
 ```

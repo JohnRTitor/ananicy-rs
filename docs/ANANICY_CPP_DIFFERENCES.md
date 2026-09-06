@@ -19,7 +19,7 @@ To allow both implementations to coexist on the same system without colliding, `
 `ananicy-rs` uses a more structured subcommand model for its CLI arguments rather than positional strings:
 - Use `ananicy-rs start` instead of `ananicy-cpp start`.
 - Use `ananicy-rs dump <rules|types|cgroups|proc|autogroup>` instead of `ananicy-cpp dump <target>`.
-- The undocumented `debug cgroups` action present in `ananicy-cpp` is **not** implemented in `ananicy-rs`.
+
 
 ## 3. Reload Mechanism (`--reload`)
 

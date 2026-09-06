@@ -8,8 +8,10 @@ use {
     tracing::{error, info, warn},
 };
 
-pub(crate) fn init_logging(verbose: bool, is_systemd: bool) {
-    let log_level = if verbose {
+pub(crate) fn init_logging(verbose: bool, force_trace: bool, is_systemd: bool) {
+    let log_level = if force_trace {
+        tracing::Level::TRACE
+    } else if verbose {
         tracing::Level::DEBUG
     } else {
         tracing::Level::INFO
