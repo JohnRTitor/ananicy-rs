@@ -6,7 +6,7 @@ ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage.
 
 ## Overview
 
-`ananicy-rs` is a Rust rewrite of the [reference implementation](https://gitlab.com/ananicy-cpp/ananicy-cpp) daemon, originally based on [Ananicy](https://github.com/Nefelim4ag/Ananicy). It aims to provide the exact same core functionality—automatically managing process priorities, IO priorities, scheduling classes, and CPU affinity—with improved memory safety, predictability, and efficiency enabled by Rust.
+`ananicy-rs` is a Rust rewrite of the [ananicy-cpp](https://gitlab.com/ananicy-cpp/ananicy-cpp) daemon, originally based on [Ananicy](https://github.com/Nefelim4ag/Ananicy). It aims to provide the exact same core functionality—automatically managing process priorities, IO priorities, scheduling classes, and CPU affinity—with improved memory safety, predictability, and efficiency enabled by Rust.
 
 It operates by loading rules for known applications and listening to process creation events (via Netlink or eBPF). When a matching process is spawned, `ananicy-rs` dynamically applies the specified performance tweaks without requiring manual intervention.
 
@@ -28,11 +28,13 @@ The project is currently under active development. While it supports loading rul
 ## Requirements
 
 ### Build-time Requirements
+
 - **Linux** (The daemon heavily relies on Linux-specific APIs).
 - **Rust Toolchain**: 1.70 or newer (Edition 2024).
-- *Optional (for BPF)*: `clang`, `libbpf`, `elfutils`, `zlib`.
+- _Optional (for BPF)_: `clang`, `libbpf`, `elfutils`, `zlib`.
 
 ### Runtime Requirements
+
 - **Root privileges**: Required for modifying process attributes, cgroups, and mounting BPF programs.
 - **systemd**: Optional, but recommended for service management.
 - **cgroup v2** (or v1): Required for the cgroup functionalities.
@@ -59,6 +61,7 @@ Install the binary and systemd service:
 ```bash
 sudo make install
 ```
+
 This will place the binary in `/usr/bin/ananicy-rs` and the systemd unit in `/usr/lib/systemd/system/ananicy-rs.service`.
 
 ### 2. Nix / NixOS
