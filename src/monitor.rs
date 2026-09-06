@@ -20,7 +20,7 @@ pub(crate) fn run(
     saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>,
     bpf_min_us: Option<u32>,
 ) {
-    #[cfg(feature = "ananicy-bpf")]
+    #[cfg(feature = "bpf")]
     {
         use ananicy_bpf::BpfMonitor;
         info!("Attempting to start BPF monitor...");

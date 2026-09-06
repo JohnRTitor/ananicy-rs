@@ -69,25 +69,8 @@ fn print_debug_cgroups() {
     }
 
     let pid = std::process::id();
-    println!("Unit name: {}", get_unit_name());
+    println!("Unit name: {}", ananicy_platform::service::get_unit_name());
     println!("Cgroup: {}", get_cgroup_for_pid(pid));
-}
-
-/// Best-effort equivalent of `service::get_unit_name()` for the current
-/// process. See the module-level docs for why this doesn't call into
-/// libsystemd.
-fn get_unit_name() -> String {
-    let Some(cgroup_path) = read_own_cgroup_path() else {
-        return "<empty>".to_string();
-    };
-
-    cgroup_path
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .rev()
-        .find(|segment| !segment.ends_with(".slice") && !segment.ends_with(".scope"))
-        .map(str::to_string)
-        .unwrap_or_else(|| "<empty>".to_string())
 }
 
 /// Read the first line of `/proc/<pid>/cgroup` and take everything after
@@ -109,22 +92,7 @@ fn get_cgroup_for_pid(pid: u32) -> String {
     }
 }
 
-/// Reads `/proc/self/cgroup`'s first line and returns the path portion
-/// (everything after the last `:`), or `None` if it can't be determined.
-fn read_own_cgroup_path() -> Option<String> {
-    let content = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    let first_line = content.lines().next()?;
-    if first_line.is_empty() {
-        return None;
-    }
-    let idx = first_line.rfind(':')?;
-    let path = &first_line[idx + 1..];
-    if path.is_empty() {
-        None
-    } else {
-        Some(path.to_string())
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -146,27 +114,7 @@ mod tests {
         assert_eq!(&v1_line[idx + 1..], "/user.slice");
     }
 
-    #[test]
-    fn unit_name_skips_trailing_slice_and_scope_segments() {
-        let path = "/user.slice/user-1000.slice/user@1000.service/app.slice/kitty-4280-0.scope";
-        let unit = path
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .rev()
-            .find(|segment| !segment.ends_with(".slice") && !segment.ends_with(".scope"));
-        assert_eq!(unit, Some("user@1000.service"));
-    }
 
-    #[test]
-    fn unit_name_falls_back_to_empty_when_only_slices_and_scopes() {
-        let path = "/user.slice/user-1000.slice/session-2.scope";
-        let unit = path
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .rev()
-            .find(|segment| !segment.ends_with(".slice") && !segment.ends_with(".scope"));
-        assert_eq!(unit, None);
-    }
 
     #[test]
     fn debug_target_unknown_is_infallible_and_silent() {

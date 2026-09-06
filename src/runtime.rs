@@ -23,14 +23,38 @@ pub(crate) fn run(
     bpf_min_us: Option<u32>,
     is_systemd: bool,
     saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>,
+    benchmark: bool,
+    benchmark_count: Option<u32>,
 ) {
+    if benchmark || benchmark_count.is_some() {
+        if benchmark {
+            tracing::warn!("Benchmark enabled!");
+            let shutdown = shutdown_flag.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(30));
+                shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        if let Some(count) = benchmark_count {
+            tracing::warn!("Benchmark count: {}", count);
+        }
+    }
+
     info!("Initializing cgroups based on rules");
     if !create_cgroups(&rules) {
         return;
     }
 
     info!("Spawning worker thread");
-    let worker = Worker::new(config.clone(), rules.clone(), platform, aliases, rx);
+    let worker = Worker::new(
+        config.clone(),
+        rules.clone(),
+        platform,
+        aliases,
+        rx,
+        benchmark_count,
+        shutdown_flag.clone(),
+    );
     let worker_handle = worker.start();
 
     #[cfg(feature = "systemd")]

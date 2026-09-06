@@ -1,10 +1,18 @@
 #![allow(clippy::collapsible_if)]
 use {ananicy_core::process::Process, std::fs};
+use lru::LruCache;
+use std::num::NonZeroUsize;
+use std::sync::{Mutex, OnceLock};
 
-use std::sync::atomic::{AtomicU32, Ordering};
+static EXE_FAIL_CACHE: OnceLock<Mutex<LruCache<i32, u8>>> = OnceLock::new();
+const COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES: u8 = 5;
+const MAX_EXE_FAIL_CACHE_SIZE: usize = 256;
 
-static EXE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
-const COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES: u32 = 5;
+fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, u8>> {
+    EXE_FAIL_CACHE.get_or_init(|| {
+        Mutex::new(LruCache::new(NonZeroUsize::new(MAX_EXE_FAIL_CACHE_SIZE).unwrap()))
+    })
+}
 
 /// Tries to determine the effective process name exactly as C++ ananicy did:
 /// 1. `/proc/<pid>/cmdline` (argv[0] basename)
@@ -41,12 +49,24 @@ pub fn get_command_from_pid(pid: i32) -> String {
     }
 
     // Repeated EACCES usually means `/proc/<pid>/exe` is not readable to us; stop retrying
-    // it to avoid repeated procfs I/O on every event.
+    // it to avoid repeated procfs I/O on every event, tracked per-PID via LRU.
     // 2. Try exe (if we haven't failed too many times)
-    if EXE_FAIL_COUNT.load(Ordering::Relaxed) < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
+    let mut exe_failures = 0;
+    if let Ok(mut cache) = get_exe_fail_cache().lock() {
+        if let Some(&fails) = cache.get(&pid) {
+            exe_failures = fails;
+        }
+    }
+
+    if exe_failures < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
         match fs::read_link(format!("{}/exe", proc_dir)) {
             Ok(exe_target) => {
-                EXE_FAIL_COUNT.store(0, Ordering::Relaxed);
+                // Success, clear any stored failure count
+                if exe_failures > 0 {
+                    if let Ok(mut cache) = get_exe_fail_cache().lock() {
+                        cache.pop(&pid);
+                    }
+                }
                 if let Some(file_name) = exe_target.file_name() {
                     let mut name = file_name.to_string_lossy().to_string();
                     if let Some(deleted_idx) = name.find(" (deleted)") {
@@ -57,7 +77,9 @@ pub fn get_command_from_pid(pid: i32) -> String {
             }
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    EXE_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if let Ok(mut cache) = get_exe_fail_cache().lock() {
+                        cache.put(pid, exe_failures + 1);
+                    }
                 }
             }
         }

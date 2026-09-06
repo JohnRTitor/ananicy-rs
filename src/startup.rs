@@ -96,7 +96,15 @@ pub(crate) fn load_topology_aliases(
     HashMap<String, String>,
     Option<ananicy_platform::x3d::X3DMode>,
 ) {
-    let mut aliases = ananicy_platform::topology::detect_topology().generate_cpuset_aliases();
+    let top = ananicy_platform::topology::detect_topology();
+    if top.has_big_little {
+        info!("Performance cores: {}", top.big_cores_str);
+        info!("Efficiency cores: {}", top.little_cores_str);
+        if !top.turbo_cores_str.is_empty() && top.turbo_cores_str != top.all_cores_str {
+            info!("Turbo cores: {}", top.turbo_cores_str);
+        }
+    }
+    let mut aliases = top.generate_cpuset_aliases();
     let mut saved_x3d_mode = None;
 
     if let Some(x3d_top) = ananicy_platform::x3d::detect_x3d_topology() {

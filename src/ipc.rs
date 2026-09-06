@@ -10,17 +10,17 @@ impl Drop for IpcSingletonGuard {
     }
 }
 
-pub(crate) fn check_singleton(force_remove: bool) -> Result<IpcSingletonGuard, String> {
+pub(crate) fn force_remove_semaphore() -> ! {
+    let _ = rustix::shm::unlink(IPC_NAME);
+    tracing::info!("Force removed IPC semaphore. Exiting.");
+    std::process::exit(0);
+}
+
+pub(crate) fn check_singleton() -> Result<IpcSingletonGuard, String> {
     use rustix::{
         fs::Mode,
         shm::{self, OFlags as ShmOFlags},
     };
-
-    if force_remove {
-        let _ = shm::unlink(IPC_NAME);
-        tracing::info!("Force removed IPC semaphore. Exiting.");
-        std::process::exit(0);
-    }
 
     match shm::open(IPC_NAME, ShmOFlags::RDWR, Mode::empty()) {
         Ok(fd) => {

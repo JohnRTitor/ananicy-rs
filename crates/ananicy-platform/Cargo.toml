@@ -13,10 +13,13 @@ libc = { workspace = true }
 rustix = { workspace = true, features = ["process", "fs", "net", "event", "time", "thread"] }
 neli.workspace = true
 lru.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 [features]
 default = ["netlink"]
 netlink = []
+systemd = []
 
 [dev-dependencies]
 tempfile.workspace = true

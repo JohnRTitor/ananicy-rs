@@ -152,27 +152,27 @@ impl NetlinkMonitor {
                     };
 
                     match payload.payload().event {
-                        ProcEvent::Exec { process_tgid, .. } => {
-                            if process_tgid != prev_pid {
-                                prev_pid = process_tgid;
-                                let name = get_command_from_pid(process_tgid);
-                                tx.send(Process::new(ananicy_core::types::Pid(process_tgid), name))
+                        ProcEvent::Exec { process_pid, .. } => {
+                            if process_pid != prev_pid {
+                                prev_pid = process_pid;
+                                let name = get_command_from_pid(process_pid);
+                                tx.send(Process::new(ananicy_core::types::Pid(process_pid), name))
                                     .expect("Worker thread died");
                             }
                         }
-                        ProcEvent::Fork { child_tgid, .. } => {
-                            if child_tgid != prev_pid {
-                                prev_pid = child_tgid;
-                                let name = get_command_from_pid(child_tgid);
-                                tx.send(Process::new(ananicy_core::types::Pid(child_tgid), name))
+                        ProcEvent::Fork { child_pid, .. } => {
+                            if child_pid != prev_pid {
+                                prev_pid = child_pid;
+                                let name = get_command_from_pid(child_pid);
+                                tx.send(Process::new(ananicy_core::types::Pid(child_pid), name))
                                     .expect("Worker thread died");
                             }
                         }
-                        ProcEvent::Comm { process_tgid, .. } => {
-                            if process_tgid != prev_pid {
-                                prev_pid = process_tgid;
-                                let name = get_command_from_pid(process_tgid);
-                                tx.send(Process::new(ananicy_core::types::Pid(process_tgid), name))
+                        ProcEvent::Comm { process_pid, .. } => {
+                            if process_pid != prev_pid {
+                                prev_pid = process_pid;
+                                let name = get_command_from_pid(process_pid);
+                                tx.send(Process::new(ananicy_core::types::Pid(process_pid), name))
                                     .expect("Worker thread died");
                             }
                         }

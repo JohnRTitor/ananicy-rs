@@ -18,6 +18,14 @@ pub enum PlatformError {
     Io(#[from] std::io::Error),
 }
 
+impl PlatformError {
+    /// Whether this error should skip the current attribute and allow the rest of the rule to proceed,
+    /// or abort the entire rule application for this process.
+    pub fn is_skippable(&self) -> bool {
+        matches!(self, PlatformError::PermissionDenied)
+    }
+}
+
 /// PlatformActions abstracts the Linux-specific OS operations so the core worker
 /// can be unit tested without requiring a Linux kernel or root privileges.
 pub trait PlatformActions: Send + Sync {
@@ -57,6 +65,8 @@ pub struct Worker {
     platform: Arc<dyn PlatformActions>,
     cpuset_aliases: HashMap<String, String>,
     receiver: std::sync::mpsc::Receiver<Process>,
+    benchmark_count: Option<u32>,
+    shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Worker {
@@ -66,6 +76,8 @@ impl Worker {
         platform: Arc<dyn PlatformActions>,
         cpuset_aliases: HashMap<String, String>,
         receiver: std::sync::mpsc::Receiver<Process>,
+        benchmark_count: Option<u32>,
+        shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self {
             config,
@@ -73,6 +85,8 @@ impl Worker {
             platform,
             cpuset_aliases,
             receiver,
+            benchmark_count,
+            shutdown_flag,
         }
     }
 
@@ -88,6 +102,12 @@ impl Worker {
 
         while let Ok(p) = self.receiver.recv() {
             processed_count += 1;
+
+            if let Some(limit) = self.benchmark_count {
+                if processed_count >= limit as usize {
+                    self.shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
 
             if p.identity.pid.0 == 0 {
                 // Ignore PID 0 (swapper/idle thread) to prevent warning floods
@@ -128,14 +148,11 @@ impl Worker {
                 if let Err(e) =
                     self.apply_rule(&p, &rule, &cfg, is_realtime, is_affected_by_cgroup_bug)
                 {
-                    if matches!(e, PlatformError::PermissionDenied) {
-                        error!(
-                            "Failed to apply rule for {}({}): {}",
-                            p.name, p.identity.pid.0, e
-                        );
-                    } else {
-                        continue;
-                    }
+                    error!(
+                        "Failed to apply rule for {}({}): {}",
+                        p.name, p.identity.pid.0, e
+                    );
+                    continue;
                 }
             }
 
@@ -182,7 +199,11 @@ impl Worker {
                 "Setting priority of {}({}) to {}",
                 p.name, p.identity.pid.0, nice
             );
-            self.platform.set_priority(p.identity.pid.0, nice as i32)?;
+            if let Err(e) = self.platform.set_priority(p.identity.pid.0, nice as i32) {
+                if !e.is_skippable() {
+                    return Err(e);
+                }
+            }
         }
 
         if cfg.apply_latnice {
@@ -198,7 +219,11 @@ impl Worker {
                     "Setting latency nice of {}({}) to {}",
                     p.name, p.identity.pid.0, latnice
                 );
-                self.platform.set_latency_nice(p.identity.pid.0, latnice)?;
+                if let Err(e) = self.platform.set_latency_nice(p.identity.pid.0, latnice) {
+                    if !e.is_skippable() {
+                        return Err(e);
+                    }
+                }
             }
         }
 
@@ -210,7 +235,11 @@ impl Worker {
                 "Setting scheduler of {}({}) to {}",
                 p.name, p.identity.pid.0, sched
             );
-            self.platform.set_sched(p.identity.pid.0, sched, rtprio)?;
+            if let Err(e) = self.platform.set_sched(p.identity.pid.0, sched, rtprio) {
+                if !e.is_skippable() {
+                    return Err(e);
+                }
+            }
         }
 
         if cfg.apply_ionice
@@ -221,8 +250,11 @@ impl Worker {
                 "Setting ioclass of {}({}) to {}",
                 p.name, p.identity.pid.0, ioclass
             );
-            self.platform
-                .set_io_priority(p.identity.pid.0, ioclass, ionice)?;
+            if let Err(e) = self.platform.set_io_priority(p.identity.pid.0, ioclass, ionice) {
+                if !e.is_skippable() {
+                    return Err(e);
+                }
+            }
         }
 
         if cfg.apply_oom_score_adj
@@ -232,8 +264,11 @@ impl Worker {
                 "Setting OOM score adjustment of {}({}) to {}",
                 p.name, p.identity.pid.0, oom_adj
             );
-            self.platform
-                .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)?;
+            if let Err(e) = self.platform.set_oom_score_adj(p.identity.pid.0, oom_adj as i32) {
+                if !e.is_skippable() {
+                    return Err(e);
+                }
+            }
         }
 
         if is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
@@ -247,7 +282,11 @@ impl Worker {
                 "Adding process {}({}) to cgroup {}",
                 p.name, p.identity.pid.0, cgroup
             );
-            self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup)?;
+            if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup) {
+                if !e.is_skippable() {
+                    return Err(e);
+                }
+            }
         }
 
         if cfg.apply_cpuset {
@@ -271,7 +310,11 @@ impl Worker {
                 );
                 match crate::cpuset::CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
                     Some(parsed_set) => {
-                        self.platform.set_affinity(p.identity.pid.0, &parsed_set)?;
+                        if let Err(e) = self.platform.set_affinity(p.identity.pid.0, &parsed_set) {
+                            if !e.is_skippable() {
+                                return Err(e);
+                            }
+                        }
                     }
                     None => {
                         warn!("Invalid cpuset string '{}' for {}", cpuset_str, p.name);

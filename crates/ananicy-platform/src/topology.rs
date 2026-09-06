@@ -22,6 +22,7 @@ pub struct LlcInfo {
 
 #[derive(Default)]
 pub struct CpuTopology {
+    pub has_big_little: bool,
     pub big_cores_str: String,
     pub little_cores_str: String,
     pub turbo_cores_str: String,
@@ -319,6 +320,7 @@ pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
 
     top.little_cores_str = format_cpuset(&little_cores);
     top.big_cores_str = format_cpuset(&big_cores);
+    top.has_big_little = true;
 
     let Some(turbo_cores) = metric_to_cores.get(&highest_metric) else {
         warn!("detect_topology: highest metric disappeared before turbo-core selection");

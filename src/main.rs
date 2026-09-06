@@ -1,5 +1,8 @@
 #![allow(clippy::collapsible_if)]
 
+#[cfg(not(any(feature = "bpf", feature = "netlink")))]
+compile_error!("At least one event source feature ('bpf' or 'netlink') must be enabled.");
+
 use {
     ananicy_core::process::Process,
     cli::{Args, Commands},
@@ -29,6 +32,10 @@ fn main() {
     startup::init_logging(args.verbose, force_trace, is_systemd);
 
     let (config_path, config_dir_path) = startup::resolve_config_paths(&args);
+
+    if args.force_remove_semaphore {
+        ipc::force_remove_semaphore();
+    }
 
     if args.reload {
         ipc::request_reload();
@@ -62,12 +69,12 @@ fn main() {
         _ => return,
     }
 
-    if rustix::process::geteuid().as_raw() != 0 {
+    if rustix::process::getuid().as_raw() != 0 {
         error!("This program must be run as root");
         std::process::exit(1);
     }
 
-    let _ipc_guard = match ipc::check_singleton(args.force_remove_semaphore) {
+    let _ipc_guard = match ipc::check_singleton() {
         Ok(guard) => guard,
         Err(e) => {
             error!("IPC Singleton check failed: {}", e);
@@ -88,6 +95,12 @@ fn main() {
         tx.clone(),
     );
 
+    if args.manual_scanning {
+        tracing::info!("Manual scanning enabled! Increasing Ananicy Nice value to prevent lag.");
+        let _ = ananicy_platform::priority::set_priority(std::process::id() as i32, 19);
+        tracing::info!("Checking frequency set to {}", config.get().check_freq);
+    }
+
     runtime::run(
         config.clone(),
         rules,
@@ -101,5 +114,7 @@ fn main() {
         args.bpf_min_us,
         is_systemd,
         saved_x3d_mode,
+        args.benchmark,
+        args.benchmark_count,
     );
 }
