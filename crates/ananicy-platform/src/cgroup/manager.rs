@@ -63,7 +63,7 @@ impl CgroupManager {
     }
 
     /// Helper to resolve the target directory based on the cgroup name and version.
-    fn resolve_target_dir(&self, name: &str) -> Option<PathBuf> {
+    pub fn resolve_target_dir(&self, name: &str) -> Option<PathBuf> {
         // Prevent basic path traversal attacks
         if name.contains("..") {
             warn!(

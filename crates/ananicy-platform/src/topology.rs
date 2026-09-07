@@ -192,6 +192,19 @@ pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
             {
                 let base = entry.path();
 
+                let online = if cpu_id == 0 {
+                    true
+                } else {
+                    match fs::read_to_string(base.join("online")) {
+                        Ok(s) => s.trim() == "1",
+                        Err(_) => true,
+                    }
+                };
+
+                if !online {
+                    continue;
+                }
+
                 all_cores.insert(cpu_id);
 
                 let node_id = get_node_id(&base);
@@ -275,9 +288,10 @@ pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
         debug!(
             "detect_topology: All cores have the same metric or no info. Cannot determine big/little."
         );
+        top.has_big_little = false;
         top.big_cores_str = top.all_cores_str.clone();
-        top.little_cores_str = top.all_cores_str.clone();
-        top.turbo_cores_str = top.all_cores_str.clone();
+        top.little_cores_str = String::new();
+        top.turbo_cores_str = String::new();
         return top;
     }
 

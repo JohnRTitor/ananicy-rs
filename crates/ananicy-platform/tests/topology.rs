@@ -65,10 +65,10 @@ fn test_on_homogeneous_system_all_cores_are_big() {
     // which has no capacities so it defaults to homogeneous.
     let topo = detect_topology_impl(Path::new("tests/fixtures/x3d/amd-x3d-single-ccd/sys"));
 
-    // Rust sets all to the same if homogeneous
+    // Parity: homogeneous systems set big to all, and leave little/turbo empty
     assert_eq!(topo.big_cores_str, topo.all_cores_str);
-    assert_eq!(topo.little_cores_str, topo.all_cores_str);
-    assert_eq!(topo.turbo_cores_str, topo.all_cores_str);
+    assert_eq!(topo.little_cores_str, "");
+    assert_eq!(topo.turbo_cores_str, "");
 }
 
 #[test]

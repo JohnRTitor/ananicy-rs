@@ -5,9 +5,9 @@ pub mod cgroups;
 pub mod mounts;
 pub mod netlink;
 pub mod priority;
+pub mod process_info;
 pub mod procfs;
 pub mod service;
-pub mod process_info;
 pub mod topology;
 pub mod x3d;
 

@@ -6,7 +6,7 @@ compile_error!("At least one event source feature ('bpf' or 'netlink') must be e
 use {
     ananicy_core::process::Process,
     cli::{Args, Commands},
-    std::sync::{Arc, RwLock, atomic::AtomicBool, mpsc},
+    std::sync::{Arc, atomic::AtomicBool, mpsc},
     tracing::{error, warn},
 };
 
@@ -46,6 +46,8 @@ fn main() {
     }
 
     let config = startup::load_config(&config_path);
+    println!("Ananicy Rs {}", env!("CARGO_PKG_VERSION"));
+
     let (aliases, saved_x3d_mode) = startup::load_topology_aliases(&config);
     let rules_obj = startup::load_rules(config.clone(), &config_dir_path);
 
@@ -83,7 +85,7 @@ fn main() {
     };
 
     let (tx, rx) = mpsc::channel::<Process>();
-    let rules = Arc::new(RwLock::new(rules_obj));
+    let rules = Arc::new(rules_obj);
     let platform = Arc::new(ananicy_platform::LinuxPlatform::new());
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
