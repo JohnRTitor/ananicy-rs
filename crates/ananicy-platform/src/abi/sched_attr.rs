@@ -5,6 +5,7 @@ pub const SCHED_NORMAL: u32 = 0;
 pub const SCHED_FIFO: u32 = 1;
 pub const SCHED_RR: u32 = 2;
 pub const SCHED_BATCH: u32 = 3;
+pub const SCHED_ISO: u32 = 4;
 pub const SCHED_IDLE: u32 = 5;
 pub const SCHED_DEADLINE: u32 = 6;
 

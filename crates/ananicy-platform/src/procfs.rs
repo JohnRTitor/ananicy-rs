@@ -1,8 +1,13 @@
 #![allow(clippy::collapsible_if)]
-use {ananicy_core::process::Process, std::fs};
-use lru::LruCache;
-use std::num::NonZeroUsize;
-use std::sync::{Mutex, OnceLock};
+use {
+    ananicy_core::process::Process,
+    lru::LruCache,
+    std::{
+        fs,
+        num::NonZeroUsize,
+        sync::{Mutex, OnceLock},
+    },
+};
 
 static EXE_FAIL_CACHE: OnceLock<Mutex<LruCache<i32, u8>>> = OnceLock::new();
 const COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES: u8 = 5;
@@ -10,7 +15,9 @@ const MAX_EXE_FAIL_CACHE_SIZE: usize = 256;
 
 fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, u8>> {
     EXE_FAIL_CACHE.get_or_init(|| {
-        Mutex::new(LruCache::new(NonZeroUsize::new(MAX_EXE_FAIL_CACHE_SIZE).unwrap()))
+        Mutex::new(LruCache::new(
+            NonZeroUsize::new(MAX_EXE_FAIL_CACHE_SIZE).unwrap(),
+        ))
     })
 }
 

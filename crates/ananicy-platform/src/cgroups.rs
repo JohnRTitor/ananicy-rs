@@ -39,12 +39,12 @@ pub fn add_pid_to_cgroup(
 ) -> Result<(), ananicy_core::worker::PlatformError> {
     let manager = get_manager();
 
-    // We assume the caller or `create_cgroup` has already ensured the target directory exists,
-    // but just in case, we could call ensure_child or just attempt to move.
-    // The previous implementation required the directory to exist already.
-    // Let's resolve the path by trying to ensure it, or just use internal resolve if possible.
-    // For now, ensuring it is fine since it's idempotent.
-    if let Some(target) = manager.ensure_child(cgroup_name) {
+    // In C++, the cgroup must have been created already by `.cgroups` rules
+    // (i.e., `create_cgroup`). If it doesn't exist, we error out to match parity.
+    if let Some(target) = manager.resolve_target_dir(cgroup_name) {
+        if !target.exists() {
+            return Err(ananicy_core::worker::PlatformError::NotFound);
+        }
         if manager.move_pid(pid, &target) {
             Ok(())
         } else {

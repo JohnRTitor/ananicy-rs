@@ -82,7 +82,9 @@ pub struct X3DTopology {
 fn is_x3d_from_cpuinfo(proc_root: &Path) -> bool {
     let cpuinfo_path = proc_root.join("cpuinfo");
     if let Ok(content) = fs::read_to_string(&cpuinfo_path) {
-        return content.contains("X3D") || content.contains("3D V-Cache");
+        return content.contains("X3D")
+            || content.contains("x3d")
+            || content.contains("3D V-Cache");
     }
     false
 }

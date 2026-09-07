@@ -23,8 +23,6 @@ fn print_file(path: &str) {
 }
 
 fn print_debug_cgroups() {
-    println!("Ananicy Rs {}\n", env!("CARGO_PKG_VERSION"));
-
     print_file("/etc/mtab");
 
     let cgroup_info = get_cgroup_info();
@@ -92,8 +90,6 @@ fn get_cgroup_for_pid(pid: u32) -> String {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,8 +109,6 @@ mod tests {
         let idx = v1_line.rfind(':').unwrap();
         assert_eq!(&v1_line[idx + 1..], "/user.slice");
     }
-
-
 
     #[test]
     fn debug_target_unknown_is_infallible_and_silent() {

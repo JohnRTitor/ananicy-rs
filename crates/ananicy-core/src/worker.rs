@@ -61,7 +61,7 @@ pub trait PlatformActions: Send + Sync {
 
 pub struct Worker {
     config: Arc<Config>,
-    rules: Arc<std::sync::RwLock<Rules>>,
+    rules: Arc<Rules>,
     platform: Arc<dyn PlatformActions>,
     cpuset_aliases: HashMap<String, String>,
     receiver: std::sync::mpsc::Receiver<Process>,
@@ -72,7 +72,7 @@ pub struct Worker {
 impl Worker {
     pub fn new(
         config: Arc<Config>,
-        rules: Arc<std::sync::RwLock<Rules>>,
+        rules: Arc<Rules>,
         platform: Arc<dyn PlatformActions>,
         cpuset_aliases: HashMap<String, String>,
         receiver: std::sync::mpsc::Receiver<Process>,
@@ -105,7 +105,8 @@ impl Worker {
 
             if let Some(limit) = self.benchmark_count {
                 if processed_count >= limit as usize {
-                    self.shutdown_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.shutdown_flag
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                 }
             }
 
@@ -115,23 +116,17 @@ impl Worker {
             }
 
             let mut p = p;
-            if p.name.is_empty() || p.name == "<unknown>" || p.name.len() >= 15 {
-                // If it came from BPF, it might be truncated (15 chars) or empty.
-                // We resolve the full command name in the worker thread to avoid
-                // blocking the high-throughput BPF polling loop with slow file I/O.
-                let full_name = self.platform.get_process_name(p.identity.pid.0);
-                if !full_name.is_empty() && full_name != "<unknown>" {
-                    p.name = full_name;
-                }
+            // Unconditionally try to resolve the full command name in the worker thread.
+            // BPF only provides a truncated 15-char kernel task name, which can also
+            // differ from the actual argv[0] basename (e.g. for wrapper scripts or
+            // process-title tricks). Doing this here ensures parity with C++ while
+            // avoiding blocking the high-throughput BPF polling loop.
+            let full_name = self.platform.get_process_name(p.identity.pid.0);
+            if !full_name.is_empty() && full_name != "<unknown>" {
+                p.name = full_name;
             }
 
-            let rules = match self.rules.read() {
-                Ok(rules) => rules,
-                Err(_) => {
-                    error!("Rules lock is poisoned; stopping worker loop");
-                    break;
-                }
-            };
+            let rules = &self.rules;
             let rule = rules.get_rule(&p.name);
             let is_realtime = self.platform.is_realtime(p.identity.pid.0);
 
@@ -250,7 +245,10 @@ impl Worker {
                 "Setting ioclass of {}({}) to {}",
                 p.name, p.identity.pid.0, ioclass
             );
-            if let Err(e) = self.platform.set_io_priority(p.identity.pid.0, ioclass, ionice) {
+            if let Err(e) = self
+                .platform
+                .set_io_priority(p.identity.pid.0, ioclass, ionice)
+            {
                 if !e.is_skippable() {
                     return Err(e);
                 }
@@ -264,7 +262,10 @@ impl Worker {
                 "Setting OOM score adjustment of {}({}) to {}",
                 p.name, p.identity.pid.0, oom_adj
             );
-            if let Err(e) = self.platform.set_oom_score_adj(p.identity.pid.0, oom_adj as i32) {
+            if let Err(e) = self
+                .platform
+                .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)
+            {
                 if !e.is_skippable() {
                     return Err(e);
                 }

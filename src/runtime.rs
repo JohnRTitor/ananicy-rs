@@ -3,16 +3,16 @@ use {
     ananicy_core::{config::Config, process::Process, rules::Rules, worker::Worker},
     std::{
         collections::HashMap,
-        sync::{Arc, RwLock, atomic::AtomicBool, mpsc::Receiver},
+        sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
         thread,
         time::{Duration, Instant},
     },
-    tracing::{error, info},
+    tracing::info,
 };
 
 pub(crate) fn run(
     config: Arc<Config>,
-    rules: Arc<RwLock<Rules>>,
+    rules: Arc<Rules>,
     platform: Arc<ananicy_platform::LinuxPlatform>,
     aliases: HashMap<String, String>,
     rx: Receiver<Process>,
@@ -78,15 +78,8 @@ pub(crate) fn run(
     monitor::run(tx, shutdown_flag, worker_handle, saved_x3d_mode, bpf_min_us);
 }
 
-fn create_cgroups(rules: &Arc<RwLock<Rules>>) -> bool {
-    let rules_guard = match rules.read() {
-        Ok(guard) => guard,
-        Err(_) => {
-            error!("Rules lock is poisoned; cannot initialize cgroups");
-            return false;
-        }
-    };
-    for (name, value) in rules_guard.get_cgroups() {
+fn create_cgroups(rules: &Arc<Rules>) -> bool {
+    for (name, value) in rules.get_cgroups() {
         let quota = value
             .get("CPUQuota")
             .and_then(|v| v.as_u64())

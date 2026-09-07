@@ -1,5 +1,7 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use {
+    serde::{Deserialize, Serialize},
+    serde_json::Value,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessInfo {
@@ -65,8 +67,9 @@ impl ProcessInfo {
             .to_string();
         let stat_name = parse_stat(&stat).unwrap_or_default();
 
-        let autogroup_val = std::fs::read_to_string(format!("/proc/{}/task/{}/autogroup", pid, tpid))
-            .unwrap_or_default();
+        let autogroup_val =
+            std::fs::read_to_string(format!("/proc/{}/task/{}/autogroup", pid, tpid))
+                .unwrap_or_default();
         let autogroup = get_autogroup_from_str(&autogroup_val);
 
         let size = std::mem::size_of::<crate::abi::sched_attr::sched_attr>() as u32;
@@ -75,16 +78,17 @@ impl ProcessInfo {
             ..Default::default()
         };
 
-        let (sched, rtprio, nice, latency_nice) = if crate::abi::sched_attr::sched_getattr(tpid, &mut attr, size, 0).is_ok() {
-            (
-                get_sched_policy_name(attr.sched_policy).to_string(),
-                attr.sched_priority as i32,
-                attr.sched_nice,
-                attr.sched_latency_nice,
-            )
-        } else {
-            ("unknown".to_string(), 0, 0, 0)
-        };
+        let (sched, rtprio, nice, latency_nice) =
+            if crate::abi::sched_attr::sched_getattr(tpid, &mut attr, size, 0).is_ok() {
+                (
+                    get_sched_policy_name(attr.sched_policy).to_string(),
+                    attr.sched_priority as i32,
+                    attr.sched_nice,
+                    attr.sched_latency_nice,
+                )
+            } else {
+                ("unknown".to_string(), 0, 0, 0)
+            };
 
         use crate::abi::ioprio::*;
         let io_prio_data = ioprio_get(IOPRIO_WHO_PROCESS, tpid).unwrap_or(0);
@@ -147,10 +151,11 @@ fn get_autogroup_from_str(s: &str) -> Option<Value> {
 fn get_sched_policy_name(policy: u32) -> &'static str {
     use crate::abi::sched_attr::*;
     match policy {
-        SCHED_NORMAL => "other",
+        SCHED_NORMAL => "normal",
         SCHED_FIFO => "fifo",
         SCHED_RR => "rr",
         SCHED_BATCH => "batch",
+        SCHED_ISO => "iso",
         SCHED_IDLE => "idle",
         SCHED_DEADLINE => "deadline",
         _ => "unknown",

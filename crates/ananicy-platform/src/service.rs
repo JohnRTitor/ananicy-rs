@@ -9,7 +9,7 @@ unsafe extern "C" {
 pub fn get_unit_name() -> String {
     let pid = std::process::id();
     let mut ptr: *mut libc::c_char = std::ptr::null_mut();
-    
+
     let res = unsafe { sd_pid_get_unit(pid as libc::pid_t, &mut ptr) };
     if res >= 0 && !ptr.is_null() {
         let name = unsafe { std::ffi::CStr::from_ptr(ptr) }
@@ -18,7 +18,7 @@ pub fn get_unit_name() -> String {
         unsafe { libc::free(ptr as *mut libc::c_void) };
         return name;
     }
-    
+
     get_unit_name_heuristic()
 }
 

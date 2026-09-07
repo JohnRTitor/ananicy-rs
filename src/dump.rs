@@ -3,23 +3,42 @@ use {crate::cli::DumpTarget, ananicy_core::rules::Rules, ananicy_platform::procf
 pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
     match target {
         DumpTarget::Rules => {
-            let sorted: std::collections::BTreeMap<_, _> = rules.get_rules().iter().map(|(k, v)| (k.as_ref(), v)).collect();
-            println!("{}", serde_json::to_string_pretty(&sorted).unwrap_or_default());
+            let sorted: std::collections::BTreeMap<_, _> = rules
+                .get_rules()
+                .iter()
+                .map(|(k, v)| (k.as_ref(), v))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sorted).unwrap_or_default()
+            );
         }
         DumpTarget::Types => {
-            let sorted: std::collections::BTreeMap<_, _> = rules.get_types().iter().map(|(k, v)| (k.as_ref(), v)).collect();
-            println!("{}", serde_json::to_string_pretty(&sorted).unwrap_or_default());
+            let sorted: std::collections::BTreeMap<_, _> = rules
+                .get_types()
+                .iter()
+                .map(|(k, v)| (k.as_ref(), v))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sorted).unwrap_or_default()
+            );
         }
         DumpTarget::Cgroups => {
-            let sorted: std::collections::BTreeMap<_, _> = rules.get_cgroups().iter().map(|(k, v)| (k.as_ref(), v)).collect();
-            println!("{}", serde_json::to_string_pretty(&sorted).unwrap_or_default());
+            let sorted: std::collections::BTreeMap<_, _> = rules
+                .get_cgroups()
+                .iter()
+                .map(|(k, v)| (k.as_ref(), v))
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sorted).unwrap_or_default()
+            );
         }
         DumpTarget::Proc => dump_processes(rules),
         DumpTarget::Autogroup => dump_autogroup(rules),
     }
 }
-
-
 
 fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Value> {
     let (tx_dump, rx_dump) = std::sync::mpsc::channel();
@@ -61,7 +80,11 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
             for entry in entries.flatten() {
                 if let Ok(file_name) = entry.file_name().into_string() {
                     if let Ok(tid) = file_name.parse::<i32>() {
-                        let rule_opt = if rule_name.is_empty() { None } else { Some(rule_name.clone()) };
+                        let rule_opt = if rule_name.is_empty() {
+                            None
+                        } else {
+                            Some(rule_name.clone())
+                        };
                         let info = ananicy_platform::process_info::ProcessInfo::from_parts(
                             pid,
                             tid,
@@ -86,7 +109,10 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
 
 fn dump_processes(rules: &Rules) {
     let process_map = get_process_info_map(rules);
-    println!("{}", serde_json::to_string_pretty(&process_map).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&process_map).unwrap_or_default()
+    );
 }
 
 fn dump_autogroup(rules: &Rules) {
@@ -108,13 +134,23 @@ fn dump_autogroup(rules: &Rules) {
                     continue;
                 };
 
-                let group_num = autogroup_obj.get("group").and_then(|v| v.as_i64()).unwrap_or(0).to_string();
-                let nice = autogroup_obj.get("nice").cloned().unwrap_or(serde_json::Value::Null);
+                let group_num = autogroup_obj
+                    .get("group")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+                    .to_string();
+                let nice = autogroup_obj
+                    .get("nice")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
 
                 if !autogroup_map.contains_key(&group_num) {
                     let mut entry = serde_json::Map::new();
                     entry.insert("nice".into(), nice);
-                    entry.insert("proc".into(), serde_json::Value::Object(serde_json::Map::new()));
+                    entry.insert(
+                        "proc".into(),
+                        serde_json::Value::Object(serde_json::Map::new()),
+                    );
                     autogroup_map.insert(group_num.clone(), serde_json::Value::Object(entry));
                 }
 
@@ -129,5 +165,8 @@ fn dump_autogroup(rules: &Rules) {
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&autogroup_map).unwrap_or_default());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&autogroup_map).unwrap_or_default()
+    );
 }
