@@ -1,9 +1,15 @@
 use {
-    crate::{
-        cgroup::manager::{CgroupController, CgroupManager},
-        mounts::get_cgroup_info,
+    ananicy_core::worker::{
+        PlatformError,
+        PlatformError::{NotFound, Unsupported},
     },
     std::sync::OnceLock,
+    tracing::warn,
+};
+
+use crate::{
+    cgroup::manager::{CgroupController, CgroupManager},
+    mounts::get_cgroup_info,
 };
 
 static MANAGER: OnceLock<CgroupManager> = OnceLock::new();
@@ -19,7 +25,7 @@ pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
     let manager = get_manager();
 
     if manager.cgroup_exists(cgroup_name) {
-        tracing::warn!("cgroup {} already exists, ignoring", cgroup_name);
+        warn!("cgroup {} already exists, ignoring", cgroup_name);
         return false;
     }
 
@@ -33,24 +39,21 @@ pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
     }
 }
 
-pub fn add_pid_to_cgroup(
-    pid: i32,
-    cgroup_name: &str,
-) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformError> {
     let manager = get_manager();
 
     // In C++, the cgroup must have been created already by `.cgroups` rules
     // (i.e., `create_cgroup`). If it doesn't exist, we error out to match parity.
     if let Some(target) = manager.resolve_target_dir(cgroup_name) {
         if !target.exists() {
-            return Err(ananicy_core::worker::PlatformError::NotFound);
+            return Err(NotFound);
         }
         if manager.move_pid(pid, &target) {
             Ok(())
         } else {
-            Err(ananicy_core::worker::PlatformError::Unsupported)
+            Err(Unsupported)
         }
     } else {
-        Err(ananicy_core::worker::PlatformError::NotFound)
+        Err(NotFound)
     }
 }

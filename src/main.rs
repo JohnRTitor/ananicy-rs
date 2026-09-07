@@ -5,6 +5,15 @@ compile_error!("At least one event source feature ('bpf' or 'netlink') must be e
 
 use {
     ananicy_core::process::Process,
+    ananicy_platform::LinuxPlatform,
+    std::{
+        env::var,
+        process::{exit, id},
+    },
+    tracing::info,
+};
+
+use {
     cli::{Args, Commands},
     std::sync::{Arc, atomic::AtomicBool, mpsc},
     tracing::{error, warn},
@@ -22,7 +31,7 @@ mod startup;
 fn main() {
     let args = Args::parse();
     #[cfg(feature = "systemd")]
-    let is_systemd = args.systemd || std::env::var("NOTIFY_SOCKET").is_ok();
+    let is_systemd = args.systemd || var("NOTIFY_SOCKET").is_ok();
     #[cfg(not(feature = "systemd"))]
     let is_systemd = false;
     // Force trace-level logging for the whole `debug` action before
@@ -64,7 +73,7 @@ fn main() {
     }
 
     match &args.command {
-        Some(Commands::Start) => tracing::info!("Starting ananicy-rs daemon"),
+        Some(Commands::Start) => info!("Starting ananicy-rs daemon"),
         Some(Commands::Unknown(action)) => {
             error!("Unknown action requested: {}", action);
         }
@@ -73,20 +82,20 @@ fn main() {
 
     if rustix::process::getuid().as_raw() != 0 {
         error!("This program must be run as root");
-        std::process::exit(1);
+        exit(1);
     }
 
     let _ipc_guard = match ipc::check_singleton() {
         Ok(guard) => guard,
         Err(e) => {
             error!("IPC Singleton check failed: {}", e);
-            std::process::exit(1);
+            exit(1);
         }
     };
 
     let (tx, rx) = mpsc::channel::<Process>();
     let rules = Arc::new(rules_obj);
-    let platform = Arc::new(ananicy_platform::LinuxPlatform::new());
+    let platform = Arc::new(LinuxPlatform::new());
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
     signals::install(
@@ -98,9 +107,9 @@ fn main() {
     );
 
     if args.manual_scanning {
-        tracing::info!("Manual scanning enabled! Increasing Ananicy Nice value to prevent lag.");
-        let _ = ananicy_platform::priority::set_priority(std::process::id() as i32, 19);
-        tracing::info!("Checking frequency set to {}", config.get().check_freq);
+        info!("Manual scanning enabled! Increasing Ananicy Nice value to prevent lag.");
+        let _ = ananicy_platform::priority::set_priority(id() as i32, 19);
+        info!("Checking frequency set to {}", config.get().check_freq);
     }
 
     runtime::run(

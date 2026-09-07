@@ -1,3 +1,13 @@
+use {
+    crate::abi::sched::SchedParam,
+    ananicy_core::worker::{
+        PlatformError,
+        PlatformError::{Io, NotFound, PermissionDenied, Unsupported},
+    },
+    rustix::io::Errno,
+    tracing::error,
+};
+
 use crate::abi::{ioprio::*, sched_attr::*};
 
 use {
@@ -7,11 +17,7 @@ use {
 
 // Note: In C++ original code, `test_errno` handles EPERM, ESRCH, etc.
 // We will replicate similar logic.
-fn test_errno(
-    err: io::Error,
-    func_name: &str,
-    pid: i32,
-) -> Result<(), ananicy_core::worker::PlatformError> {
+fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformError> {
     if let Some(raw_os_error) = err.raw_os_error() {
         if raw_os_error == 0 {
             debug!("{}: Successfully applied to {}", func_name, pid);
@@ -19,22 +25,19 @@ fn test_errno(
         }
 
         if err.kind() == io::ErrorKind::NotFound
-            || raw_os_error == rustix::io::Errno::SRCH.raw_os_error()
+            || raw_os_error == Errno::SRCH.raw_os_error()
+            || raw_os_error == Errno::ACCESS.raw_os_error()
+            || raw_os_error == Errno::PERM.raw_os_error()
         {
-            return Err(ananicy_core::worker::PlatformError::NotFound);
-        } else if err.kind() == io::ErrorKind::PermissionDenied
-            || raw_os_error == rustix::io::Errno::ACCESS.raw_os_error()
-            || raw_os_error == rustix::io::Errno::PERM.raw_os_error()
-        {
-            return Err(ananicy_core::worker::PlatformError::PermissionDenied);
+            return Err(PermissionDenied);
         }
-        return Err(ananicy_core::worker::PlatformError::Io(err));
+        return Err(Io(err));
     }
 
-    Err(ananicy_core::worker::PlatformError::Io(err))
+    Err(Io(err))
 }
 
-pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), PlatformError> {
     use rustix::process::{Pid, setpriority_process};
     let task_path = format!("/proc/{}/task", pid);
     let mut last_err = None;
@@ -54,7 +57,7 @@ pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), ananicy_core::worke
         }
     } else {
         // Directory doesn't exist (ESRCH)
-        return Err(ananicy_core::worker::PlatformError::NotFound);
+        return Err(NotFound);
     }
 
     match last_err {
@@ -63,10 +66,7 @@ pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), ananicy_core::worke
     }
 }
 
-pub fn set_latency_nice(
-    pid: i32,
-    latency_nice_value: i32,
-) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_latency_nice(pid: i32, latency_nice_value: i32) -> Result<(), PlatformError> {
     // LATENCY_NICE is applied via sched_setattr
     let task_path = format!("/proc/{}/task", pid);
     let mut last_err = None;
@@ -97,7 +97,7 @@ pub fn set_latency_nice(
             }
         }
     } else {
-        return Err(ananicy_core::worker::PlatformError::NotFound);
+        return Err(NotFound);
     }
 
     match last_err {
@@ -126,18 +126,14 @@ pub fn get_latency_nice(pid: i32) -> Option<i32> {
     }
 }
 
-pub fn set_io_priority(
-    pid: i32,
-    io_class: &str,
-    value: i32,
-) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), PlatformError> {
     let io_class_value = match io_class {
         "best-effort" => IOPRIO_CLASS_BE,
         "realtime" => IOPRIO_CLASS_RT,
         "idle" => IOPRIO_CLASS_IDLE,
         "none" => IOPRIO_CLASS_NONE,
         _ => {
-            return Err(ananicy_core::worker::PlatformError::Unsupported);
+            return Err(Unsupported);
         }
     };
 
@@ -151,12 +147,8 @@ pub fn set_io_priority(
     }
 }
 
-pub fn set_sched(
-    pid: i32,
-    sched_name: &str,
-    rt_prio: u32,
-) -> Result<(), ananicy_core::worker::PlatformError> {
-    let mut param = crate::abi::sched::SchedParam::default();
+pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), PlatformError> {
+    let mut param = SchedParam::default();
 
     let sched = match sched_name {
         "idle" => SCHED_IDLE,
@@ -175,18 +167,18 @@ pub fn set_sched(
         }
         "batch" => SCHED_BATCH,
         _ => {
-            return Err(ananicy_core::worker::PlatformError::Unsupported);
+            return Err(Unsupported);
         }
     };
 
     if let Err(e) = crate::abi::sched::sched_setscheduler(pid, sched as i32, &param) {
         if let Some(raw) = e.raw_os_error()
             && raw != 0
-            && raw != rustix::io::Errno::SRCH.raw_os_error()
-            && raw != rustix::io::Errno::PERM.raw_os_error()
-            && raw != rustix::io::Errno::ACCESS.raw_os_error()
+            && raw != Errno::SRCH.raw_os_error()
+            && raw != Errno::PERM.raw_os_error()
+            && raw != Errno::ACCESS.raw_os_error()
         {
-            tracing::error!("set_sched: Unknown error {} applying to {}", raw, pid);
+            error!("set_sched: Unknown error {} applying to {}", raw, pid);
         }
         test_errno(e, "set_sched", pid)
     } else {
@@ -195,19 +187,16 @@ pub fn set_sched(
     }
 }
 
-pub fn set_oom_score_adjust(
-    pid: i32,
-    value: i32,
-) -> Result<(), ananicy_core::worker::PlatformError> {
+pub fn set_oom_score_adjust(pid: i32, value: i32) -> Result<(), PlatformError> {
     let path = format!("/proc/{}/oom_score_adj", pid);
     if let Err(e) = fs::write(&path, value.to_string()) {
         if e.kind() == io::ErrorKind::NotFound {
-            return Err(ananicy_core::worker::PlatformError::NotFound);
+            return Err(NotFound);
         }
         if e.kind() == io::ErrorKind::PermissionDenied {
-            return Err(ananicy_core::worker::PlatformError::PermissionDenied);
+            return Err(PermissionDenied);
         }
-        Err(ananicy_core::worker::PlatformError::Io(e))
+        Err(Io(e))
     } else {
         debug!("set_oom_score_adjust: Successfully applied to {}", pid);
         Ok(())

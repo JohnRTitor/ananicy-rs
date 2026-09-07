@@ -1,4 +1,6 @@
 #![allow(clippy::collapsible_if)]
+use std::path::Path;
+
 use {
     std::{
         collections::{BTreeMap, BTreeSet, HashMap},
@@ -70,7 +72,7 @@ impl CpuTopology {
     }
 }
 
-fn detect_smt(sys_root: &std::path::Path) -> bool {
+fn detect_smt(sys_root: &Path) -> bool {
     let path = sys_root.join("devices/system/cpu/smt/active");
     if let Ok(content) = fs::read_to_string(&path) {
         return content.trim() == "1";
@@ -78,7 +80,7 @@ fn detect_smt(sys_root: &std::path::Path) -> bool {
     false
 }
 
-fn get_node_id(base: &std::path::Path) -> i32 {
+fn get_node_id(base: &Path) -> i32 {
     if let Ok(entries) = fs::read_dir(base) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -93,7 +95,7 @@ fn get_node_id(base: &std::path::Path) -> i32 {
     0
 }
 
-fn get_llc_id(base: &std::path::Path, llc_map: &mut HashMap<String, i32>) -> i32 {
+fn get_llc_id(base: &Path, llc_map: &mut HashMap<String, i32>) -> i32 {
     for level in (2..=3).rev() {
         let path = base.join(format!("cache/index{}/shared_cpu_list", level));
         if let Ok(key) = fs::read_to_string(&path) {
@@ -130,7 +132,7 @@ fn parse_size_string(s: &str) -> u64 {
 }
 
 #[allow(dead_code)]
-fn get_cache_size(base: &std::path::Path) -> u64 {
+fn get_cache_size(base: &Path) -> u64 {
     let mut total = 0;
     for idx in 0..8 {
         let index_base = base.join(format!("cache/index{}", idx));
@@ -166,10 +168,10 @@ fn get_cache_size(base: &std::path::Path) -> u64 {
 }
 
 pub fn detect_topology() -> CpuTopology {
-    detect_topology_impl(std::path::Path::new("/sys"))
+    detect_topology_impl(Path::new("/sys"))
 }
 
-pub fn detect_topology_impl(sys_root: &std::path::Path) -> CpuTopology {
+pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     let mut top = CpuTopology {
         smt_enabled: detect_smt(sys_root),
         ..Default::default()

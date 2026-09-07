@@ -1,3 +1,5 @@
+use crate::cgroup::CgroupVersion;
+
 use {
     lru::LruCache,
     std::{
@@ -8,10 +10,7 @@ use {
     },
 };
 
-use {
-    crate::cgroup::CgroupVersion,
-    ananicy_core::cgroup::{CgroupIdentity, CgroupPath},
-};
+use ananicy_core::cgroup::{CgroupIdentity, CgroupPath};
 
 pub trait CgroupProcessResolver: Send + Sync {
     /// Resolve the *current* cgroup of a process. Returns Ok(None) if the

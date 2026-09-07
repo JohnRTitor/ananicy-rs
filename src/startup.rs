@@ -4,17 +4,18 @@ use {
         config::{Config, ConfigSnapshot},
         rules::Rules,
     },
-    std::{collections::HashMap, sync::Arc},
-    tracing::{error, info, warn},
+    std::{collections::HashMap, env::var, sync::Arc},
+    tracing::{Level, error, info, warn},
+    tracing_subscriber::filter::LevelFilter,
 };
 
 pub(crate) fn init_logging(verbose: bool, force_trace: bool, is_systemd: bool) {
     let log_level = if force_trace {
-        tracing::Level::TRACE
+        Level::TRACE
     } else if verbose {
-        tracing::Level::DEBUG
+        Level::DEBUG
     } else {
-        tracing::Level::INFO
+        Level::INFO
     };
 
     #[cfg(feature = "systemd")]
@@ -22,9 +23,7 @@ pub(crate) fn init_logging(verbose: bool, force_trace: bool, is_systemd: bool) {
         if let Ok(layer) = tracing_journald::layer() {
             use tracing_subscriber::layer::SubscriberExt;
             let subscriber = tracing_subscriber::Registry::default()
-                .with(tracing_subscriber::filter::LevelFilter::from_level(
-                    log_level,
-                ))
+                .with(LevelFilter::from_level(log_level))
                 .with(layer);
             let _ = tracing::subscriber::set_global_default(subscriber);
             return;
@@ -38,12 +37,12 @@ pub(crate) fn init_logging(verbose: bool, force_trace: bool, is_systemd: bool) {
 }
 
 pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {
-    let config_path = std::env::var("ANANICY_RS_CONF").unwrap_or_else(|_| {
+    let config_path = var("ANANICY_RS_CONF").unwrap_or_else(|_| {
         args.config
             .clone()
             .unwrap_or_else(|| "/etc/ananicy.d/ananicy.conf".to_string())
     });
-    let config_dir_path = std::env::var("ANANICY_RS_CONFDIR").unwrap_or_else(|_| {
+    let config_dir_path = var("ANANICY_RS_CONFDIR").unwrap_or_else(|_| {
         args.config_dir
             .clone()
             .unwrap_or_else(|| "/etc/ananicy.d".to_string())
@@ -121,10 +120,11 @@ pub(crate) fn load_topology_aliases(
         if x3d_mode_str != "auto" {
             saved_x3d_mode = ananicy_platform::x3d::get_driver_mode();
             if saved_x3d_mode.is_some() {
+                use ananicy_platform::x3d::X3DMode;
                 let target = if x3d_mode_str == "cache" {
-                    ananicy_platform::x3d::X3DMode::Cache
+                    X3DMode::Cache
                 } else {
-                    ananicy_platform::x3d::X3DMode::Frequency
+                    X3DMode::Frequency
                 };
                 if ananicy_platform::x3d::set_driver_mode(target) {
                     info!("Set X3D mode to '{}'", x3d_mode_str);

@@ -1,4 +1,6 @@
 #[cfg(feature = "systemd")]
+use std::ffi::CStr;
+#[cfg(feature = "systemd")]
 #[link(name = "systemd")]
 unsafe extern "C" {
     fn sd_pid_get_unit(pid: libc::pid_t, unit: *mut *mut libc::c_char) -> libc::c_int;
@@ -7,12 +9,12 @@ unsafe extern "C" {
 /// Returns the systemd unit name for the current process.
 #[cfg(feature = "systemd")]
 pub fn get_unit_name() -> String {
-    let pid = std::process::id();
+    let pid = id();
     let mut ptr: *mut libc::c_char = std::ptr::null_mut();
 
     let res = unsafe { sd_pid_get_unit(pid as libc::pid_t, &mut ptr) };
     if res >= 0 && !ptr.is_null() {
-        let name = unsafe { std::ffi::CStr::from_ptr(ptr) }
+        let name = unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
         unsafe { libc::free(ptr as *mut libc::c_void) };
@@ -46,7 +48,7 @@ fn get_unit_name_heuristic() -> String {
 /// Reads `/proc/self/cgroup`'s first line and returns the path portion
 /// (everything after the last `:`), or `None` if it can't be determined.
 fn read_own_cgroup_path() -> Option<String> {
-    let content = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let content = read_to_string("/proc/self/cgroup").ok()?;
     let first_line = content.lines().next()?;
     if first_line.is_empty() {
         return None;
@@ -60,9 +62,10 @@ fn read_own_cgroup_path() -> Option<String> {
     }
 }
 
+use std::{fs::read_to_string, process::id};
+
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn unit_name_skips_trailing_slice_and_scope_segments() {

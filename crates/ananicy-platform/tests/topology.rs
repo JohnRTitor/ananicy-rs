@@ -1,8 +1,9 @@
 use {
     ananicy_core::cpuset::CpuSet,
-    ananicy_platform::topology::{CpuTopology, detect_topology_impl},
-    std::path::Path,
+    std::{collections::BTreeSet, path::Path},
 };
+
+use ananicy_platform::topology::{CpuTopology, detect_topology_impl};
 
 fn get_fixture_topo() -> CpuTopology {
     detect_topology_impl(Path::new("tests/fixtures/topology/big-little/sys"))
@@ -75,7 +76,7 @@ fn test_on_homogeneous_system_all_cores_are_big() {
 fn test_llc_grouping_covers_all_online_cpus() {
     let topo = get_fixture_topo();
 
-    let mut covered = std::collections::BTreeSet::new();
+    let mut covered = BTreeSet::new();
     for llc in &topo.llcs {
         for &id in &llc.cpu_ids {
             covered.insert(id);
@@ -92,7 +93,7 @@ fn test_llc_grouping_covers_all_online_cpus() {
 fn test_numa_grouping_covers_all_online_cpus() {
     let topo = get_fixture_topo();
 
-    let mut covered = std::collections::BTreeSet::new();
+    let mut covered = BTreeSet::new();
     for node in &topo.nodes {
         for &id in &node.cpu_ids {
             covered.insert(id);

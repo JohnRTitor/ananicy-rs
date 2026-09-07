@@ -1,9 +1,19 @@
+use {
+    ananicy_core::spawn_named_thread,
+    ananicy_platform::process_info::ProcessInfo,
+    std::{
+        collections::BTreeMap,
+        fs::{read_dir, read_link, read_to_string},
+        sync::mpsc::channel,
+    },
+};
+
 use {crate::cli::DumpTarget, ananicy_core::rules::Rules, ananicy_platform::procfs::ProcfsScanner};
 
 pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
     match target {
         DumpTarget::Rules => {
-            let sorted: std::collections::BTreeMap<_, _> = rules
+            let sorted: BTreeMap<_, _> = rules
                 .get_rules()
                 .iter()
                 .map(|(k, v)| (k.as_ref(), v))
@@ -14,7 +24,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
             );
         }
         DumpTarget::Types => {
-            let sorted: std::collections::BTreeMap<_, _> = rules
+            let sorted: BTreeMap<_, _> = rules
                 .get_types()
                 .iter()
                 .map(|(k, v)| (k.as_ref(), v))
@@ -25,7 +35,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
             );
         }
         DumpTarget::Cgroups => {
-            let sorted: std::collections::BTreeMap<_, _> = rules
+            let sorted: BTreeMap<_, _> = rules
                 .get_cgroups()
                 .iter()
                 .map(|(k, v)| (k.as_ref(), v))
@@ -41,8 +51,8 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
 }
 
 fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Value> {
-    let (tx_dump, rx_dump) = std::sync::mpsc::channel();
-    ananicy_core::spawn_named_thread!("ananicy-dump", move || {
+    let (tx_dump, rx_dump) = channel();
+    spawn_named_thread!("ananicy-dump", move || {
         ProcfsScanner::full_scan(tx_dump);
     });
 
@@ -58,25 +68,25 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
             .unwrap_or("")
             .to_string();
 
-        let exe = std::fs::read_link(format!("/proc/{}/exe", pid))
+        let exe = read_link(format!("/proc/{}/exe", pid))
             .map(|p| p.to_string_lossy().into_owned())
             .ok();
-        let cmd = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        let cmd = read_to_string(format!("/proc/{}/comm", pid))
             .unwrap_or_default()
             .trim()
             .to_string();
-        let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))
+        let cmdline = read_to_string(format!("/proc/{}/cmdline", pid))
             .unwrap_or_default()
             .replace('\0', " ")
             .trim()
             .to_string();
-        let oom_score_adj = std::fs::read_to_string(format!("/proc/{}/oom_score_adj", pid))
+        let oom_score_adj = read_to_string(format!("/proc/{}/oom_score_adj", pid))
             .unwrap_or_default()
             .trim()
             .parse::<i32>()
             .unwrap_or(0);
 
-        if let Ok(entries) = std::fs::read_dir(format!("/proc/{}/task", pid)) {
+        if let Ok(entries) = read_dir(format!("/proc/{}/task", pid)) {
             for entry in entries.flatten() {
                 if let Ok(file_name) = entry.file_name().into_string() {
                     if let Ok(tid) = file_name.parse::<i32>() {
@@ -85,7 +95,7 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
                         } else {
                             Some(rule_name.clone())
                         };
-                        let info = ananicy_platform::process_info::ProcessInfo::from_parts(
+                        let info = ProcessInfo::from_parts(
                             pid,
                             tid,
                             exe.clone(),

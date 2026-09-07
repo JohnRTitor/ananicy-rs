@@ -1,4 +1,18 @@
 use {
+    ananicy_core::types::Pid,
+    rustix::{fs::OFlags, io::Errno, time::Timespec},
+    std::{
+        os::fd::BorrowedFd,
+        process::id,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering::Relaxed},
+        },
+    },
+    tracing::warn,
+};
+
+use {
     neli::{
         connector::{CnMsg, ProcEvent, ProcEventHeader},
         consts::{
@@ -22,7 +36,7 @@ pub struct NetlinkMonitor {
 
 impl NetlinkMonitor {
     pub fn new() -> Result<Self, io::Error> {
-        let pid = std::process::id();
+        let pid = id();
         let sock = NlSocketHandle::connect(
             NlFamily::Connector,
             Some(pid),
@@ -32,10 +46,10 @@ impl NetlinkMonitor {
 
         use std::os::unix::io::AsRawFd;
         let fd = sock.as_raw_fd();
-        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         if let Err(e) = rustix::net::sockopt::set_socket_recv_buffer_size(borrowed, 8 * 1024 * 1024)
         {
-            tracing::warn!(
+            warn!(
                 "Failed to set Netlink SO_RCVBUF to 8MB: {}. (ENOBUFS may be more frequent)",
                 e
             );
@@ -65,16 +79,16 @@ impl NetlinkMonitor {
     pub fn listen(
         &mut self,
         tx: Sender<Process>,
-        shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        shutdown_flag: Arc<AtomicBool>,
     ) -> Result<(), io::Error> {
         use {rustix::event::epoll, std::os::unix::io::AsRawFd};
 
         let fd = self.sock.as_raw_fd();
-        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
 
         // Ensure non-blocking so recv doesn't hang if epoll wakes spuriously
         let flags = rustix::fs::fcntl_getfl(borrowed)?;
-        rustix::fs::fcntl_setfl(borrowed, flags | rustix::fs::OFlags::NONBLOCK)?;
+        rustix::fs::fcntl_setfl(borrowed, flags | OFlags::NONBLOCK)?;
 
         let epoll_fd = epoll::create(epoll::CreateFlags::CLOEXEC)?;
         epoll::add(
@@ -90,11 +104,11 @@ impl NetlinkMonitor {
         info!("Starting epoll-based Netlink event loop");
 
         loop {
-            if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if shutdown_flag.load(Relaxed) {
                 return Ok(());
             }
 
-            let timeout = rustix::time::Timespec {
+            let timeout = Timespec {
                 tv_sec: 0,
                 tv_nsec: 100_000_000,
             };
@@ -104,7 +118,7 @@ impl NetlinkMonitor {
                         continue; // Timeout
                     }
                 }
-                Err(rustix::io::Errno::INTR) => continue,
+                Err(Errno::INTR) => continue,
                 Err(e) => {
                     error!("epoll_wait error: {}", e);
                     continue;
@@ -156,7 +170,7 @@ impl NetlinkMonitor {
                             if process_pid != prev_pid {
                                 prev_pid = process_pid;
                                 let name = get_command_from_pid(process_pid);
-                                tx.send(Process::new(ananicy_core::types::Pid(process_pid), name))
+                                tx.send(Process::new(Pid(process_pid), name))
                                     .expect("Worker thread died");
                             }
                         }
@@ -164,7 +178,7 @@ impl NetlinkMonitor {
                             if child_pid != prev_pid {
                                 prev_pid = child_pid;
                                 let name = get_command_from_pid(child_pid);
-                                tx.send(Process::new(ananicy_core::types::Pid(child_pid), name))
+                                tx.send(Process::new(Pid(child_pid), name))
                                     .expect("Worker thread died");
                             }
                         }
@@ -172,7 +186,7 @@ impl NetlinkMonitor {
                             if process_pid != prev_pid {
                                 prev_pid = process_pid;
                                 let name = get_command_from_pid(process_pid);
-                                tx.send(Process::new(ananicy_core::types::Pid(process_pid), name))
+                                tx.send(Process::new(Pid(process_pid), name))
                                     .expect("Worker thread died");
                             }
                         }
@@ -189,7 +203,7 @@ impl NetlinkMonitor {
 
 impl Drop for NetlinkMonitor {
     fn drop(&mut self) {
-        let pid = std::process::id();
+        let pid = id();
         if let Ok(unsubscribe) = NlmsghdrBuilder::default()
             .nl_type(Nlmsg::Done)
             .nl_flags(NlmF::empty())

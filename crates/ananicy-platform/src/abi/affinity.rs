@@ -1,3 +1,5 @@
+use {ananicy_core::cpuset::CpuSet, tracing::debug};
+
 use {
     libc::{cpu_set_t, sched_setaffinity},
     std::{fs, io},
@@ -9,7 +11,7 @@ pub fn get_max_number_of_cpus() -> u32 {
     std::cmp::max(sys_cpus, 1024)
 }
 
-pub fn set_affinity(pid: i32, cpuset: &ananicy_core::cpuset::CpuSet) -> io::Result<()> {
+pub fn set_affinity(pid: i32, cpuset: &CpuSet) -> io::Result<()> {
     if cpuset.get_cores().is_empty() {
         return Ok(());
     }
@@ -49,12 +51,12 @@ pub fn set_affinity(pid: i32, cpuset: &ananicy_core::cpuset::CpuSet) -> io::Resu
 
     match last_err {
         Some(err) if err.raw_os_error() == Some(0) => {
-            tracing::debug!("set_affinity: Successfully applied to {}", pid);
+            debug!("set_affinity: Successfully applied to {}", pid);
             Ok(())
         }
         Some(err) => Err(err),
         None => {
-            tracing::debug!("set_affinity: Successfully applied to {}", pid);
+            debug!("set_affinity: Successfully applied to {}", pid);
             Ok(())
         }
     }

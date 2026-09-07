@@ -1,3 +1,5 @@
+use std::process::id;
+
 use {
     std::{fs, io::Write, path::PathBuf},
     tempfile::TempDir,
@@ -25,7 +27,7 @@ fn setup_mock_v2_delegated_root() -> (TempDir, CgroupInfo, PathBuf) {
 
     let mut file = fs::File::create(ananicy_service.join("cgroup.procs")).unwrap();
     // Simulate our process being in this cgroup
-    let pid = std::process::id();
+    let pid = id();
     file.write_all(pid.to_string().as_bytes()).unwrap();
 
     let info = CgroupInfo {

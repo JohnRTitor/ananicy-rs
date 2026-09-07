@@ -1,4 +1,9 @@
 use {
+    ananicy_core::config::{Config, ConfigSnapshot},
+    std::sync::Arc,
+};
+
+use {
     ananicy_core::{cpuset::CpuSet, rules::Rules},
     criterion::{Criterion, black_box, criterion_group, criterion_main},
 };
@@ -10,9 +15,7 @@ fn bench_cpuset_parse(c: &mut Criterion) {
 }
 
 fn bench_rules_match(c: &mut Criterion) {
-    let rules = Rules::new(std::sync::Arc::new(ananicy_core::config::Config::new(
-        ananicy_core::config::ConfigSnapshot::default(),
-    )));
+    let rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
 
     // Test cache miss performance
     c.bench_function("rules_get_cache_miss", |b| {

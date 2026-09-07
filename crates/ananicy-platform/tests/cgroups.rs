@@ -1,3 +1,5 @@
+use std::process::id;
+
 use {
     ananicy_platform::{
         cgroups::{add_pid_to_cgroup, create_cgroup},
@@ -90,7 +92,7 @@ fn test_add_pid_to_cgroup() {
 
         assert!(create_cgroup(name, None));
 
-        let current_pid = std::process::id() as i32;
+        let current_pid = id() as i32;
         let cgroup = get_cgroup_for_pid(current_pid);
         assert!(cgroup.is_some(), "Current proc should be in a cgroup");
 

@@ -1,6 +1,18 @@
 #![allow(clippy::collapsible_if)]
 use {
-    crate::{config::Config, cpuset::CpuSet, process::Process, rules::Rules},
+    crate::{cgroup::CgroupIdentity, config::ConfigSnapshot, cpuset::CpuSet, spawn_named_thread},
+    std::{
+        sync::{
+            atomic::{AtomicBool, Ordering::SeqCst},
+            mpsc::Receiver,
+        },
+        time::{Duration, Instant},
+    },
+    tracing::{Level, enabled},
+};
+
+use {
+    crate::{config::Config, process::Process, rules::Rules},
     serde_json::Value,
     std::{collections::HashMap, sync::Arc, thread::JoinHandle},
     tracing::{debug, error, info, warn},
@@ -43,7 +55,7 @@ pub trait PlatformActions: Send + Sync {
 
     /// Resolve a process's current cgroup for matching purposes. Read-only,
     /// always safe, no ownership implied.
-    fn process_cgroup(&self, _pid: i32) -> Option<crate::cgroup::CgroupIdentity> {
+    fn process_cgroup(&self, _pid: i32) -> Option<CgroupIdentity> {
         None
     }
 
@@ -64,9 +76,9 @@ pub struct Worker {
     rules: Arc<Rules>,
     platform: Arc<dyn PlatformActions>,
     cpuset_aliases: HashMap<String, String>,
-    receiver: std::sync::mpsc::Receiver<Process>,
+    receiver: Receiver<Process>,
     benchmark_count: Option<u32>,
-    shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+    shutdown_flag: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -75,9 +87,9 @@ impl Worker {
         rules: Arc<Rules>,
         platform: Arc<dyn PlatformActions>,
         cpuset_aliases: HashMap<String, String>,
-        receiver: std::sync::mpsc::Receiver<Process>,
+        receiver: Receiver<Process>,
         benchmark_count: Option<u32>,
-        shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+        shutdown_flag: Arc<AtomicBool>,
     ) -> Self {
         Self {
             config,
@@ -91,13 +103,13 @@ impl Worker {
     }
 
     /// Spawns a dedicated thread for the worker loop.
-    pub fn start(self) -> JoinHandle<(usize, std::time::Duration)> {
-        crate::spawn_named_thread!("ananicy-worker", move || self.work_loop())
+    pub fn start(self) -> JoinHandle<(usize, Duration)> {
+        spawn_named_thread!("ananicy-worker", move || self.work_loop())
     }
 
-    pub fn work_loop(self) -> (usize, std::time::Duration) {
+    pub fn work_loop(self) -> (usize, Duration) {
         let is_affected_by_cgroup_bug = self.platform.is_cgroup_v2();
-        let start_time = std::time::Instant::now();
+        let start_time = Instant::now();
         let mut processed_count = 0;
 
         while let Ok(p) = self.receiver.recv() {
@@ -105,8 +117,7 @@ impl Worker {
 
             if let Some(limit) = self.benchmark_count {
                 if processed_count >= limit as usize {
-                    self.shutdown_flag
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.shutdown_flag.store(true, SeqCst);
                 }
             }
 
@@ -134,7 +145,7 @@ impl Worker {
                 let cfg = self.config.get();
                 let do_log_applied_rule = cfg.log_applied_rule; // In Debug builds we would override this
 
-                if tracing::enabled!(tracing::Level::DEBUG) {
+                if enabled!(Level::DEBUG) {
                     debug!("Found rule for {}: {}", p.name, rule.to_string());
                 } else if do_log_applied_rule {
                     info!("{}({})", p.name, p.identity.pid.0);
@@ -183,7 +194,7 @@ impl Worker {
         &self,
         p: &Process,
         rule: &Value,
-        cfg: &crate::config::ConfigSnapshot,
+        cfg: &ConfigSnapshot,
         is_realtime: bool,
         is_affected_by_cgroup_bug: bool,
     ) -> Result<(), PlatformError> {
@@ -309,7 +320,7 @@ impl Worker {
                     "Setting cpuset of {}({}) to {}",
                     p.name, p.identity.pid.0, cpuset_str
                 );
-                match crate::cpuset::CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
+                match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
                     Some(parsed_set) => {
                         if let Err(e) = self.platform.set_affinity(p.identity.pid.0, &parsed_set) {
                             if !e.is_skippable() {

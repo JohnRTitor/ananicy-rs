@@ -1,4 +1,14 @@
 use {
+    ananicy_core::spawn_named_thread,
+    ananicy_platform::{LinuxPlatform, procfs::ProcfsScanner, x3d::X3DMode},
+    std::{
+        sync::{atomic::Ordering::SeqCst, mpsc::Sender},
+        thread::{sleep, spawn},
+    },
+    tracing::{info, warn},
+};
+
+use {
     crate::monitor,
     ananicy_core::{config::Config, process::Process, rules::Rules, worker::Worker},
     std::{
@@ -7,36 +17,35 @@ use {
         thread,
         time::{Duration, Instant},
     },
-    tracing::info,
 };
 
 pub(crate) fn run(
     config: Arc<Config>,
     rules: Arc<Rules>,
-    platform: Arc<ananicy_platform::LinuxPlatform>,
+    platform: Arc<LinuxPlatform>,
     aliases: HashMap<String, String>,
     rx: Receiver<Process>,
-    tx: std::sync::mpsc::Sender<Process>,
+    tx: Sender<Process>,
     shutdown_flag: Arc<AtomicBool>,
     manual_scanning: bool,
     cgroup_realtime_workaround: bool,
     bpf_min_us: Option<u32>,
     is_systemd: bool,
-    saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>,
+    saved_x3d_mode: Option<X3DMode>,
     benchmark: bool,
     benchmark_count: Option<u32>,
 ) {
     if benchmark || benchmark_count.is_some() {
         if benchmark {
-            tracing::warn!("Benchmark enabled!");
+            warn!("Benchmark enabled!");
             let shutdown = shutdown_flag.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(30));
-                shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            spawn(move || {
+                sleep(Duration::from_secs(30));
+                shutdown.store(true, SeqCst);
             });
         }
         if let Some(count) = benchmark_count {
-            tracing::warn!("Benchmark count: {}", count);
+            warn!("Benchmark count: {}", count);
         }
     }
 
@@ -89,21 +98,17 @@ fn create_cgroups(rules: &Arc<Rules>) -> bool {
     true
 }
 
-fn start_manual_scanner(
-    config: Arc<Config>,
-    tx: std::sync::mpsc::Sender<Process>,
-    shutdown_flag: Arc<AtomicBool>,
-) {
-    ananicy_core::spawn_named_thread!("ananicy-scan", move || {
+fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag: Arc<AtomicBool>) {
+    spawn_named_thread!("ananicy-scan", move || {
         let freq = config.get().check_freq;
         let check_freq = if freq > 0 { freq } else { 60 };
         let mut last_scan = Instant::now();
 
-        while !shutdown_flag.load(std::sync::atomic::Ordering::SeqCst) {
+        while !shutdown_flag.load(SeqCst) {
             thread::sleep(Duration::from_secs(1));
             if last_scan.elapsed().as_secs() >= check_freq as u64 {
-                tracing::info!("Running periodic manual procfs scan");
-                ananicy_platform::procfs::ProcfsScanner::full_scan(tx.clone());
+                info!("Running periodic manual procfs scan");
+                ProcfsScanner::full_scan(tx.clone());
                 last_scan = Instant::now();
             }
         }

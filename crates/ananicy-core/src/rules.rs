@@ -1,4 +1,6 @@
 #![allow(clippy::collapsible_if)]
+use std::sync::{Arc, Mutex};
+
 use {
     crate::{
         config::Config,
@@ -10,25 +12,25 @@ use {
 };
 
 pub struct Rules {
-    config: std::sync::Arc<Config>,
+    config: Arc<Config>,
     programs: HashMap<RuleName, Value>,
     types: HashMap<TypeName, Value>,
     cgroups: HashMap<CgroupName, Value>,
     // Store fallback regex rules if enabled
     regex_programs: Vec<(pcre2::bytes::Regex, String)>,
     // Cache for resolved rules to avoid linear scan overhead on every process
-    resolved_cache: std::sync::Mutex<lru::LruCache<String, Option<Value>>>,
+    resolved_cache: Mutex<lru::LruCache<String, Option<Value>>>,
 }
 
 impl Rules {
-    pub fn new(config: std::sync::Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>) -> Self {
         Self {
             config,
             programs: HashMap::new(),
             types: HashMap::new(),
             cgroups: HashMap::new(),
             regex_programs: Vec::new(),
-            resolved_cache: std::sync::Mutex::new(lru::LruCache::new(
+            resolved_cache: Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(5000).unwrap_or(NonZeroUsize::MIN),
             )),
         }
