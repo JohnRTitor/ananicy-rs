@@ -1,3 +1,5 @@
+use rustix::process::Pid;
+
 use {ananicy_core::cpuset::CpuSet, ananicy_platform::abi::affinity::set_affinity, std::process};
 
 #[test]
@@ -7,9 +9,9 @@ fn test_set_affinity_on_current_process() {
     // though realistically we just want to ensure it succeeds.
     // For a safe test, we get the current affinity and just set it back.
     // However, rustix provides sched_getaffinity which we can use to populate the CpuSet.
-    if let Ok(mask) = rustix::thread::sched_getaffinity(Some(
-        rustix::process::Pid::from_raw(process::id() as i32).unwrap(),
-    )) {
+    if let Ok(mask) =
+        rustix::thread::sched_getaffinity(Some(Pid::from_raw(process::id() as i32).unwrap()))
+    {
         for i in 0..1024 {
             if mask.is_set(i) {
                 cs.set_cpu(i as u32);

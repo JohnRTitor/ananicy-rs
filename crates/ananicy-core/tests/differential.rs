@@ -1,9 +1,14 @@
 //! Differential tests verifying that Rust output matches C++ expected output.
+use {
+    ananicy_core::{config::Config, rules::Rules},
+    std::{env::current_dir, sync::Arc},
+};
+
 use ananicy_core::config::{ConfigSnapshot, LogLevel};
 
 #[test]
 fn test_config_parsing_matches_cpp() {
-    let test_dir = std::env::current_dir().unwrap().join("tests/fixtures");
+    let test_dir = current_dir().unwrap().join("tests/fixtures");
     let config_path = test_dir.join("test-sampleconfig.txt");
 
     // We expect the file to parse exactly as the C++ unit test describes.
@@ -39,12 +44,11 @@ fn test_config_parsing_matches_cpp() {
 
 #[test]
 fn test_rules_parsing_matches_cpp() {
-    let test_dir = std::env::current_dir().unwrap().join("tests/fixtures");
+    let test_dir = current_dir().unwrap().join("tests/fixtures");
     let config_path = test_dir.join("test-rulesconfig.txt");
 
-    let config =
-        std::sync::Arc::new(ananicy_core::config::Config::load_file(&config_path, true).unwrap());
-    let mut rules = ananicy_core::rules::Rules::new(config.clone());
+    let config = Arc::new(Config::load_file(&config_path, true).unwrap());
+    let mut rules = Rules::new(config.clone());
 
     // Load rule from string
     assert!(

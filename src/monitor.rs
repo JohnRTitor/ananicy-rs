@@ -1,12 +1,12 @@
 use {
-    ananicy_core::process::Process,
-    ananicy_platform::procfs::ProcfsScanner,
+    ananicy_core::{process::Process, spawn_named_thread},
+    ananicy_platform::{procfs::ProcfsScanner, x3d::X3DMode},
+    std::{process::exit, thread::JoinHandle},
+};
+
+use {
     std::{
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-            mpsc::Sender,
-        },
+        sync::{Arc, atomic::AtomicBool, mpsc::Sender},
         thread,
         time::Duration,
     },
@@ -16,13 +16,13 @@ use {
 pub(crate) fn run(
     tx: Sender<Process>,
     shutdown_flag: Arc<AtomicBool>,
-    worker_handle: std::thread::JoinHandle<(usize, Duration)>,
-    saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>,
-    bpf_min_us: Option<u32>,
+    worker_handle: JoinHandle<(usize, Duration)>,
+    saved_x3d_mode: Option<X3DMode>,
+    #[allow(unused_variables)] bpf_min_us: Option<u32>,
 ) {
     #[cfg(feature = "bpf")]
     {
-        use ananicy_bpf::BpfMonitor;
+        use {ananicy_bpf::BpfMonitor, std::sync::atomic::Ordering};
         info!("Attempting to start BPF monitor...");
         loop {
             match BpfMonitor::new(bpf_min_us) {
@@ -31,7 +31,7 @@ pub(crate) fn run(
                     let tx_clone = tx.clone();
                     let tx_scan = tx.clone();
                     info!("Running initial procfs full scan");
-                    ananicy_core::spawn_named_thread!("ananicy-init", move || {
+                    spawn_named_thread!("ananicy-init", move || {
                         ProcfsScanner::full_scan(tx_scan);
                     });
                     bpf.listen(tx_clone, shutdown_flag.clone());
@@ -68,7 +68,7 @@ pub(crate) fn run(
                         is_first = false;
                         let tx_scan = tx.clone();
                         info!("Running initial procfs full scan");
-                        ananicy_core::spawn_named_thread!("ananicy-init", move || {
+                        spawn_named_thread!("ananicy-init", move || {
                             ProcfsScanner::full_scan(tx_scan);
                         });
                     }
@@ -91,7 +91,7 @@ pub(crate) fn run(
                 Err(e) => {
                     error!("Failed to start Netlink monitor: {}. Exiting.", e);
                     restore_x3d(saved_x3d_mode, "on netlink monitor failure");
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -101,23 +101,21 @@ pub(crate) fn run(
     {
         error!("No event monitor available. Exiting.");
         restore_x3d(saved_x3d_mode, "on startup failure");
-        std::process::exit(1);
+        exit(1);
     }
 }
 
+#[allow(dead_code)]
 fn finish(
     tx: Sender<Process>,
-    worker_handle: std::thread::JoinHandle<(usize, Duration)>,
-    saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>,
+    worker_handle: JoinHandle<(usize, Duration)>,
+    saved_x3d_mode: Option<X3DMode>,
 ) {
     drop(tx);
     finish_join(worker_handle, saved_x3d_mode);
 }
 
-fn finish_join(
-    worker_handle: std::thread::JoinHandle<(usize, Duration)>,
-    saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>,
-) {
+fn finish_join(worker_handle: JoinHandle<(usize, Duration)>, saved_x3d_mode: Option<X3DMode>) {
     match worker_handle.join() {
         Ok((count, duration)) => info!("Worker processed {} events in {:?}", count, duration),
         Err(e) => error!("Worker thread panicked: {:?}", e),
@@ -125,7 +123,7 @@ fn finish_join(
     restore_x3d(saved_x3d_mode, "on shutdown");
 }
 
-fn restore_x3d(saved_x3d_mode: Option<ananicy_platform::x3d::X3DMode>, reason: &str) {
+fn restore_x3d(saved_x3d_mode: Option<X3DMode>, reason: &str) {
     if let Some(mode) = saved_x3d_mode
         && ananicy_platform::x3d::set_driver_mode(mode)
     {

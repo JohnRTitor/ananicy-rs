@@ -1,4 +1,16 @@
 use {
+    ananicy_core::types::Pid,
+    std::{
+        ffi::CStr,
+        mem::MaybeUninit,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering::Relaxed},
+        },
+    },
+};
+
+use {
     libbpf_rs::{
         PerfBufferBuilder,
         skel::{OpenSkel, Skel, SkelBuilder},
@@ -9,7 +21,7 @@ use {
 
 use ananicy_core::process::Process;
 
-use {crate::ananicy_cpp::*, ananicy_platform::procfs::get_command_from_pid};
+use crate::ananicy_cpp::*;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -29,7 +41,7 @@ pub struct BpfMonitor {
 impl BpfMonitor {
     pub fn new(min_us: Option<u32>) -> Result<Self, io::Error> {
         let skel_builder = AnanicyCppSkelBuilder::default();
-        let open_object = Box::leak(Box::new(std::mem::MaybeUninit::uninit()));
+        let open_object = Box::leak(Box::new(MaybeUninit::uninit()));
         let mut open_skel = skel_builder
             .open(open_object)
             .map_err(|e| io::Error::other(format!("Failed to open BPF skeleton: {}", e)))?;
@@ -53,11 +65,7 @@ impl BpfMonitor {
         Ok(Self { skel })
     }
 
-    pub fn listen(
-        &mut self,
-        tx: Sender<Process>,
-        shutdown_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) {
+    pub fn listen(&mut self, tx: Sender<Process>, shutdown_flag: Arc<AtomicBool>) {
         let tx_clone = tx.clone();
         let shutdown_on_channel_close = shutdown_flag.clone();
 
@@ -83,15 +91,15 @@ impl BpfMonitor {
                 // which blocks the BPF polling loop, causing thousands of lost events under load.
                 // We just extract the 16-byte task name from the event. The worker thread will
                 // resolve the full command line name using procfs asynchronously.
-                let name = match std::ffi::CStr::from_bytes_until_nul(&event.task) {
+                let name = match CStr::from_bytes_until_nul(&event.task) {
                     Ok(cstr) => cstr.to_string_lossy().into_owned(),
                     Err(_) => String::from_utf8_lossy(&event.task).into_owned(),
                 };
 
-                let mut p = Process::new(ananicy_core::types::Pid(event.pid), name);
+                let mut p = Process::new(Pid(event.pid), name);
                 p.delta_us = Some(event.delta_us);
                 if tx_clone.send(p).is_err() {
-                    shutdown_on_channel_close.store(true, std::sync::atomic::Ordering::Relaxed);
+                    shutdown_on_channel_close.store(true, Relaxed);
                 }
             })
             .lost_cb(|cpu: i32, count: u64| {
@@ -109,7 +117,7 @@ impl BpfMonitor {
 
         // Polling loop
         loop {
-            if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            if shutdown_flag.load(Relaxed) {
                 break;
             }
             if let Err(e) = perf_buffer.poll(Duration::from_millis(100)) {

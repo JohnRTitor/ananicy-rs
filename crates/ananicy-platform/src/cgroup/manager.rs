@@ -1,8 +1,10 @@
+use std::{path::PathBuf, thread::available_parallelism};
+
 use {
     std::{
         fs::{self, OpenOptions},
         io::Write,
-        path::{Path, PathBuf},
+        path::Path,
     },
     tracing::{debug, error, warn},
 };
@@ -280,9 +282,7 @@ impl CgroupController for CgroupManager {
             return false;
         }
 
-        let logical_cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1) as u32;
+        let logical_cores = available_parallelism().map(|n| n.get()).unwrap_or(1) as u32;
         let clamped_quota = quota.clamp(0, 100);
 
         if self.info.version == CgroupVersion::V2 {
@@ -353,7 +353,7 @@ mod tests {
     use {
         super::*,
         crate::mounts::{CgroupInfo, CgroupVersion},
-        std::path::PathBuf,
+        PathBuf,
     };
 
     #[test]

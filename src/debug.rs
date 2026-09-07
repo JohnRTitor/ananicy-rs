@@ -1,5 +1,12 @@
 use {
     crate::cli::DebugTarget,
+    std::{
+        fs::{read_dir, read_to_string},
+        process::id,
+    },
+};
+
+use {
     ananicy_platform::mounts::{CgroupVersion, get_cgroup_info},
     tracing::{debug, warn},
 };
@@ -15,7 +22,7 @@ pub(crate) fn run(target: &DebugTarget) {
 
 /// Prints `path`'s contents wrapped in BEGIN/END markers.
 fn print_file(path: &str) {
-    let file_data = std::fs::read_to_string(path).unwrap_or_default();
+    let file_data = read_to_string(path).unwrap_or_default();
     // The format string is "#### BEGIN {0} #####\n{1}\n#### END {0} #####\n",
     // i.e. an extra newline is always inserted after the file content,
     // regardless of whether it already ends in one.
@@ -43,7 +50,7 @@ fn print_debug_cgroups() {
             "#### BEGIN listing files in {} #####",
             cgroup_path.display()
         );
-        match std::fs::read_dir(cgroup_path) {
+        match read_dir(cgroup_path) {
             Ok(entries) => {
                 // Deliberately not sorted: std::filesystem::directory_iterator
                 // yields entries in whatever order the underlying filesystem
@@ -66,7 +73,7 @@ fn print_debug_cgroups() {
         println!("#### END listing files in {} #####", cgroup_path.display());
     }
 
-    let pid = std::process::id();
+    let pid = id();
     println!("Unit name: {}", ananicy_platform::service::get_unit_name());
     println!("Cgroup: {}", get_cgroup_for_pid(pid));
 }
@@ -74,7 +81,7 @@ fn print_debug_cgroups() {
 /// Read the first line of `/proc/<pid>/cgroup` and take everything after
 /// the last `:`.
 fn get_cgroup_for_pid(pid: u32) -> String {
-    match std::fs::read_to_string(format!("/proc/{pid}/cgroup")) {
+    match read_to_string(format!("/proc/{pid}/cgroup")) {
         Ok(content) => {
             let first_line = content.lines().next().unwrap_or("");
             if first_line.is_empty() {

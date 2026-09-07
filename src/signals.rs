@@ -1,5 +1,6 @@
+use ananicy_core::{config::Config, process::Process, spawn_named_thread};
+
 use {
-    ananicy_core::config::Config,
     std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,7 +14,7 @@ pub(crate) fn install(
     config_path: String,
     is_systemd: bool,
     shutdown_flag: Arc<AtomicBool>,
-    tx: Sender<ananicy_core::process::Process>,
+    tx: Sender<Process>,
 ) {
     let config_clone = config;
     if let Ok(mut signals) = signal_hook::iterator::Signals::new([
@@ -21,7 +22,7 @@ pub(crate) fn install(
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
     ]) {
-        ananicy_core::spawn_named_thread!("ananicy-signal", move || {
+        spawn_named_thread!("ananicy-signal", move || {
             for sig in signals.forever() {
                 if sig == signal_hook::consts::SIGUSR1 {
                     info!("Received SIGUSR1, reloading config...");

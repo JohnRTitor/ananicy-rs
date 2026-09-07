@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use {
     ananicy_core::{
         config::{Config, ConfigSnapshot},
@@ -5,7 +7,6 @@ use {
         rules::Rules,
     },
     proptest::prelude::*,
-    std::sync::Arc,
 };
 
 proptest! {

@@ -1,3 +1,8 @@
+use {
+    std::fs::{OpenOptions, read_to_string},
+    tracing::warn,
+};
+
 use std::path::{Path, PathBuf};
 
 /// Represents the ownership classification of a target cgroup path.
@@ -49,7 +54,7 @@ impl CgroupOwnership {
 /// For systemd services, this is typically something like `/sys/fs/cgroup/system.slice/ananicy.service`.
 pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
     // We read /proc/self/cgroup and find the unified hierarchy path
-    let content = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let content = read_to_string("/proc/self/cgroup").ok()?;
     for line in content.lines() {
         if line.starts_with("0::") {
             let path = line.trim_start_matches("0::");
@@ -64,7 +69,7 @@ pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
             // writing PIDs into cgroups managed by systemd, producing EINVAL errors.
             // Only .service cgroups (our own systemd unit) are valid delegation targets.
             if path.ends_with(".scope") {
-                tracing::warn!(
+                warn!(
                     "Cgroup v2: Detected manual execution inside a transient .scope ('{}'). \
                      Cgroup mutations are disabled to prevent hijacking. \
                      Please run ananicy-rs as a systemd service with `Delegate=yes`.",
@@ -87,7 +92,7 @@ pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
 
 fn is_writable(path: &Path) -> bool {
     // Basic write access check by attempting to open for append/write
-    std::fs::OpenOptions::new()
+    OpenOptions::new()
         .write(true)
         .append(true)
         .open(path)

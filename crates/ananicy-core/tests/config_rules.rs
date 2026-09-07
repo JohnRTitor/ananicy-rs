@@ -1,10 +1,10 @@
-use ananicy_core::{config::Config, rules::Rules};
-
 use {
-    ananicy_core::config::LogLevel,
-    std::{fs, path::Path},
+    ananicy_core::{
+        config::{Config, ConfigSnapshot, LogLevel},
+        rules::Rules,
+    },
+    std::{fs, path::Path, sync::Arc},
 };
-
 // ---------------------------------------------------------
 // Config Tests
 // ---------------------------------------------------------
@@ -45,7 +45,7 @@ fn test_config_is_correctly_set_according_to_file() {
 // ---------------------------------------------------------
 #[test]
 fn test_load_rule_from_string() {
-    let conf = std::sync::Arc::new(Config::new(ananicy_core::config::ConfigSnapshot::default()));
+    let conf = Arc::new(Config::new(ConfigSnapshot::default()));
     let mut rules = Rules::new(conf.clone());
 
     assert_eq!(rules.size(), 0);
@@ -98,7 +98,7 @@ fn test_load_rule_from_string() {
 
 #[test]
 fn test_whitespace_only_lines_are_skipped() {
-    let conf = std::sync::Arc::new(Config::new(ananicy_core::config::ConfigSnapshot::default()));
+    let conf = Arc::new(Config::new(ConfigSnapshot::default()));
     let mut rules = Rules::new(conf.clone());
 
     assert!(!rules.load_rule_from_string("      "));
@@ -110,7 +110,7 @@ fn test_whitespace_only_lines_are_skipped() {
 
 #[test]
 fn test_trailing_carriage_return_is_handled() {
-    let conf = std::sync::Arc::new(Config::new(ananicy_core::config::ConfigSnapshot::default()));
+    let conf = Arc::new(Config::new(ConfigSnapshot::default()));
     let mut rules = Rules::new(conf.clone());
 
     assert!(!rules.load_rule_from_string("\r"));
@@ -125,7 +125,7 @@ fn test_trailing_carriage_return_is_handled() {
 
 #[test]
 fn test_nested_json_objects_parse_correctly() {
-    let conf = std::sync::Arc::new(Config::new(ananicy_core::config::ConfigSnapshot::default()));
+    let conf = Arc::new(Config::new(ConfigSnapshot::default()));
     let mut rules = Rules::new(conf.clone());
 
     // The rust parser parses the JSON into a value. It should ignore `extra`.
@@ -138,7 +138,7 @@ fn test_nested_json_objects_parse_correctly() {
 
 #[test]
 fn test_load_rules_from_crlf_file() {
-    let conf = std::sync::Arc::new(Config::new(ananicy_core::config::ConfigSnapshot::default()));
+    let conf = Arc::new(Config::new(ConfigSnapshot::default()));
     let mut rules = Rules::new(conf.clone());
 
     let tmp_path = Path::new("tests/fixtures/test-crlf.rules");

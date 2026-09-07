@@ -1,6 +1,10 @@
 #![allow(clippy::collapsible_if)]
 use {
-    ananicy_core::process::Process,
+    ananicy_core::{process::Process, types::Pid},
+    std::{io::ErrorKind::PermissionDenied, sync::mpsc::Sender},
+};
+
+use {
     lru::LruCache,
     std::{
         fs,
@@ -83,7 +87,7 @@ pub fn get_command_from_pid(pid: i32) -> String {
                 }
             }
             Err(e) => {
-                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                if e.kind() == PermissionDenied {
                     if let Ok(mut cache) = get_exe_fail_cache().lock() {
                         cache.put(pid, exe_failures + 1);
                     }
@@ -106,7 +110,7 @@ pub fn get_command_from_pid(pid: i32) -> String {
 pub struct ProcfsScanner;
 
 impl ProcfsScanner {
-    pub fn full_scan(tx: std::sync::mpsc::Sender<Process>) {
+    pub fn full_scan(tx: Sender<Process>) {
         if let Ok(entries) = fs::read_dir("/proc") {
             for entry in entries.flatten() {
                 let file_name = entry.file_name();
@@ -117,10 +121,7 @@ impl ProcfsScanner {
                     && let Ok(pid) = pid_str.parse::<i32>()
                 {
                     let name = get_command_from_pid(pid);
-                    if tx
-                        .send(Process::new(ananicy_core::types::Pid(pid), name))
-                        .is_err()
-                    {
+                    if tx.send(Process::new(Pid(pid), name)).is_err() {
                         break;
                     }
                 }

@@ -1,4 +1,11 @@
 #![allow(clippy::collapsible_if, clippy::io_other_error)]
+use {
+    crate::abi::sched::{SCHED_FIFO, SCHED_RR},
+    ananicy_core::worker::{PlatformError, PlatformError::Unsupported},
+    std::time::Duration,
+    tracing::error,
+};
+
 pub mod abi;
 pub mod cgroup;
 pub mod cgroups;
@@ -29,7 +36,7 @@ impl LinuxPlatform {
             cgroup_resolver: cgroup::process::CachingCgroupResolver::new(
                 inner,
                 5000,
-                std::time::Duration::from_secs(1),
+                Duration::from_secs(1),
             ),
         }
     }
@@ -40,7 +47,7 @@ impl PlatformActions for LinuxPlatform {
         // Read /proc/<pid>/stat and check the policy field (policy is field 41)
         // Or simply check if sched_getscheduler returns SCHED_FIFO or SCHED_RR
         if let Ok(sched) = crate::abi::sched::sched_getscheduler(pid) {
-            sched == crate::abi::sched::SCHED_FIFO || sched == crate::abi::sched::SCHED_RR
+            sched == SCHED_FIFO || sched == SCHED_RR
         } else {
             false
         }
@@ -62,60 +69,34 @@ impl PlatformActions for LinuxPlatform {
         unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) as u32 }
     }
 
-    fn set_priority(&self, pid: i32, nice: i32) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_priority(&self, pid: i32, nice: i32) -> Result<(), PlatformError> {
         priority::set_priority(pid, nice)
     }
 
-    fn set_latency_nice(
-        &self,
-        pid: i32,
-        lat_nice: i32,
-    ) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_latency_nice(&self, pid: i32, lat_nice: i32) -> Result<(), PlatformError> {
         priority::set_latency_nice(pid, lat_nice)
     }
 
-    fn set_sched(
-        &self,
-        pid: i32,
-        sched: &str,
-        rtprio: u32,
-    ) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_sched(&self, pid: i32, sched: &str, rtprio: u32) -> Result<(), PlatformError> {
         priority::set_sched(pid, sched, rtprio)
     }
 
-    fn set_io_priority(
-        &self,
-        pid: i32,
-        ioclass: &str,
-        ionice: i32,
-    ) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_io_priority(&self, pid: i32, ioclass: &str, ionice: i32) -> Result<(), PlatformError> {
         priority::set_io_priority(pid, ioclass, ionice)
     }
 
-    fn set_oom_score_adj(
-        &self,
-        pid: i32,
-        oom_score_adj: i32,
-    ) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_oom_score_adj(&self, pid: i32, oom_score_adj: i32) -> Result<(), PlatformError> {
         priority::set_oom_score_adjust(pid, oom_score_adj)
     }
 
-    fn add_pid_to_cgroup(
-        &self,
-        pid: i32,
-        cgroup: &str,
-    ) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn add_pid_to_cgroup(&self, pid: i32, cgroup: &str) -> Result<(), PlatformError> {
         cgroups::add_pid_to_cgroup(pid, cgroup)
     }
 
-    fn set_affinity(
-        &self,
-        pid: i32,
-        cpuset: &CpuSet,
-    ) -> Result<(), ananicy_core::worker::PlatformError> {
+    fn set_affinity(&self, pid: i32, cpuset: &CpuSet) -> Result<(), PlatformError> {
         if let Err(e) = abi::affinity::set_affinity(pid, cpuset) {
-            tracing::error!("set_affinity failed for pid {}: {}", pid, e);
-            Err(ananicy_core::worker::PlatformError::Unsupported)
+            error!("set_affinity failed for pid {}: {}", pid, e);
+            Err(Unsupported)
         } else {
             Ok(())
         }

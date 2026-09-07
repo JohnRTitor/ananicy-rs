@@ -1,3 +1,5 @@
+use std::{convert::Infallible, process::exit, str::FromStr};
+
 use {
     nanoargs::{ArgBuilder, Flag, Opt, ParseError, Pos},
     std::env,
@@ -29,7 +31,7 @@ pub enum DumpTarget {
     Autogroup,
 }
 
-impl std::str::FromStr for DumpTarget {
+impl FromStr for DumpTarget {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -52,8 +54,8 @@ pub enum DebugTarget {
     Unknown(String),
 }
 
-impl std::str::FromStr for DebugTarget {
-    type Err = std::convert::Infallible;
+impl FromStr for DebugTarget {
+    type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
@@ -93,7 +95,7 @@ impl Args {
             .build()
             .unwrap_or_else(|e| {
                 eprintln!("internal CLI parser configuration error: {}", e);
-                std::process::exit(2);
+                exit(2);
             });
 
         let start_parser = ArgBuilder::new()
@@ -102,7 +104,7 @@ impl Args {
             .build()
             .unwrap_or_else(|e| {
                 eprintln!("internal CLI parser configuration error: {}", e);
-                std::process::exit(2);
+                exit(2);
             });
 
         let parser = ArgBuilder::new()
@@ -141,7 +143,7 @@ impl Args {
             .build()
             .unwrap_or_else(|e| {
                 eprintln!("internal CLI parser configuration error: {}", e);
-                std::process::exit(2);
+                exit(2);
             });
 
         let args: Vec<String> = env::args().skip(1).collect();
@@ -164,7 +166,7 @@ impl Args {
                             e
                         );
                         eprintln!("\nFor more information, try '--help'.");
-                        std::process::exit(2);
+                        exit(2);
                     }
                     None => None,
                 };
@@ -177,7 +179,7 @@ impl Args {
                             e
                         );
                         eprintln!("\nFor more information, try '--help'.");
-                        std::process::exit(2);
+                        exit(2);
                     }
                     None => None,
                 };
@@ -189,7 +191,7 @@ impl Args {
                         eprintln!(
                             "error: parser returned a subcommand name without its parsed arguments"
                         );
-                        std::process::exit(2);
+                        exit(2);
                     };
                     if subcmd_name == "dump" {
                         let sub_action_str = sub_result.get_positionals()[0].to_string();
@@ -197,7 +199,7 @@ impl Args {
                             Ok(sub_action) => Some(Commands::Dump { sub_action }),
                             Err(e) => {
                                 eprintln!("error: {}", e);
-                                std::process::exit(2);
+                                exit(2);
                             }
                         }
                     } else if subcmd_name == "start" {
@@ -211,7 +213,7 @@ impl Args {
 
                 if command.is_none() && !reload && !force_remove_semaphore {
                     print!("{}", parser.help_text());
-                    std::process::exit(0);
+                    exit(0);
                 }
 
                 Args {
@@ -232,11 +234,11 @@ impl Args {
             Err(ParseError::HelpRequested(text)) => {
                 // clap prints usage then commands then options
                 print!("{}", text);
-                std::process::exit(0);
+                exit(0);
             }
             Err(ParseError::VersionRequested(text)) => {
                 println!("{}", text);
-                std::process::exit(0);
+                exit(0);
             }
             Err(ParseError::MissingValue(name)) => {
                 let name_upper = name.to_uppercase().replace("-", "_");
@@ -245,13 +247,13 @@ impl Args {
                     name, name_upper
                 );
                 eprintln!("\nFor more information, try '--help'.");
-                std::process::exit(2);
+                exit(2);
             }
             Err(ParseError::UnknownArgument(token)) => {
                 eprintln!("error: unexpected argument '{}' found", token);
                 eprintln!("\nUsage: ananicy-rs [OPTIONS] [COMMAND]");
                 eprintln!("\nFor more information, try '--help'.");
-                std::process::exit(2);
+                exit(2);
             }
             Err(ParseError::MissingRequired(name)) => {
                 eprintln!(
@@ -260,7 +262,7 @@ impl Args {
                 );
                 eprintln!("\nUsage: ananicy-rs dump <SUB_ACTION>");
                 eprintln!("\nFor more information, try '--help'.");
-                std::process::exit(2);
+                exit(2);
             }
             Err(ParseError::NoSubcommand(_)) | Err(ParseError::UnknownSubcommand(_)) => {
                 let help_text = parser.help_text();
@@ -305,7 +307,7 @@ impl Args {
                     .build()
                     .unwrap_or_else(|e| {
                         eprintln!("internal CLI parser configuration error: {}", e);
-                        std::process::exit(2);
+                        exit(2);
                     });
 
                 match fallback_parser.parse(args) {
@@ -317,7 +319,7 @@ impl Args {
                             match positionals.get(1) {
                                 None => {
                                     eprintln!("error: A sub-action must be specified for debug.");
-                                    std::process::exit(1);
+                                    exit(1);
                                 }
                                 Some(sub) => Some(Commands::Debug {
                                     // infallible: see DebugTarget::from_str
@@ -347,7 +349,7 @@ impl Args {
                                     e
                                 );
                                 eprintln!("\nFor more information, try '--help'.");
-                                std::process::exit(2);
+                                exit(2);
                             }
                             None => None,
                         };
@@ -360,7 +362,7 @@ impl Args {
                                     e
                                 );
                                 eprintln!("\nFor more information, try '--help'.");
-                                std::process::exit(2);
+                                exit(2);
                             }
                             None => None,
                         };
@@ -369,7 +371,7 @@ impl Args {
 
                         if command.is_none() && !reload && !force_remove_semaphore {
                             print!("{}", help_text);
-                            std::process::exit(0);
+                            exit(0);
                         }
 
                         Args {
@@ -389,13 +391,13 @@ impl Args {
                     }
                     Err(e) => {
                         eprintln!("error: {}", e);
-                        std::process::exit(2);
+                        exit(2);
                     }
                 }
             }
             Err(e) => {
                 eprintln!("error: {}", e);
-                std::process::exit(2);
+                exit(2);
             }
         }
     }

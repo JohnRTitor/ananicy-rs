@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter, Result};
+
 use {
     std::{fs, io, path::Path, sync::Arc},
     tracing::{error, info, warn},
@@ -31,8 +33,8 @@ impl LogLevel {
     }
 }
 
-impl std::fmt::Display for LogLevel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for LogLevel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
             LogLevel::Trace => write!(f, "trace"),
             LogLevel::Debug => write!(f, "debug"),

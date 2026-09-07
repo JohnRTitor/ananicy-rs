@@ -1,3 +1,8 @@
+use {
+    std::{thread::sleep, time::Duration},
+    tracing::trace,
+};
+
 use std::{fs, path::PathBuf, sync::RwLock};
 
 pub use crate::cgroup::{CgroupInfo, CgroupVersion};
@@ -17,7 +22,7 @@ pub fn init_cgroups() -> bool {
         if info.version != CgroupVersion::None {
             return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        sleep(Duration::from_millis(500));
     }
     false
 }
@@ -47,7 +52,7 @@ pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
                 if let Ok(controllers) = fs::read_to_string(&controllers_path)
                     && controllers.split_whitespace().any(|c| c == "cpu")
                 {
-                    tracing::trace!(
+                    trace!(
                         "get_cgroup_version: Found cpu controller in {}",
                         controllers_path.display()
                     );
@@ -59,7 +64,7 @@ pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
                 let _ = fs::remove_dir(&test_cgroup);
 
                 if has_cpu_controller && has_cpu_max {
-                    tracing::trace!("Found cgroup v2 at {}", mount_point.display());
+                    trace!("Found cgroup v2 at {}", mount_point.display());
                     info.version = CgroupVersion::V2;
                     info.mount_point = mount_point.clone();
                     break;
@@ -70,7 +75,7 @@ pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
             && let Some(parent) = mount_point.parent()
             && parent.join("cpu").exists()
         {
-            tracing::trace!("Found cgroup v1 at {}", parent.display());
+            trace!("Found cgroup v1 at {}", parent.display());
             info.version = CgroupVersion::V1;
             info.mount_point = parent.to_path_buf();
         }

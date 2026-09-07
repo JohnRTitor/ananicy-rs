@@ -1,3 +1,9 @@
+use std::{
+    env::var,
+    fs::{read_dir, read_to_string},
+    io::Error,
+};
+
 // C++ tests:
 // Utils -> Get Environment
 // Utils -> Get error string (not applicable, Rust uses std::io::Error)
@@ -7,7 +13,7 @@
 
 #[test]
 fn test_get_environment() {
-    let env_pwd = std::env::var("PWD");
+    let env_pwd = var("PWD");
     // Depending on the test runner environment, PWD might not match current_dir exactly if symlinks exist.
     // Just assert it returns a result successfully when PWD is set.
     assert!(env_pwd.is_ok() || env_pwd.is_err());
@@ -59,6 +65,6 @@ fn test_process_info_map() {
     // In ananicy-rs, process discovery happens through procfs, which returns results.
     // We just verify that querying /proc doesn't crash, maintaining parity with basic
     // "Get process info map" tests which only check if map is empty/valid.
-    let procs = std::fs::read_dir("/proc");
+    let procs = read_dir("/proc");
     assert!(procs.is_ok());
 }

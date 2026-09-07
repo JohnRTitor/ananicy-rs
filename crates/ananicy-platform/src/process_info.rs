@@ -1,3 +1,5 @@
+use std::fs::{read_link, read_to_string};
+
 use {
     serde::{Deserialize, Serialize},
     serde_json::Value,
@@ -26,19 +28,19 @@ pub struct ProcessInfo {
 
 impl ProcessInfo {
     pub fn new(pid: i32, tpid: i32, rule: Option<String>) -> Self {
-        let exe = std::fs::read_link(format!("/proc/{}/exe", pid))
+        let exe = read_link(format!("/proc/{}/exe", pid))
             .map(|p| p.to_string_lossy().into_owned())
             .ok();
-        let cmd = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        let cmd = read_to_string(format!("/proc/{}/comm", pid))
             .unwrap_or_default()
             .trim()
             .to_string();
-        let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))
+        let cmdline = read_to_string(format!("/proc/{}/cmdline", pid))
             .unwrap_or_default()
             .replace('\0', " ")
             .trim()
             .to_string();
-        let oom_score_adj = std::fs::read_to_string(format!("/proc/{}/oom_score_adj", pid))
+        let oom_score_adj = read_to_string(format!("/proc/{}/oom_score_adj", pid))
             .unwrap_or_default()
             .trim()
             .parse::<i32>()
@@ -56,20 +58,19 @@ impl ProcessInfo {
         oom_score_adj: i32,
         rule: Option<String>,
     ) -> Self {
-        let comm = std::fs::read_to_string(format!("/proc/{}/task/{}/comm", pid, tpid))
+        let comm = read_to_string(format!("/proc/{}/task/{}/comm", pid, tpid))
             .unwrap_or_default()
             .trim()
             .to_string();
 
-        let stat = std::fs::read_to_string(format!("/proc/{}/task/{}/stat", pid, tpid))
+        let stat = read_to_string(format!("/proc/{}/task/{}/stat", pid, tpid))
             .unwrap_or_default()
             .trim()
             .to_string();
         let stat_name = parse_stat(&stat).unwrap_or_default();
 
         let autogroup_val =
-            std::fs::read_to_string(format!("/proc/{}/task/{}/autogroup", pid, tpid))
-                .unwrap_or_default();
+            read_to_string(format!("/proc/{}/task/{}/autogroup", pid, tpid)).unwrap_or_default();
         let autogroup = get_autogroup_from_str(&autogroup_val);
 
         let size = std::mem::size_of::<crate::abi::sched_attr::sched_attr>() as u32;
