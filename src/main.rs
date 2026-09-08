@@ -108,7 +108,7 @@ fn main() {
 
     if args.manual_scanning {
         info!("Manual scanning enabled! Increasing Ananicy Nice value to prevent lag.");
-        let _ = ananicy_platform::priority::set_priority(id() as i32, 19);
+        let _ = ananicy_platform::priority::set_priority(id() as i32, &[], 19);
         info!("Checking frequency set to {}", config.get().check_freq);
     }
 

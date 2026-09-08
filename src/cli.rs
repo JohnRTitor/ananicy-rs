@@ -83,31 +83,8 @@ pub enum Commands {
 }
 
 impl Args {
-    pub fn parse() -> Self {
-        let dump_parser = ArgBuilder::new()
-            .name("dump")
-            .description("Dump internal state")
-            .positional(
-                Pos::new("sub_action")
-                    .desc("What to dump: rules, types, cgroups, proc, autogroup")
-                    .required(),
-            )
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("internal CLI parser configuration error: {}", e);
-                exit(2);
-            });
-
-        let start_parser = ArgBuilder::new()
-            .name("start")
-            .description("Start the daemon")
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("internal CLI parser configuration error: {}", e);
-                exit(2);
-            });
-
-        let parser = ArgBuilder::new()
+    fn base_parser() -> ArgBuilder {
+        ArgBuilder::new()
             .name("ananicy-rs")
             .version(env!("CARGO_PKG_VERSION"))
             .description("ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage")
@@ -138,6 +115,33 @@ impl Args {
                     .short('v')
                     .desc("Enable verbose output"),
             )
+    }
+
+    pub fn parse() -> Self {
+        let dump_parser = ArgBuilder::new()
+            .name("dump")
+            .description("Dump internal state")
+            .positional(
+                Pos::new("sub_action")
+                    .desc("What to dump: rules, types, cgroups, proc, autogroup")
+                    .required(),
+            )
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!("internal CLI parser configuration error: {}", e);
+                exit(2);
+            });
+
+        let start_parser = ArgBuilder::new()
+            .name("start")
+            .description("Start the daemon")
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!("internal CLI parser configuration error: {}", e);
+                exit(2);
+            });
+
+        let parser = Self::base_parser()
             .subcommand("dump", "Dump internal state", dump_parser)
             .subcommand("start", "Start the daemon", start_parser)
             .build()
@@ -266,39 +270,7 @@ impl Args {
             }
             Err(ParseError::NoSubcommand(_)) | Err(ParseError::UnknownSubcommand(_)) => {
                 let help_text = parser.help_text();
-                let fallback_parser = ArgBuilder::new()
-                    .name("ananicy-rs")
-                    .version(env!("CARGO_PKG_VERSION"))
-                    .description(
-                        "ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage",
-                    )
-                    .flag(Flag::new("systemd").desc("Run as systemd service"))
-                    .flag(Flag::new("daemon").desc("Run as daemon"))
-                    .option(Opt::new("config").desc("Config path").placeholder("CONFIG"))
-                    .option(
-                        Opt::new("config-dir")
-                            .desc("Config directory")
-                            .placeholder("CONFIG_DIR"),
-                    )
-                    .flag(Flag::new("reload").desc("Reload configuration/rules"))
-                    .flag(Flag::new("force-remove-semaphore").desc("Force remove IPC semaphore"))
-                    .flag(Flag::new("manual-scanning").desc("Enable manual periodic scanning"))
-                    .flag(Flag::new("benchmark").desc("Benchmark mode"))
-                    .option(
-                        Opt::new("benchmark-count")
-                            .desc("Number of times to benchmark")
-                            .placeholder("BENCHMARK_COUNT"),
-                    )
-                    .option(
-                        Opt::new("bpf-min-us")
-                            .desc("Minimum microseconds for BPF intervals")
-                            .placeholder("BPF_MIN_US"),
-                    )
-                    .flag(
-                        Flag::new("verbose")
-                            .short('v')
-                            .desc("Enable verbose output"),
-                    )
+                let fallback_parser = Self::base_parser()
                     .positional(Pos::new("action").desc("Unknown action fallback"))
                     // Undocumented second positional used only by the `debug` action
                     // (e.g. `debug cgroups`); intentionally not `.required()` so

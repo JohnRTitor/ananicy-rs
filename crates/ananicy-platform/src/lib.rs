@@ -66,15 +66,19 @@ impl PlatformActions for LinuxPlatform {
     }
 
     fn get_max_cores(&self) -> u32 {
-        unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) as u32 }
+        abi::affinity::get_max_number_of_cpus()
     }
 
-    fn set_priority(&self, pid: i32, nice: i32) -> Result<(), PlatformError> {
-        priority::set_priority(pid, nice)
+    fn get_tids(&self, pid: i32) -> Result<Vec<i32>, PlatformError> {
+        crate::procfs::get_tids(pid)
     }
 
-    fn set_latency_nice(&self, pid: i32, lat_nice: i32) -> Result<(), PlatformError> {
-        priority::set_latency_nice(pid, lat_nice)
+    fn set_priority(&self, pid: i32, tids: &[i32], nice: i32) -> Result<(), PlatformError> {
+        priority::set_priority(pid, tids, nice)
+    }
+
+    fn set_latency_nice(&self, pid: i32, tids: &[i32], lat_nice: i32) -> Result<(), PlatformError> {
+        priority::set_latency_nice(pid, tids, lat_nice)
     }
 
     fn set_sched(&self, pid: i32, sched: &str, rtprio: u32) -> Result<(), PlatformError> {
@@ -93,8 +97,8 @@ impl PlatformActions for LinuxPlatform {
         cgroups::add_pid_to_cgroup(pid, cgroup)
     }
 
-    fn set_affinity(&self, pid: i32, cpuset: &CpuSet) -> Result<(), PlatformError> {
-        if let Err(e) = abi::affinity::set_affinity(pid, cpuset) {
+    fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError> {
+        if let Err(e) = abi::affinity::set_affinity(pid, tids, cpuset) {
             error!("set_affinity failed for pid {}: {}", pid, e);
             Err(Unsupported)
         } else {

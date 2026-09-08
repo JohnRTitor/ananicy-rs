@@ -13,13 +13,13 @@ use {
 
 pub struct Rules {
     config: Arc<Config>,
-    programs: HashMap<RuleName, Value>,
-    types: HashMap<TypeName, Value>,
-    cgroups: HashMap<CgroupName, Value>,
+    programs: HashMap<RuleName, Arc<Value>>,
+    types: HashMap<TypeName, Arc<Value>>,
+    cgroups: HashMap<CgroupName, Arc<Value>>,
     // Store fallback regex rules if enabled
     regex_programs: Vec<(pcre2::bytes::Regex, String)>,
     // Cache for resolved rules to avoid linear scan overhead on every process
-    resolved_cache: Mutex<lru::LruCache<String, Option<Value>>>,
+    resolved_cache: Mutex<lru::LruCache<String, Option<Arc<Value>>>>,
 }
 
 impl Rules {
@@ -76,16 +76,20 @@ impl Rules {
         // Pre-merge all programs with their respective types so we don't have to
         // do expensive JSON merge-patches at runtime.
         let mut updated_programs = HashMap::new();
-        for (name, mut rule) in self.programs.drain() {
+        for (name, rule_arc) in self.programs.drain() {
+            let mut rule = match Arc::try_unwrap(rule_arc) {
+                Ok(r) => r,
+                Err(arc) => (*arc).clone(),
+            };
             // Merge into a clone so a program rule cannot mutate a shared type definition.
             if let Some(type_name) = rule.get("type").and_then(|v| v.as_str())
                 && let Some(type_rule) = self.types.get(&TypeName(type_name.to_string()))
             {
-                let mut merged = type_rule.clone();
+                let mut merged = (**type_rule).clone();
                 merge_patch(&mut merged, &rule);
                 rule = merged;
             }
-            updated_programs.insert(name, rule);
+            updated_programs.insert(name, Arc::new(rule));
         }
         self.programs = updated_programs;
 
@@ -140,7 +144,7 @@ impl Rules {
             Ok(value) => {
                 if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
                     self.programs
-                        .insert(RuleName(name.to_string()), value.clone());
+                        .insert(RuleName(name.to_string()), Arc::new(value.clone()));
 
                     if let Some(regex_str) = value.get("name_regex").and_then(|v| v.as_str()) {
                         match pcre2::bytes::RegexBuilder::new()
@@ -157,12 +161,13 @@ impl Rules {
                     // Type rule (has 'type' but no 'name')
                     // Actually, wait, program rules also have 'type'.
                     // The C++ logic sets it as a type rule if it HAS 'type' and NO 'name'
-                    self.types.insert(TypeName(type_name.to_string()), value);
+                    self.types
+                        .insert(TypeName(type_name.to_string()), Arc::new(value));
                     true
                 } else if let Some(cgroup_name) = value.get("cgroup").and_then(|v| v.as_str()) {
                     // Cgroup rule
                     self.cgroups
-                        .insert(CgroupName(cgroup_name.to_string()), value);
+                        .insert(CgroupName(cgroup_name.to_string()), Arc::new(value));
                     true
                 } else {
                     error!(
@@ -179,12 +184,10 @@ impl Rules {
         }
     }
 
-    pub fn get_rule(&self, name: &str) -> Option<Value> {
+    pub fn get_rule(&self, name: &str) -> Option<Arc<Value>> {
         // 0. Check cache
-        let cache_key = name.to_string();
-
         if let Ok(mut cache) = self.resolved_cache.lock()
-            && let Some(cached_rule) = cache.get(&cache_key)
+            && let Some(cached_rule) = cache.get(name)
         {
             return cached_rule.clone();
         }
@@ -193,13 +196,13 @@ impl Rules {
 
         // Update cache
         if let Ok(mut cache) = self.resolved_cache.lock() {
-            cache.put(cache_key, best_match.clone());
+            cache.put(name.to_string(), best_match.clone());
         }
 
         best_match
     }
 
-    fn find_best_match(&self, target_name: &str) -> Option<Value> {
+    fn find_best_match(&self, target_name: &str) -> Option<Arc<Value>> {
         // 1. Exact match
         if let Some(rule) = self.programs.get(&RuleName(target_name.to_string())) {
             return Some(rule.clone());
@@ -221,15 +224,15 @@ impl Rules {
         self.programs.len()
     }
 
-    pub fn get_cgroups(&self) -> &HashMap<CgroupName, Value> {
+    pub fn get_cgroups(&self) -> &HashMap<CgroupName, Arc<Value>> {
         &self.cgroups
     }
 
-    pub fn get_rules(&self) -> &HashMap<RuleName, Value> {
+    pub fn get_rules(&self) -> &HashMap<RuleName, Arc<Value>> {
         &self.programs
     }
 
-    pub fn get_types(&self) -> &HashMap<TypeName, Value> {
+    pub fn get_types(&self) -> &HashMap<TypeName, Arc<Value>> {
         &self.types
     }
 }

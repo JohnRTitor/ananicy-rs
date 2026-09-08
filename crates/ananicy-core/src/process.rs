@@ -21,6 +21,12 @@ pub struct Process {
     pub name: String,
     // delta_us is optional and only used for BPF
     pub delta_us: Option<u64>,
+
+    /// Indicates if `name` is fully resolved and authoritative.
+    /// If false, the worker may need to read procfs (e.g., `/proc/<pid>/comm` or `/proc/<pid>/cmdline`)
+    /// to get the full name, which is necessary for BPF events that only provide a 16-byte truncated name.
+    /// If true, the worker skips this redundant I/O, optimizing performance for `netlink` and `procfs` events.
+    pub name_is_authoritative: bool,
 }
 
 impl Process {
@@ -29,7 +35,15 @@ impl Process {
             identity: ProcessIdentity::new(pid),
             name,
             delta_us: None,
+            name_is_authoritative: false,
         }
+    }
+
+    /// Marks the process name as authoritative (fully resolved by the event source).
+    /// Calling this prevents the core worker from doing redundant procfs I/O to resolve the name again.
+    pub fn with_authoritative_name(mut self) -> Self {
+        self.name_is_authoritative = true;
+        self
     }
 }
 

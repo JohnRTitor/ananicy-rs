@@ -37,27 +37,17 @@ fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformE
     Err(Io(err))
 }
 
-pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), PlatformError> {
+pub fn set_priority(pid: i32, tids: &[i32], nice_value: i32) -> Result<(), PlatformError> {
     use rustix::process::{Pid, setpriority_process};
-    let task_path = format!("/proc/{}/task", pid);
     let mut last_err = None;
 
-    if let Ok(entries) = fs::read_dir(&task_path) {
-        for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string()
-                && let Ok(tid) = file_name.parse::<i32>()
-            {
-                let who = Pid::from_raw(tid);
-                if let Err(e) = setpriority_process(who, nice_value) {
-                    last_err = Some(e.into());
-                } else {
-                    last_err = Some(io::Error::from_raw_os_error(0));
-                }
-            }
+    for &tid in tids {
+        let who = Pid::from_raw(tid);
+        if let Err(e) = setpriority_process(who, nice_value) {
+            last_err = Some(e.into());
+        } else {
+            last_err = Some(io::Error::from_raw_os_error(0));
         }
-    } else {
-        // Directory doesn't exist (ESRCH)
-        return Err(NotFound);
     }
 
     match last_err {
@@ -66,9 +56,12 @@ pub fn set_priority(pid: i32, nice_value: i32) -> Result<(), PlatformError> {
     }
 }
 
-pub fn set_latency_nice(pid: i32, latency_nice_value: i32) -> Result<(), PlatformError> {
+pub fn set_latency_nice(
+    pid: i32,
+    tids: &[i32],
+    latency_nice_value: i32,
+) -> Result<(), PlatformError> {
     // LATENCY_NICE is applied via sched_setattr
-    let task_path = format!("/proc/{}/task", pid);
     let mut last_err = None;
 
     // SCHED_FLAG_LATENCY_NICE (matching C++ exactly)
@@ -77,27 +70,19 @@ pub fn set_latency_nice(pid: i32, latency_nice_value: i32) -> Result<(), Platfor
 
     // ananicy_sched_attr in C++ had sched_latency_nice as the 11th field
 
-    if let Ok(entries) = fs::read_dir(&task_path) {
-        for entry in entries.flatten() {
-            if let Ok(file_name) = entry.file_name().into_string()
-                && let Ok(tid) = file_name.parse::<i32>()
-            {
-                let attr = sched_attr {
-                    size: std::mem::size_of::<sched_attr>() as u32,
-                    sched_flags: SCHED_FLAG_LATENCY_NICE | SCHED_FLAG_KEEP_PARAMS,
-                    sched_latency_nice: latency_nice_value,
-                    ..Default::default()
-                };
+    for &tid in tids {
+        let attr = sched_attr {
+            size: std::mem::size_of::<sched_attr>() as u32,
+            sched_flags: SCHED_FLAG_LATENCY_NICE | SCHED_FLAG_KEEP_PARAMS,
+            sched_latency_nice: latency_nice_value,
+            ..Default::default()
+        };
 
-                if let Err(e) = crate::abi::sched_attr::sched_setattr(tid, &attr, 0) {
-                    last_err = Some(e);
-                } else {
-                    last_err = Some(io::Error::from_raw_os_error(0));
-                }
-            }
+        if let Err(e) = crate::abi::sched_attr::sched_setattr(tid, &attr, 0) {
+            last_err = Some(e);
+        } else {
+            last_err = Some(io::Error::from_raw_os_error(0));
         }
-    } else {
-        return Err(NotFound);
     }
 
     match last_err {
