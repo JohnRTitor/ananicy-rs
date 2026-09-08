@@ -1,8 +1,4 @@
-use std::{
-    env::var,
-    fs::{read_dir, read_to_string},
-    io::Error,
-};
+use std::{env::var, fs::read_dir};
 
 // C++ tests:
 // Utils -> Get Environment

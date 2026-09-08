@@ -59,16 +59,19 @@ pub trait PlatformActions: Send + Sync {
         None
     }
 
-    /// Return the maximum number of configured CPU cores
     fn get_max_cores(&self) -> u32;
 
-    fn set_priority(&self, pid: i32, nice: i32) -> Result<(), PlatformError>;
-    fn set_latency_nice(&self, pid: i32, lat_nice: i32) -> Result<(), PlatformError>;
+    fn get_tids(&self, pid: i32) -> Result<Vec<i32>, PlatformError> {
+        Ok(vec![pid])
+    }
+
+    fn set_priority(&self, pid: i32, tids: &[i32], nice: i32) -> Result<(), PlatformError>;
+    fn set_latency_nice(&self, pid: i32, tids: &[i32], lat_nice: i32) -> Result<(), PlatformError>;
     fn set_sched(&self, pid: i32, sched: &str, rtprio: u32) -> Result<(), PlatformError>;
     fn set_io_priority(&self, pid: i32, ioclass: &str, ionice: i32) -> Result<(), PlatformError>;
     fn set_oom_score_adj(&self, pid: i32, oom_score_adj: i32) -> Result<(), PlatformError>;
     fn add_pid_to_cgroup(&self, pid: i32, cgroup: &str) -> Result<(), PlatformError>;
-    fn set_affinity(&self, pid: i32, cpuset: &CpuSet) -> Result<(), PlatformError>;
+    fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError>;
 }
 
 pub struct Worker {
@@ -127,14 +130,12 @@ impl Worker {
             }
 
             let mut p = p;
-            // Unconditionally try to resolve the full command name in the worker thread.
-            // BPF only provides a truncated 15-char kernel task name, which can also
-            // differ from the actual argv[0] basename (e.g. for wrapper scripts or
-            // process-title tricks). Doing this here ensures parity with C++ while
-            // avoiding blocking the high-throughput BPF polling loop.
-            let full_name = self.platform.get_process_name(p.identity.pid.0);
-            if !full_name.is_empty() && full_name != "<unknown>" {
-                p.name = full_name;
+            if !p.name_is_authoritative {
+                let full_name = self.platform.get_process_name(p.identity.pid.0);
+                if !full_name.is_empty() && full_name != "<unknown>" {
+                    p.name = full_name;
+                    p.name_is_authoritative = true;
+                }
             }
 
             let rules = &self.rules;
@@ -151,9 +152,19 @@ impl Worker {
                     info!("{}({})", p.name, p.identity.pid.0);
                 }
 
-                if let Err(e) =
-                    self.apply_rule(&p, &rule, &cfg, is_realtime, is_affected_by_cgroup_bug)
-                {
+                let tids = self
+                    .platform
+                    .get_tids(p.identity.pid.0)
+                    .unwrap_or_else(|_| vec![p.identity.pid.0]);
+
+                if let Err(e) = self.apply_rule(
+                    &p,
+                    &tids,
+                    &rule,
+                    &cfg,
+                    is_realtime,
+                    is_affected_by_cgroup_bug,
+                ) {
                     error!(
                         "Failed to apply rule for {}({}): {}",
                         p.name, p.identity.pid.0, e
@@ -189,10 +200,11 @@ impl Worker {
         (processed_count, start_time.elapsed())
     }
 
-    #[tracing::instrument(skip(self, p, rule, cfg), fields(pid = p.identity.pid.0, name = %p.name))]
+    #[tracing::instrument(skip(self, p, tids, rule, cfg), fields(pid = p.identity.pid.0, name = %p.name))]
     fn apply_rule(
         &self,
         p: &Process,
+        tids: &[i32],
         rule: &Value,
         cfg: &ConfigSnapshot,
         is_realtime: bool,
@@ -205,7 +217,10 @@ impl Worker {
                 "Setting priority of {}({}) to {}",
                 p.name, p.identity.pid.0, nice
             );
-            if let Err(e) = self.platform.set_priority(p.identity.pid.0, nice as i32) {
+            if let Err(e) = self
+                .platform
+                .set_priority(p.identity.pid.0, tids, nice as i32)
+            {
                 if !e.is_skippable() {
                     return Err(e);
                 }
@@ -225,7 +240,10 @@ impl Worker {
                     "Setting latency nice of {}({}) to {}",
                     p.name, p.identity.pid.0, latnice
                 );
-                if let Err(e) = self.platform.set_latency_nice(p.identity.pid.0, latnice) {
+                if let Err(e) = self
+                    .platform
+                    .set_latency_nice(p.identity.pid.0, tids, latnice)
+                {
                     if !e.is_skippable() {
                         return Err(e);
                     }
@@ -322,7 +340,10 @@ impl Worker {
                 );
                 match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
                     Some(parsed_set) => {
-                        if let Err(e) = self.platform.set_affinity(p.identity.pid.0, &parsed_set) {
+                        if let Err(e) =
+                            self.platform
+                                .set_affinity(p.identity.pid.0, tids, &parsed_set)
+                        {
                             if !e.is_skippable() {
                                 return Err(e);
                             }

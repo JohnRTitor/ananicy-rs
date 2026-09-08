@@ -21,7 +21,7 @@ fn test_set_affinity_on_current_process() {
         cs.set_cpu(0); // Fallback
     }
 
-    let result = set_affinity(process::id() as i32, &cs);
+    let result = set_affinity(process::id() as i32, &[], &cs);
     assert!(
         result.is_ok(),
         "set_affinity on current process should succeed"
@@ -34,7 +34,7 @@ fn test_set_affinity_on_nonexistent_process() {
     cs.set_cpu(0);
 
     // PID 999999999 almost certainly doesn't exist
-    let result = set_affinity(999999999, &cs);
+    let result = set_affinity(999999999, &[], &cs);
     assert!(
         result.is_err(),
         "set_affinity on nonexistent process should fail"
@@ -45,5 +45,5 @@ fn test_set_affinity_on_nonexistent_process() {
 fn test_set_affinity_with_zero_ncpus_cpuset() {
     let cs = CpuSet::new(0); // zero max_cores
     // Should gracefully fail or be a no-op without crashing
-    let _ = set_affinity(process::id() as i32, &cs);
+    let _ = set_affinity(process::id() as i32, &[], &cs);
 }

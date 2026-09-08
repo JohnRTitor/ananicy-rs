@@ -121,7 +121,10 @@ impl ProcfsScanner {
                     && let Ok(pid) = pid_str.parse::<i32>()
                 {
                     let name = get_command_from_pid(pid);
-                    if tx.send(Process::new(Pid(pid), name)).is_err() {
+                    if tx
+                        .send(Process::new(Pid(pid), name).with_authoritative_name())
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -158,4 +161,29 @@ pub fn get_tgid(pid: i32) -> Option<i32> {
         }
     }
     None
+}
+
+pub fn get_tids(pid: i32) -> Result<Vec<i32>, ananicy_core::worker::PlatformError> {
+    let task_path = format!("/proc/{}/task", pid);
+    let mut tids = Vec::new();
+
+    match fs::read_dir(&task_path) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if let Ok(file_name) = entry.file_name().into_string()
+                    && let Ok(tid) = file_name.parse::<i32>()
+                {
+                    tids.push(tid);
+                }
+            }
+            Ok(tids)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ananicy_core::worker::PlatformError::NotFound)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(ananicy_core::worker::PlatformError::PermissionDenied)
+        }
+        Err(e) => Err(ananicy_core::worker::PlatformError::Io(e)),
+    }
 }

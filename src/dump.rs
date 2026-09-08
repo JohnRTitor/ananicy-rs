@@ -16,7 +16,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
             let sorted: BTreeMap<_, _> = rules
                 .get_rules()
                 .iter()
-                .map(|(k, v)| (k.as_ref(), v))
+                .map(|(k, v)| (k.as_ref(), v.as_ref()))
                 .collect();
             println!(
                 "{}",
@@ -27,7 +27,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
             let sorted: BTreeMap<_, _> = rules
                 .get_types()
                 .iter()
-                .map(|(k, v)| (k.as_ref(), v))
+                .map(|(k, v)| (k.as_ref(), v.as_ref()))
                 .collect();
             println!(
                 "{}",
@@ -38,7 +38,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
             let sorted: BTreeMap<_, _> = rules
                 .get_cgroups()
                 .iter()
-                .map(|(k, v)| (k.as_ref(), v))
+                .map(|(k, v)| (k.as_ref(), v.as_ref()))
                 .collect();
             println!(
                 "{}",

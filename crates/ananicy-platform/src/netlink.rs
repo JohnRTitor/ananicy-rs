@@ -170,24 +170,30 @@ impl NetlinkMonitor {
                             if process_pid != prev_pid {
                                 prev_pid = process_pid;
                                 let name = get_command_from_pid(process_pid);
-                                tx.send(Process::new(Pid(process_pid), name))
-                                    .expect("Worker thread died");
+                                tx.send(
+                                    Process::new(Pid(process_pid), name).with_authoritative_name(),
+                                )
+                                .expect("Worker thread died");
                             }
                         }
                         ProcEvent::Fork { child_pid, .. } => {
                             if child_pid != prev_pid {
                                 prev_pid = child_pid;
                                 let name = get_command_from_pid(child_pid);
-                                tx.send(Process::new(Pid(child_pid), name))
-                                    .expect("Worker thread died");
+                                tx.send(
+                                    Process::new(Pid(child_pid), name).with_authoritative_name(),
+                                )
+                                .expect("Worker thread died");
                             }
                         }
                         ProcEvent::Comm { process_pid, .. } => {
                             if process_pid != prev_pid {
                                 prev_pid = process_pid;
                                 let name = get_command_from_pid(process_pid);
-                                tx.send(Process::new(Pid(process_pid), name))
-                                    .expect("Worker thread died");
+                                tx.send(
+                                    Process::new(Pid(process_pid), name).with_authoritative_name(),
+                                )
+                                .expect("Worker thread died");
                             }
                         }
                         ProcEvent::Exit { .. } => {
