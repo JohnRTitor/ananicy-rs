@@ -57,3 +57,16 @@ pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformErro
         Err(NotFound)
     }
 }
+
+pub fn set_cpu_weight_for_cgroup(cgroup_name: &str, weight: u32) -> Result<(), PlatformError> {
+    let manager = get_manager();
+    if let Some(target) = manager.resolve_target_dir(cgroup_name) {
+        if manager.set_cpu_weight(&target, weight) {
+            Ok(())
+        } else {
+            Err(Unsupported)
+        }
+    } else {
+        Err(NotFound)
+    }
+}

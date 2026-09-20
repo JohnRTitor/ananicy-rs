@@ -97,6 +97,18 @@ impl PlatformActions for LinuxPlatform {
         cgroups::add_pid_to_cgroup(pid, cgroup)
     }
 
+    fn set_cpu_weight(&self, pid: i32, weight: u32) -> Result<(), PlatformError> {
+        if let Some(identity) = self.process_cgroup(pid) {
+            if let Some(path_str) = identity.path.as_path().to_str() {
+                cgroups::set_cpu_weight_for_cgroup(path_str, weight)
+            } else {
+                Err(PlatformError::NotFound)
+            }
+        } else {
+            Err(PlatformError::NotFound)
+        }
+    }
+
     fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError> {
         if let Err(e) = abi::affinity::set_affinity(pid, tids, cpuset) {
             error!("set_affinity failed for pid {}: {}", pid, e);

@@ -71,6 +71,7 @@ pub trait PlatformActions: Send + Sync {
     fn set_io_priority(&self, pid: i32, ioclass: &str, ionice: i32) -> Result<(), PlatformError>;
     fn set_oom_score_adj(&self, pid: i32, oom_score_adj: i32) -> Result<(), PlatformError>;
     fn add_pid_to_cgroup(&self, pid: i32, cgroup: &str) -> Result<(), PlatformError>;
+    fn set_cpu_weight(&self, pid: i32, weight: u32) -> Result<(), PlatformError>;
     fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError>;
 }
 
@@ -223,6 +224,17 @@ impl Worker {
             {
                 if !e.is_skippable() {
                     return Err(e);
+                }
+            }
+
+            if self.platform.is_cgroup_v2() {
+                // Map nice (-20 to 19) to cpu.weight (1 to 10000) using CFS approximation
+                let weight = (100.0 * 1.25f64.powi(-nice as i32)) as u32;
+                let weight = weight.clamp(1, 10000);
+                if let Err(e) = self.platform.set_cpu_weight(p.identity.pid.0, weight) {
+                    debug!("Failed to apply cpu.weight {} for {}: {:?}", weight, p.name, e);
+                } else {
+                    debug!("Applied cpu.weight {} for {}", weight, p.name);
                 }
             }
         }
