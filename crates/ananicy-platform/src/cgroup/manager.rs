@@ -318,11 +318,10 @@ impl CgroupController for CgroupManager {
         );
 
         if ownership == CgroupOwnership::Foreign {
-            warn!(
-                "set_cpu_weight: Target {:?} is Foreign. Refusing to write.",
+            debug!(
+                "set_cpu_weight: Target {:?} is Foreign. Allowed for resource tuning.",
                 target
             );
-            return false;
         }
 
         if self.info.version == CgroupVersion::V2 {
