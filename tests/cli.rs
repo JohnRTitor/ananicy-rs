@@ -118,8 +118,8 @@ fn test_cli_completions_bash() {
         .arg("bash")
         .assert()
         .success()
-        .stdout(predicate::str::contains("ananicy-rs"))
-        .stdout(predicate::str::contains("--config"));
+        .stdout(predicate::str::contains("_bpaf_dynamic_completion"))
+        .stdout(predicate::str::contains("ananicy-rs"));
 }
 
 #[test]
@@ -129,8 +129,8 @@ fn test_cli_completions_zsh() {
         .arg("zsh")
         .assert()
         .success()
-        .stdout(predicate::str::contains("ananicy-rs"))
-        .stdout(predicate::str::contains("--config"));
+        .stdout(predicate::str::contains("#compdef ananicy-rs"))
+        .stdout(predicate::str::contains("--bpaf-complete-rev="));
 }
 
 #[test]
@@ -140,19 +140,18 @@ fn test_cli_completions_fish() {
         .arg("fish")
         .assert()
         .success()
-        .stdout(predicate::str::contains("ananicy-rs"))
-        .stdout(predicate::str::contains("config"));
+        .stdout(predicate::str::contains("function _bpaf_dynamic_completion"))
+        .stdout(predicate::str::contains("ananicy-rs"));
 }
 
 #[test]
-fn test_cli_completions_powershell() {
+fn test_cli_completions_elvish() {
     let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
     cmd.arg("completions")
-        .arg("powershell")
+        .arg("elvish")
         .assert()
         .success()
-        .stdout(predicate::str::contains("ananicy-rs"))
-        .stdout(predicate::str::contains("--config"));
+        .stdout(predicate::str::contains("edit:completion:arg-completer[ananicy-rs]"));
 }
 
 #[test]
@@ -163,5 +162,5 @@ fn test_cli_completions_invalid_shell() {
         .assert()
         .failure()
         .code(2)
-        .stderr(predicate::str::contains("error: invalid shell 'cmd.exe'; expected one of: bash, zsh, fish, powershell"));
+        .stderr(predicate::str::contains("error: invalid shell 'cmd.exe'; expected one of: bash, zsh, fish, elvish"));
 }
