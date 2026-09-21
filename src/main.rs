@@ -38,9 +38,22 @@ fn main() {
     // dispatching to a sub-action so the debug module's diagnostics
     // are actually emitted.
     let force_trace = matches!(args.command, Some(Commands::Debug { .. }));
-    startup::init_logging(args.verbose, force_trace, is_systemd);
 
     let (config_path, config_dir_path) = startup::resolve_config_paths(&args);
+
+    // Load config (but don't log yet, since logger is not set up)
+    let (config, config_err, latnice_supported) = startup::load_config(&config_path);
+
+    // Initialize logging with the requested log level
+    startup::init_logging(
+        config.get().loglevel.clone(),
+        args.verbose,
+        force_trace,
+        is_systemd,
+    );
+
+    // Now it's safe to log the config loading status
+    startup::log_config(&config, config_err, latnice_supported);
 
     if args.force_remove_semaphore {
         ipc::force_remove_semaphore();
@@ -54,7 +67,6 @@ fn main() {
         warn!("Daemon mode requested but not fully implemented. Running in foreground.");
     }
 
-    let config = startup::load_config(&config_path);
     println!("Ananicy Rs {}", env!("CARGO_PKG_VERSION"));
 
     let (aliases, saved_x3d_mode) = startup::load_topology_aliases(&config);
