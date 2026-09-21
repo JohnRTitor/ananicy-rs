@@ -45,7 +45,7 @@ fn main() {
     let (config, config_err, latnice_supported) = startup::load_config(&config_path);
 
     // Initialize logging with the requested log level
-    startup::init_logging(
+    let log_reload_handle = startup::init_logging(
         config.get().loglevel.clone(),
         args.verbose,
         force_trace,
@@ -117,6 +117,7 @@ fn main() {
         is_systemd,
         shutdown_flag.clone(),
         tx.clone(),
+        log_reload_handle,
     );
 
     if args.manual_scanning {
