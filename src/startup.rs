@@ -25,13 +25,7 @@ pub(crate) fn init_logging(
     } else if verbose {
         Level::DEBUG
     } else {
-        match config_level {
-            ananicy_core::config::LogLevel::Trace => Level::TRACE,
-            ananicy_core::config::LogLevel::Debug => Level::DEBUG,
-            ananicy_core::config::LogLevel::Info => Level::INFO,
-            ananicy_core::config::LogLevel::Warn => Level::WARN,
-            ananicy_core::config::LogLevel::Error | ananicy_core::config::LogLevel::Critical => Level::ERROR,
-        }
+        tracing::Level::from(&config_level)
     };
 
     let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(LevelFilter::from_level(log_level));

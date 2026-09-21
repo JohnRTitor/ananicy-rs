@@ -33,14 +33,7 @@ pub(crate) fn install(
                     } else {
                         // Config reloaded successfully. Now update the active logger verbosity.
                         let new_config_level = config_clone.get().loglevel.clone();
-                        let new_level = match new_config_level {
-                            ananicy_core::config::LogLevel::Trace => tracing::Level::TRACE,
-                            ananicy_core::config::LogLevel::Debug => tracing::Level::DEBUG,
-                            ananicy_core::config::LogLevel::Info => tracing::Level::INFO,
-                            ananicy_core::config::LogLevel::Warn => tracing::Level::WARN,
-                            ananicy_core::config::LogLevel::Error
-                            | ananicy_core::config::LogLevel::Critical => tracing::Level::ERROR,
-                        };
+                        let new_level = tracing::Level::from(&new_config_level);
                         let _ = log_reload_handle.modify(|filter| {
                             *filter = tracing_subscriber::filter::LevelFilter::from_level(new_level);
                         });
