@@ -1,11 +1,8 @@
 use std::{convert::Infallible, process::exit, str::FromStr};
 
-use {
-    nanoargs::{ArgBuilder, Flag, Opt, ParseError, Pos, Shell},
-    std::env,
-};
+use bpaf::Bpaf;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Args {
     pub systemd: bool,
@@ -46,8 +43,6 @@ impl FromStr for DumpTarget {
     }
 }
 
-/// Parses the raw string provided to `debug [sub_action]` on the CLI.
-/// Falls through to a silent success if it doesn't recognize the sub-action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DebugTarget {
     Cgroups,
@@ -65,344 +60,160 @@ impl FromStr for DebugTarget {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Commands {
-    Dump {
-        sub_action: DumpTarget,
-    },
-    /// The undocumented `debug` action.
-    ///
-    /// Intentionally NOT registered as a formal `nanoargs` subcommand (see
-    /// the `NoSubcommand`/`UnknownSubcommand` fallback branch below) so it
-    /// [sub-action]` and `start`.
-    Debug {
-        sub_action: DebugTarget,
-    },
+    Dump { sub_action: DumpTarget },
+    Debug { sub_action: DebugTarget },
     Start,
     Unknown(String),
 }
 
+#[derive(Debug, Clone, Bpaf)]
+pub enum BpafCommands {
+    #[bpaf(command("dump"))]
+    /// Dump internal state
+    Dump {
+        #[bpaf(positional("SUB_ACTION"))]
+        sub_action: String,
+    },
+    #[bpaf(command("debug"), hide)]
+    /// The undocumented `debug` action.
+    Debug {
+        #[bpaf(positional("SUB_ACTION"), optional)]
+        sub_action: Option<String>,
+    },
+    #[bpaf(command("start"))]
+    /// Start the daemon
+    Start,
+    #[bpaf(command("completions"))]
+    /// Generate shell completions
+    Completions {
+        #[bpaf(positional("SHELL"), optional)]
+        shell: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Bpaf)]
+#[bpaf(options("ananicy-rs"), version)]
+/// ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage
+struct Opts {
+    #[bpaf(long)]
+    /// Run as systemd service
+    systemd: bool,
+    #[bpaf(long)]
+    /// Run as daemon
+    daemon: bool,
+    #[bpaf(long, argument("CONFIG"))]
+    /// Config path
+    config: Option<String>,
+    #[bpaf(long, argument("CONFIG_DIR"))]
+    /// Config directory
+    config_dir: Option<String>,
+    #[bpaf(long)]
+    /// Reload configuration/rules
+    reload: bool,
+    #[bpaf(long)]
+    /// Force remove IPC semaphore
+    force_remove_semaphore: bool,
+    #[bpaf(long)]
+    /// Enable manual periodic scanning
+    manual_scanning: bool,
+    #[bpaf(long)]
+    /// Benchmark mode
+    benchmark: bool,
+    #[bpaf(long, argument("BENCHMARK_COUNT"))]
+    /// Number of times to benchmark
+    benchmark_count: Option<u32>,
+    #[bpaf(long, argument("BPF_MIN_US"))]
+    /// Minimum microseconds for BPF intervals
+    bpf_min_us: Option<u32>,
+    #[bpaf(short, long)]
+    /// Enable verbose output
+    verbose: bool,
+    #[bpaf(external(bpaf_commands), optional)]
+    command: Option<BpafCommands>,
+    #[bpaf(positional("UNKNOWN_ACTION"), optional, hide)]
+    unknown: Option<String>,
+}
+
 impl Args {
-    fn base_parser() -> ArgBuilder {
-        ArgBuilder::new()
-            .name("ananicy-rs")
-            .version(env!("CARGO_PKG_VERSION"))
-            .description("ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage")
-            .flag(Flag::new("systemd").desc("Run as systemd service"))
-            .flag(Flag::new("daemon").desc("Run as daemon"))
-            .option(Opt::new("config").desc("Config path").placeholder("CONFIG"))
-            .option(
-                Opt::new("config-dir")
-                    .desc("Config directory")
-                    .placeholder("CONFIG_DIR"),
-            )
-            .flag(Flag::new("reload").desc("Reload configuration/rules"))
-            .flag(Flag::new("force-remove-semaphore").desc("Force remove IPC semaphore"))
-            .flag(Flag::new("manual-scanning").desc("Enable manual periodic scanning"))
-            .flag(Flag::new("benchmark").desc("Benchmark mode"))
-            .option(
-                Opt::new("benchmark-count")
-                    .desc("Number of times to benchmark")
-                    .placeholder("BENCHMARK_COUNT"),
-            )
-            .option(
-                Opt::new("bpf-min-us")
-                    .desc("Minimum microseconds for BPF intervals")
-                    .placeholder("BPF_MIN_US"),
-            )
-            .flag(
-                Flag::new("verbose")
-                    .short('v')
-                    .desc("Enable verbose output"),
-            )
-    }
-
     pub fn parse() -> Self {
-        let dump_parser = ArgBuilder::new()
-            .name("dump")
-            .description("Dump internal state")
-            .positional(
-                Pos::new("sub_action")
-                    .desc("What to dump: rules, types, cgroups, proc, autogroup")
-                    .required(),
-            )
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("internal CLI parser configuration error: {}", e);
-                exit(2);
-            });
-
-        let start_parser = ArgBuilder::new()
-            .name("start")
-            .description("Start the daemon")
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("internal CLI parser configuration error: {}", e);
-                exit(2);
-            });
-
-        let completions_parser = ArgBuilder::new()
-            .name("completions")
-            .description("Generate shell completions")
-            .positional(
-                Pos::new("shell")
-                    .desc("Shell to generate completions for")
-                    .required(),
-            )
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("internal CLI parser configuration error: {}", e);
-                exit(2);
-            });
-
-        let parser = Self::base_parser()
-            .subcommand("dump", "Dump internal state", dump_parser)
-            .subcommand("start", "Start the daemon", start_parser)
-            .subcommand("completions", "Generate shell completions", completions_parser)
-            .build()
-            .unwrap_or_else(|e| {
-                eprintln!("internal CLI parser configuration error: {}", e);
-                exit(2);
-            });
-
-        let args: Vec<String> = env::args().skip(1).collect();
-        match parser.parse(args.clone()) {
-            Ok(result) => {
-                let systemd = result.get_flag("systemd");
-                let daemon = result.get_flag("daemon");
-                let config = result.get_option("config").map(String::from);
-                let config_dir = result.get_option("config-dir").map(String::from);
-                let reload = result.get_flag("reload");
-                let force_remove_semaphore = result.get_flag("force-remove-semaphore");
-                let manual_scanning = result.get_flag("manual-scanning");
-                let benchmark = result.get_flag("benchmark");
-
-                let benchmark_count = match result.get_option_parsed::<u32>("benchmark-count") {
-                    Some(Ok(v)) => Some(v),
-                    Some(Err(e)) => {
-                        eprintln!(
-                            "error: invalid value for '--benchmark-count <BENCHMARK_COUNT>': {}",
-                            e
-                        );
-                        eprintln!("\nFor more information, try '--help'.");
-                        exit(2);
-                    }
-                    None => None,
-                };
-
-                let bpf_min_us = match result.get_option_parsed::<u32>("bpf-min-us") {
-                    Some(Ok(v)) => Some(v),
-                    Some(Err(e)) => {
-                        eprintln!(
-                            "error: invalid value for '--bpf-min-us <BPF_MIN_US>': {}",
-                            e
-                        );
-                        eprintln!("\nFor more information, try '--help'.");
-                        exit(2);
-                    }
-                    None => None,
-                };
-
-                let verbose = result.get_flag("verbose");
-
-                let command = match result.subcommand() {
-                    Some(subcmd_name) => {
-                        let Some(sub_result) = result.subcommand_result() else {
-                            eprintln!(
-                                "error: parser returned a subcommand name without its parsed arguments"
-                            );
-                            exit(2);
-                        };
-                        match subcmd_name {
-                            "dump" => {
-                                let sub_action_str = sub_result.get_positionals()[0].to_string();
-                                match sub_action_str.parse::<DumpTarget>() {
-                                    Ok(sub_action) => Some(Commands::Dump { sub_action }),
-                                    Err(e) => {
-                                        eprintln!("error: {}", e);
-                                        exit(2);
-                                    }
-                                }
-                            }
-                            "start" => Some(Commands::Start),
-                            "completions" => {
-                                let shell_str = sub_result.get_positionals()[0].to_string();
-                                match shell_str.parse::<Shell>() {
-                                    Ok(shell) => {
-                                        print!("{}", parser.generate_completions(shell));
-                                        exit(0);
-                                    }
-                                    Err(_) => {
-                                        eprintln!(
-                                            "error: invalid shell '{}'; expected one of: bash, zsh, fish, powershell",
-                                            shell_str
-                                        );
-                                        exit(2);
-                                    }
-                                }
-                            }
-                            _ => None,
-                        }
-                    }
-                    None => None,
-                };
-
-                if command.is_none() && !reload && !force_remove_semaphore {
-                    print!("{}", parser.help_text());
-                    exit(0);
-                }
-
-                Args {
-                    systemd,
-                    daemon,
-                    config,
-                    config_dir,
-                    reload,
-                    force_remove_semaphore,
-                    manual_scanning,
-                    benchmark,
-                    benchmark_count,
-                    bpf_min_us,
-                    verbose,
-                    command,
-                }
-            }
-            Err(ParseError::HelpRequested(text)) => {
-                // clap prints usage then commands then options
-                print!("{}", text);
-                exit(0);
-            }
-            Err(ParseError::VersionRequested(text)) => {
-                println!("{}", text);
-                exit(0);
-            }
-            Err(ParseError::MissingValue(name)) => {
-                let name_upper = name.to_uppercase().replace("-", "_");
-                eprintln!(
-                    "error: a value is required for '--{} <{}>' but none was supplied",
-                    name, name_upper
-                );
-                eprintln!("\nFor more information, try '--help'.");
-                exit(2);
-            }
-            Err(ParseError::UnknownArgument(token)) => {
-                eprintln!("error: unexpected argument '{}' found", token);
-                eprintln!("\nUsage: ananicy-rs [OPTIONS] [COMMAND]");
-                eprintln!("\nFor more information, try '--help'.");
-                exit(2);
-            }
-            Err(ParseError::MissingRequired(name)) => {
-                eprintln!(
-                    "error: the following required arguments were not provided:\n  <{}>",
-                    name.to_uppercase()
-                );
-                eprintln!("\nUsage: ananicy-rs dump <SUB_ACTION>");
-                eprintln!("\nFor more information, try '--help'.");
-                exit(2);
-            }
-            Err(ParseError::NoSubcommand(_)) | Err(ParseError::UnknownSubcommand(_)) => {
-                let help_text = parser.help_text();
-                let fallback_parser = Self::base_parser()
-                    .positional(Pos::new("action").desc("Unknown action fallback"))
-                    // Undocumented second positional used only by the `debug` action
-                    // (e.g. `debug cgroups`); intentionally not `.required()` so
-                    // plain unknown single-word actions (e.g. `nonsense`) keep working.
-                    .positional(Pos::new("sub_action").desc("Unknown action fallback"))
-                    .build()
-                    .unwrap_or_else(|e| {
-                        eprintln!("internal CLI parser configuration error: {}", e);
-                        exit(2);
-                    });
-
-                match fallback_parser.parse(args) {
-                    Ok(result) => {
-                        let positionals = result.get_positionals();
-                        let command = if positionals.is_empty() {
-                            None
-                        } else if positionals[0] == "debug" {
-                            match positionals.get(1) {
-                                None => {
-                                    eprintln!("error: A sub-action must be specified for debug.");
-                                    exit(1);
-                                }
-                                Some(sub) => Some(Commands::Debug {
-                                    // infallible: see DebugTarget::from_str
-                                    sub_action: sub.parse().unwrap(),
-                                }),
-                            }
-                        } else {
-                            Some(Commands::Unknown(positionals[0].to_string()))
-                        };
-
-                        let systemd = result.get_flag("systemd");
-                        let daemon = result.get_flag("daemon");
-                        let config = result.get_option("config").map(String::from);
-                        let config_dir = result.get_option("config-dir").map(String::from);
-                        let reload = result.get_flag("reload");
-                        let force_remove_semaphore = result.get_flag("force-remove-semaphore");
-                        let manual_scanning = result.get_flag("manual-scanning");
-                        let benchmark = result.get_flag("benchmark");
-
-                        let benchmark_count = match result
-                            .get_option_parsed::<u32>("benchmark-count")
-                        {
-                            Some(Ok(v)) => Some(v),
-                            Some(Err(e)) => {
-                                eprintln!(
-                                    "error: invalid value for '--benchmark-count <BENCHMARK_COUNT>': {}",
-                                    e
-                                );
-                                eprintln!("\nFor more information, try '--help'.");
-                                exit(2);
-                            }
-                            None => None,
-                        };
-
-                        let bpf_min_us = match result.get_option_parsed::<u32>("bpf-min-us") {
-                            Some(Ok(v)) => Some(v),
-                            Some(Err(e)) => {
-                                eprintln!(
-                                    "error: invalid value for '--bpf-min-us <BPF_MIN_US>': {}",
-                                    e
-                                );
-                                eprintln!("\nFor more information, try '--help'.");
-                                exit(2);
-                            }
-                            None => None,
-                        };
-
-                        let verbose = result.get_flag("verbose");
-
-                        if command.is_none() && !reload && !force_remove_semaphore {
-                            print!("{}", help_text);
-                            exit(0);
-                        }
-
-                        Args {
-                            systemd,
-                            daemon,
-                            config,
-                            config_dir,
-                            reload,
-                            force_remove_semaphore,
-                            manual_scanning,
-                            benchmark,
-                            benchmark_count,
-                            bpf_min_us,
-                            verbose,
-                            command,
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("error: {}", e);
-                        exit(2);
-                    }
-                }
-            }
+        let parsed_opts = match opts().run_inner(bpaf::Args::from(&std::env::args().collect::<Vec<_>>()[1..])) {
+            Ok(o) => o,
             Err(e) => {
-                eprintln!("error: {}", e);
-                exit(2);
+                let code = if let bpaf::ParseFailure::Stdout(..) = e { 0 } else { 2 };
+                // bpaf exits with 1 but tests expect 2
+                e.print_message(80);
+                exit(code);
             }
+        };
+
+        let mut final_command = None;
+
+        if let Some(cmd) = parsed_opts.command {
+            match cmd {
+                BpafCommands::Dump { sub_action } => {
+                    match sub_action.parse::<DumpTarget>() {
+                        Ok(target) => final_command = Some(Commands::Dump { sub_action: target }),
+                        Err(e) => {
+                            eprintln!("error: {}", e);
+                            exit(2);
+                        }
+                    }
+                }
+                BpafCommands::Debug { sub_action } => {
+                    let sub_action = match sub_action {
+                        Some(sub) => sub,
+                        None => {
+                            eprintln!("error: A sub-action must be specified for debug.");
+                            exit(1);
+                        }
+                    };
+                    let target = sub_action.parse::<DebugTarget>().unwrap();
+                    final_command = Some(Commands::Debug { sub_action: target });
+                }
+                BpafCommands::Start => final_command = Some(Commands::Start),
+                BpafCommands::Completions { shell } => {
+                    let shell = shell.unwrap_or_default();
+                    match shell.as_str() {
+                        "bash" | "zsh" | "fish" | "elvish" => {
+                            let arg = format!("--bpaf-complete-style-{}", shell);
+                            let args = vec![arg];
+                            let _ = opts().run_inner(bpaf::Args::from(&args[..]).set_name("ananicy-rs"));
+                            unreachable!("bpaf completion generator should have exited");
+                        }
+                        _ => {
+                            eprintln!("error: invalid shell '{}'; expected one of: bash, zsh, fish, elvish", shell);
+                            exit(2);
+                        }
+                    }
+                }
+            }
+        } else if let Some(unk) = parsed_opts.unknown {
+            final_command = Some(Commands::Unknown(unk));
+        }
+
+        if final_command.is_none() && !parsed_opts.reload && !parsed_opts.force_remove_semaphore {
+            // Need to print help.
+            if let Err(e) = opts().run_inner(bpaf::Args::from(&["--help"])) {
+                print!("{}", e.unwrap_stdout());
+                exit(0);
+            }
+        }
+
+        Args {
+            systemd: parsed_opts.systemd,
+            daemon: parsed_opts.daemon,
+            config: parsed_opts.config,
+            config_dir: parsed_opts.config_dir,
+            reload: parsed_opts.reload,
+            force_remove_semaphore: parsed_opts.force_remove_semaphore,
+            manual_scanning: parsed_opts.manual_scanning,
+            benchmark: parsed_opts.benchmark,
+            benchmark_count: parsed_opts.benchmark_count,
+            bpf_min_us: parsed_opts.bpf_min_us,
+            verbose: parsed_opts.verbose,
+            command: final_command,
         }
     }
 }
