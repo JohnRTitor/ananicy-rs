@@ -71,3 +71,11 @@ default = ["netlink", "systemd"]
 bpf = ["dep:ananicy-bpf"]
 netlink = ["ananicy-platform/netlink"]
 systemd = ["ananicy-platform/systemd", "dep:sd-notify", "dep:tracing-journald"]
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "fat"
+panic = "abort"
+codegen-units = 1
+
