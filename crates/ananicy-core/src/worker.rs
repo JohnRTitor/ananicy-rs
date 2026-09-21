@@ -139,8 +139,29 @@ impl Worker {
                 }
             }
 
+            let mut lookup_name = p.name.as_str();
+
+            // NixOS specific fix: Some executables are wrapped in a shell script
+            // and the actual binary is renamed with a leading '.' and a trailing '-wrapped'.
+            // This strips those so the correct Ananicy rules apply.
+            if lookup_name.starts_with('.') {
+                let is_wrapped = lookup_name.ends_with("-wrapped");
+                let is_truncated_wrapped = lookup_name.len() == 15
+                    && lookup_name
+                        .rfind('-')
+                        .is_some_and(|idx| "-wrapped".starts_with(&lookup_name[idx..]));
+
+                if is_wrapped || is_truncated_wrapped {
+                    if let Some(end_idx) = lookup_name.rfind('-') {
+                        if end_idx > 1 {
+                            lookup_name = &lookup_name[1..end_idx];
+                        }
+                    }
+                }
+            }
+
             let rules = &self.rules;
-            let rule = rules.get_rule(&p.name);
+            let rule = rules.get_rule(lookup_name);
             let is_realtime = self.platform.is_realtime(p.identity.pid.0);
 
             if let Some(rule) = rule {
@@ -232,7 +253,10 @@ impl Worker {
                 let weight = (100.0 * 1.25f64.powi(-nice as i32)) as u32;
                 let weight = weight.clamp(1, 10000);
                 if let Err(e) = self.platform.set_cpu_weight(p.identity.pid.0, weight) {
-                    debug!("Failed to apply cpu.weight {} for {}: {:?}", weight, p.name, e);
+                    debug!(
+                        "Failed to apply cpu.weight {} for {}: {:?}",
+                        weight, p.name, e
+                    );
                 } else {
                     debug!("Applied cpu.weight {} for {}", weight, p.name);
                 }
