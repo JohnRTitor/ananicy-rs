@@ -110,3 +110,58 @@ fn test_cli_version() {
         .success()
         .stdout(predicate::str::contains(env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn test_cli_completions_bash() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("completions")
+        .arg("bash")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ananicy-rs"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn test_cli_completions_zsh() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("completions")
+        .arg("zsh")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ananicy-rs"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn test_cli_completions_fish() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("completions")
+        .arg("fish")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ananicy-rs"))
+        .stdout(predicate::str::contains("config"));
+}
+
+#[test]
+fn test_cli_completions_powershell() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("completions")
+        .arg("powershell")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ananicy-rs"))
+        .stdout(predicate::str::contains("--config"));
+}
+
+#[test]
+fn test_cli_completions_invalid_shell() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("completions")
+        .arg("cmd.exe")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("error: invalid shell 'cmd.exe'; expected one of: bash, zsh, fish, powershell"));
+}
