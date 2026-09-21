@@ -33,6 +33,18 @@ impl LogLevel {
     }
 }
 
+impl From<&LogLevel> for tracing::Level {
+    fn from(val: &LogLevel) -> Self {
+        match val {
+            LogLevel::Trace => tracing::Level::TRACE,
+            LogLevel::Debug => tracing::Level::DEBUG,
+            LogLevel::Info => tracing::Level::INFO,
+            LogLevel::Warn => tracing::Level::WARN,
+            LogLevel::Error | LogLevel::Critical => tracing::Level::ERROR,
+        }
+    }
+}
+
 impl Display for LogLevel {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
         match self {
