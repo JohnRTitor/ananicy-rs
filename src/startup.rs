@@ -9,13 +9,24 @@ use {
     tracing_subscriber::filter::LevelFilter,
 };
 
-pub(crate) fn init_logging(verbose: bool, force_trace: bool, is_systemd: bool) {
+pub(crate) fn init_logging(
+    config_level: ananicy_core::config::LogLevel,
+    verbose: bool,
+    force_trace: bool,
+    is_systemd: bool,
+) {
     let log_level = if force_trace {
         Level::TRACE
     } else if verbose {
         Level::DEBUG
     } else {
-        Level::INFO
+        match config_level {
+            ananicy_core::config::LogLevel::Trace => Level::TRACE,
+            ananicy_core::config::LogLevel::Debug => Level::DEBUG,
+            ananicy_core::config::LogLevel::Info => Level::INFO,
+            ananicy_core::config::LogLevel::Warn => Level::WARN,
+            ananicy_core::config::LogLevel::Error | ananicy_core::config::LogLevel::Critical => Level::ERROR,
+        }
     };
 
     #[cfg(feature = "systemd")]
@@ -50,42 +61,54 @@ pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {
     (config_path, config_dir_path)
 }
 
-pub(crate) fn load_config(config_path: &str) -> Arc<Config> {
+pub(crate) fn load_config(
+    config_path: &str,
+) -> (Arc<Config>, Option<String>, bool) {
     let latnice_supported = ananicy_platform::test_latnice_support();
     match Config::load_file(config_path, latnice_supported) {
-        Ok(cfg) => {
-            let snap = cfg.get();
-            info!("Config apply_nice: {}", snap.apply_nice);
-            info!("Config apply_sched: {}", snap.apply_sched);
-            info!("Config cgroup_load: {}", snap.cgroup_load);
-            info!("Config apply_oom_score_adj: {}", snap.apply_oom_score_adj);
-            info!("Config apply_latnice: {}", snap.apply_latnice);
-            info!("Config log_applied_rule: {}", snap.log_applied_rule);
-            info!("Config type_load: {}", snap.type_load);
-            info!("Config rule_load: {}", snap.rule_load);
-            info!(
-                "Config cgroup_realtime_workaround: {}",
-                snap.cgroup_realtime_workaround
-            );
-            info!("Config check_freq: {}", snap.check_freq);
-            info!("Config apply_cpuset: {}", snap.apply_cpuset);
-            info!("Config apply_ionice: {}", snap.apply_ionice);
-            info!("Config x3d_mode: {}", snap.x3d_mode);
-            info!("Config loglevel: {}", snap.loglevel);
-            Arc::new(cfg)
-        }
+        Ok(cfg) => (Arc::new(cfg), None, latnice_supported),
         Err(e) => {
-            error!(
-                "Failed to load config from {}: {}. Using default.",
-                config_path, e
-            );
             let mut snapshot = ConfigSnapshot::default();
             if !latnice_supported {
                 snapshot.apply_latnice = false;
-                warn!("latency_nice is not supported by the kernel, disabling it");
             }
-            Arc::new(Config::new(snapshot))
+            (
+                Arc::new(Config::new(snapshot)),
+                Some(format!(
+                    "Failed to load config from {}: {}. Using default.",
+                    config_path, e
+                )),
+                latnice_supported,
+            )
         }
+    }
+}
+
+pub(crate) fn log_config(config: &Arc<Config>, err: Option<String>, latnice_supported: bool) {
+    if let Some(e) = err {
+        error!("{}", e);
+        if !latnice_supported {
+            warn!("latency_nice is not supported by the kernel, disabling it");
+        }
+    } else {
+        let snap = config.get();
+        info!("Config apply_nice: {}", snap.apply_nice);
+        info!("Config apply_sched: {}", snap.apply_sched);
+        info!("Config cgroup_load: {}", snap.cgroup_load);
+        info!("Config apply_oom_score_adj: {}", snap.apply_oom_score_adj);
+        info!("Config apply_latnice: {}", snap.apply_latnice);
+        info!("Config log_applied_rule: {}", snap.log_applied_rule);
+        info!("Config type_load: {}", snap.type_load);
+        info!("Config rule_load: {}", snap.rule_load);
+        info!(
+            "Config cgroup_realtime_workaround: {}",
+            snap.cgroup_realtime_workaround
+        );
+        info!("Config check_freq: {}", snap.check_freq);
+        info!("Config apply_cpuset: {}", snap.apply_cpuset);
+        info!("Config apply_ionice: {}", snap.apply_ionice);
+        info!("Config x3d_mode: {}", snap.x3d_mode);
+        info!("Config loglevel: {}", snap.loglevel);
     }
 }
 

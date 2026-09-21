@@ -160,3 +160,29 @@ fn test_cli_completions_invalid_shell() {
         .code(2)
         .stderr(predicate::str::contains("error: invalid shell 'cmd.exe'; expected one of: bash, zsh, fish, elvish"));
 }
+
+#[test]
+fn test_cli_loglevel_config_propagation() {
+    use std::io::Write;
+    let temp_dir = std::env::temp_dir();
+    let config_path = temp_dir.join(format!("ananicy_test_config_{}.conf", std::process::id()));
+    std::fs::write(&config_path, "loglevel=debug").unwrap();
+
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("--config")
+        .arg(&config_path)
+        .arg("start");
+
+    // The daemon might exit if it needs root or IPC fails, but it should print
+    // "Config loglevel: debug" and other debug messages before failing.
+    let output = cmd.output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    let _ = std::fs::remove_file(&config_path);
+
+    // debug level output is typically on stderr or stdout depending on fmt
+    let combined = format!("{}\n{}", stdout, stderr);
+    assert!(combined.contains("DEBUG"), "Expected DEBUG level logs, got:\n{}", combined);
+    assert!(combined.contains("loglevel: debug"), "Expected parsed config loglevel, got:\n{}", combined);
+}
