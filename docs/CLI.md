@@ -59,9 +59,38 @@ sudo ananicy-rs --reload
   - `proc`: Dump process information cache.
   - `autogroup`: Dump autogroup status.
 - `debug cgroups`: Dump diagnostic information about the system's cgroup mounts.
+- `completions <shell>`: Generate shell completions (supported shells: `bash`, `zsh`, `fish`, `powershell`).
 
 Example:
 
 ```bash
 sudo ananicy-rs dump rules
+```
+
+## Shell Completions
+
+Generate shell completions and output them to stdout so you can redirect them into the appropriate completion path for your shell.
+
+### Bash
+
+```bash
+ananicy-rs completions bash > ~/.local/share/bash-completion/completions/ananicy-rs
+```
+
+### Zsh
+
+```zsh
+ananicy-rs completions zsh > ~/.zfunc/_ananicy-rs
+```
+
+### Fish
+
+```fish
+ananicy-rs completions fish > ~/.config/fish/completions/ananicy-rs.fish
+```
+
+### PowerShell
+
+```powershell
+ananicy-rs completions powershell > ananicy-rs.ps1
 ```

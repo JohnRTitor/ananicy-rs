@@ -1,7 +1,7 @@
 use std::{convert::Infallible, process::exit, str::FromStr};
 
 use {
-    nanoargs::{ArgBuilder, Flag, Opt, ParseError, Pos},
+    nanoargs::{ArgBuilder, Flag, Opt, ParseError, Pos, Shell},
     std::env,
 };
 
@@ -141,9 +141,24 @@ impl Args {
                 exit(2);
             });
 
+        let completions_parser = ArgBuilder::new()
+            .name("completions")
+            .description("Generate shell completions")
+            .positional(
+                Pos::new("shell")
+                    .desc("Shell to generate completions for")
+                    .required(),
+            )
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!("internal CLI parser configuration error: {}", e);
+                exit(2);
+            });
+
         let parser = Self::base_parser()
             .subcommand("dump", "Dump internal state", dump_parser)
             .subcommand("start", "Start the daemon", start_parser)
+            .subcommand("completions", "Generate shell completions", completions_parser)
             .build()
             .unwrap_or_else(|e| {
                 eprintln!("internal CLI parser configuration error: {}", e);
@@ -190,29 +205,46 @@ impl Args {
 
                 let verbose = result.get_flag("verbose");
 
-                let command = if let Some(subcmd_name) = result.subcommand() {
-                    let Some(sub_result) = result.subcommand_result() else {
-                        eprintln!(
-                            "error: parser returned a subcommand name without its parsed arguments"
-                        );
-                        exit(2);
-                    };
-                    if subcmd_name == "dump" {
-                        let sub_action_str = sub_result.get_positionals()[0].to_string();
-                        match sub_action_str.parse::<DumpTarget>() {
-                            Ok(sub_action) => Some(Commands::Dump { sub_action }),
-                            Err(e) => {
-                                eprintln!("error: {}", e);
-                                exit(2);
+                let command = match result.subcommand() {
+                    Some(subcmd_name) => {
+                        let Some(sub_result) = result.subcommand_result() else {
+                            eprintln!(
+                                "error: parser returned a subcommand name without its parsed arguments"
+                            );
+                            exit(2);
+                        };
+                        match subcmd_name {
+                            "dump" => {
+                                let sub_action_str = sub_result.get_positionals()[0].to_string();
+                                match sub_action_str.parse::<DumpTarget>() {
+                                    Ok(sub_action) => Some(Commands::Dump { sub_action }),
+                                    Err(e) => {
+                                        eprintln!("error: {}", e);
+                                        exit(2);
+                                    }
+                                }
                             }
+                            "start" => Some(Commands::Start),
+                            "completions" => {
+                                let shell_str = sub_result.get_positionals()[0].to_string();
+                                match shell_str.parse::<Shell>() {
+                                    Ok(shell) => {
+                                        print!("{}", parser.generate_completions(shell));
+                                        exit(0);
+                                    }
+                                    Err(_) => {
+                                        eprintln!(
+                                            "error: invalid shell '{}'; expected one of: bash, zsh, fish, powershell",
+                                            shell_str
+                                        );
+                                        exit(2);
+                                    }
+                                }
+                            }
+                            _ => None,
                         }
-                    } else if subcmd_name == "start" {
-                        Some(Commands::Start)
-                    } else {
-                        None
                     }
-                } else {
-                    None
+                    None => None,
                 };
 
                 if command.is_none() && !reload && !force_remove_semaphore {

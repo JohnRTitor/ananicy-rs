@@ -4,6 +4,7 @@
   rustPlatform,
   llvmPackages,
   pkg-config,
+  installShellFiles,
   elfutils,
   zlib,
   zstd,
@@ -33,6 +34,7 @@ rustPlatform.buildRustPackage {
   nativeBuildInputs = [
     pkg-config
     rustPlatform.bindgenHook
+    installShellFiles
   ]
   ++ lib.optionals withBpf [
     llvmPackages.clang
@@ -68,6 +70,11 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     rm -rf $out/bin
     make install DESTDIR= PREFIX=$out CARGO_TARGET_DIR=target/${stdenv.hostPlatform.rust.cargoShortTarget}
+  '' + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+    installShellCompletion --cmd ananicy-rs \
+      --bash <($out/bin/ananicy-rs completions bash) \
+      --fish <($out/bin/ananicy-rs completions fish) \
+      --zsh <($out/bin/ananicy-rs completions zsh)
   '';
 
   meta = {
