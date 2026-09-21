@@ -9,12 +9,17 @@ use {
     tracing_subscriber::filter::LevelFilter,
 };
 
+pub(crate) type LogReloadHandle = tracing_subscriber::reload::Handle<
+    tracing_subscriber::filter::LevelFilter,
+    tracing_subscriber::Registry,
+>;
+
 pub(crate) fn init_logging(
     config_level: ananicy_core::config::LogLevel,
     verbose: bool,
     force_trace: bool,
     is_systemd: bool,
-) {
+) -> LogReloadHandle {
     let log_level = if force_trace {
         Level::TRACE
     } else if verbose {
@@ -29,22 +34,28 @@ pub(crate) fn init_logging(
         }
     };
 
+    let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(LevelFilter::from_level(log_level));
+
     #[cfg(feature = "systemd")]
     if is_systemd {
         if let Ok(layer) = tracing_journald::layer() {
             use tracing_subscriber::layer::SubscriberExt;
             let subscriber = tracing_subscriber::Registry::default()
-                .with(LevelFilter::from_level(log_level))
+                .with(filter)
                 .with(layer);
             let _ = tracing::subscriber::set_global_default(subscriber);
-            return;
+            return reload_handle;
         }
     }
 
-    let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .finish();
+    use tracing_subscriber::layer::SubscriberExt;
+    let fmt_layer = tracing_subscriber::fmt::layer();
+    let subscriber = tracing_subscriber::Registry::default()
+        .with(filter)
+        .with(fmt_layer);
     let _ = tracing::subscriber::set_global_default(subscriber);
+
+    reload_handle
 }
 
 pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {
