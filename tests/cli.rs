@@ -30,18 +30,14 @@ fn test_cli_start_non_root() {
 }
 
 #[test]
-fn test_cli_unknown_action_non_root() {
-    if rustix::process::geteuid().as_raw() == 0 {
-        return; // skip if running as root
-    }
+fn test_cli_unknown_action() {
     let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
     cmd.arg("nonsense")
         .assert()
         .failure()
         .stdout(predicate::str::contains(
             "Unknown action requested: nonsense",
-        ))
-        .stdout(predicate::str::contains("This program must be run as root"));
+        ));
 }
 
 #[test]

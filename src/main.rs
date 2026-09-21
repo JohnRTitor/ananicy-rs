@@ -76,6 +76,7 @@ fn main() {
         Some(Commands::Start) => info!("Starting ananicy-rs daemon"),
         Some(Commands::Unknown(action)) => {
             error!("Unknown action requested: {}", action);
+            exit(1);
         }
         _ => return,
     }
