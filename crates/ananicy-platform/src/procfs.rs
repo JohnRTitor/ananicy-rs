@@ -1,4 +1,3 @@
-#![allow(clippy::collapsible_if)]
 use {
     ananicy_core::{process::Process, types::Pid},
     std::{io::ErrorKind::PermissionDenied, sync::mpsc::Sender},
@@ -33,50 +32,50 @@ pub fn get_command_from_pid(pid: i32) -> String {
     let proc_dir = format!("/proc/{}", pid);
 
     // 1. Try cmdline
-    if let Ok(cmdline_bytes) = fs::read(format!("{}/cmdline", proc_dir)) {
-        if !cmdline_bytes.is_empty() {
-            // Find the first non-empty argument (C++ parity: find_first_not_of('\0'))
-            let argv0_bytes = cmdline_bytes
-                .split(|&b| b == 0)
-                .find(|arg| !arg.is_empty())
-                .unwrap_or(&[]);
-            if !argv0_bytes.is_empty() {
-                let argv0_str = String::from_utf8_lossy(argv0_bytes);
-                let mut name = argv0_str.to_string();
+    if let Ok(cmdline_bytes) = fs::read(format!("{}/cmdline", proc_dir))
+        && !cmdline_bytes.is_empty()
+    {
+        // Find the first non-empty argument (C++ parity: find_first_not_of('\0'))
+        let argv0_bytes = cmdline_bytes
+            .split(|&b| b == 0)
+            .find(|arg| !arg.is_empty())
+            .unwrap_or(&[]);
+        if !argv0_bytes.is_empty() {
+            let argv0_str = String::from_utf8_lossy(argv0_bytes);
+            let mut name = argv0_str.to_string();
 
-                // If the name ends with .exe, it might be a Wine/Proton game with backslashes
-                if name.ends_with(".exe") {
-                    name = name.replace('\\', "/");
-                }
-
-                // Get the basename
-                if let Some(slash_idx) = name.rfind('/') {
-                    return name[slash_idx + 1..].to_string();
-                } else {
-                    return name;
-                }
+            // If the name ends with .exe, it might be a Wine/Proton game with backslashes
+            if name.ends_with(".exe") {
+                name = name.replace('\\', "/");
             }
+
+            // Get the basename
+            if let Some(slash_idx) = name.rfind('/') {
+                return name[slash_idx + 1..].to_string();
+            }
+            return name;
         }
     }
 
     // Repeated EACCES usually means `/proc/<pid>/exe` is not readable to us; stop retrying
     // it to avoid repeated procfs I/O on every event, tracked per-PID via LRU.
     // 2. Try exe (if we haven't failed too many times)
-    let mut exe_failures = 0;
-    if let Ok(mut cache) = get_exe_fail_cache().lock() {
-        if let Some(&fails) = cache.get(&pid) {
-            exe_failures = fails;
-        }
-    }
+    let exe_failures = if let Ok(mut cache) = get_exe_fail_cache().lock()
+        && let Some(&fails) = cache.get(&pid)
+    {
+        fails
+    } else {
+        0
+    };
 
     if exe_failures < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
         match fs::read_link(format!("{}/exe", proc_dir)) {
             Ok(exe_target) => {
                 // Success, clear any stored failure count
-                if exe_failures > 0 {
-                    if let Ok(mut cache) = get_exe_fail_cache().lock() {
-                        cache.pop(&pid);
-                    }
+                if exe_failures > 0
+                    && let Ok(mut cache) = get_exe_fail_cache().lock()
+                {
+                    cache.pop(&pid);
                 }
                 if let Some(file_name) = exe_target.file_name() {
                     let mut name = file_name.to_string_lossy().to_string();
@@ -87,10 +86,10 @@ pub fn get_command_from_pid(pid: i32) -> String {
                 }
             }
             Err(e) => {
-                if e.kind() == PermissionDenied {
-                    if let Ok(mut cache) = get_exe_fail_cache().lock() {
-                        cache.put(pid, exe_failures + 1);
-                    }
+                if e.kind() == PermissionDenied
+                    && let Ok(mut cache) = get_exe_fail_cache().lock()
+                {
+                    cache.put(pid, exe_failures + 1);
                 }
             }
         }

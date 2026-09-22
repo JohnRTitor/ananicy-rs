@@ -92,11 +92,7 @@ pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
 
 fn is_writable(path: &Path) -> bool {
     // Basic write access check by attempting to open for append/write
-    OpenOptions::new()
-        .write(true)
-        .append(true)
-        .open(path)
-        .is_ok()
+    OpenOptions::new().append(true).open(path).is_ok()
 }
 
 #[cfg(test)]

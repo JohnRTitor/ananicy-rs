@@ -1,4 +1,4 @@
-#![allow(clippy::collapsible_if, clippy::io_other_error)]
+#![allow(clippy::io_other_error)]
 use {
     crate::abi::sched::{SCHED_FIFO, SCHED_RR},
     ananicy_core::worker::{PlatformError, PlatformError::Unsupported},
@@ -46,11 +46,8 @@ impl PlatformActions for LinuxPlatform {
     fn is_realtime(&self, pid: i32) -> bool {
         // Read /proc/<pid>/stat and check the policy field (policy is field 41)
         // Or simply check if sched_getscheduler returns SCHED_FIFO or SCHED_RR
-        if let Ok(sched) = crate::abi::sched::sched_getscheduler(pid) {
-            sched == SCHED_FIFO || sched == SCHED_RR
-        } else {
-            false
-        }
+        crate::abi::sched::sched_getscheduler(pid)
+            .is_ok_and(|sched| sched == SCHED_FIFO || sched == SCHED_RR)
     }
 
     fn get_start_time(&self, pid: i32) -> Option<u64> {
@@ -98,15 +95,13 @@ impl PlatformActions for LinuxPlatform {
     }
 
     fn set_cpu_weight(&self, pid: i32, weight: u32) -> Result<(), PlatformError> {
-        if let Some(identity) = self.process_cgroup(pid) {
-            if let Some(path_str) = identity.path.as_path().to_str() {
-                cgroups::set_cpu_weight_for_cgroup(path_str, weight)
-            } else {
-                Err(PlatformError::NotFound)
-            }
-        } else {
-            Err(PlatformError::NotFound)
-        }
+        let identity = self.process_cgroup(pid).ok_or(PlatformError::NotFound)?;
+        let path_str = identity
+            .path
+            .as_path()
+            .to_str()
+            .ok_or(PlatformError::NotFound)?;
+        cgroups::set_cpu_weight_for_cgroup(path_str, weight)
     }
 
     fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError> {

@@ -35,11 +35,7 @@ impl CpuSet {
     }
 
     pub fn has_cpu(&self, cpu: u32) -> bool {
-        if cpu < self.max_cores {
-            self.cores[cpu as usize]
-        } else {
-            false
-        }
+        cpu < self.max_cores && self.cores[cpu as usize]
     }
 
     pub fn is_empty(&self) -> bool {
@@ -50,7 +46,7 @@ impl CpuSet {
         self.cores
             .iter()
             .enumerate()
-            .filter_map(|(i, &b)| if b { Some(i as u32) } else { None })
+            .filter_map(|(i, &b)| b.then_some(i as u32))
             .collect()
     }
 

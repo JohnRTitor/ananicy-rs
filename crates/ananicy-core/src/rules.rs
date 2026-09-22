@@ -1,4 +1,3 @@
-#![allow(clippy::collapsible_if)]
 use std::sync::{Arc, Mutex};
 
 use {
@@ -77,10 +76,7 @@ impl Rules {
         // do expensive JSON merge-patches at runtime.
         let mut updated_programs = HashMap::new();
         for (name, rule_arc) in self.programs.drain() {
-            let mut rule = match Arc::try_unwrap(rule_arc) {
-                Ok(r) => r,
-                Err(arc) => (*arc).clone(),
-            };
+            let mut rule = Arc::unwrap_or_clone(rule_arc);
             // Merge into a clone so a program rule cannot mutate a shared type definition.
             if let Some(type_name) = rule.get("type").and_then(|v| v.as_str())
                 && let Some(type_rule) = self.types.get(&TypeName(type_name.to_string()))
@@ -106,10 +102,9 @@ impl Rules {
                 debug!("Loading rules from {:?}", path);
                 // Rule files may use CRLF line endings; `lines()` treats `\r\n` as one line ending.
                 for line in content.lines() {
-                    if !self.load_rule_from_string(line) {
-                        // We only log debug here since blank lines and comments are normal
-                        // But if it was an invalid JSON line, it will be logged by `load_rule_from_string`
-                    }
+                    // The result is intentionally ignored: blank lines and comments are normal,
+                    // and an invalid JSON line is already logged by `load_rule_from_string`.
+                    self.load_rule_from_string(line);
                 }
             }
             Err(e) => {
@@ -125,14 +120,12 @@ impl Rules {
         }
 
         // C++ behavior: Find first '{' and last '}'
-        let start = match line.find('{') {
-            Some(i) => i,
-            None => return false,
+        let Some(start) = line.find('{') else {
+            return false;
         };
 
-        let end = match line.rfind('}') {
-            Some(i) => i,
-            None => return false,
+        let Some(end) = line.rfind('}') else {
+            return false;
         };
 
         if start > end {

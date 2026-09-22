@@ -1,4 +1,3 @@
-#![allow(clippy::collapsible_if)]
 use std::path::Path;
 
 use {
@@ -74,10 +73,7 @@ impl CpuTopology {
 
 fn detect_smt(sys_root: &Path) -> bool {
     let path = sys_root.join("devices/system/cpu/smt/active");
-    if let Ok(content) = fs::read_to_string(&path) {
-        return content.trim() == "1";
-    }
-    false
+    fs::read_to_string(&path).is_ok_and(|content| content.trim() == "1")
 }
 
 fn get_node_id(base: &Path) -> i32 {
@@ -98,18 +94,19 @@ fn get_node_id(base: &Path) -> i32 {
 fn get_llc_id(base: &Path, llc_map: &mut HashMap<String, i32>) -> i32 {
     for level in (2..=3).rev() {
         let path = base.join(format!("cache/index{}/shared_cpu_list", level));
-        if let Ok(key) = fs::read_to_string(&path) {
-            let key = key.trim().to_string();
-            if key.is_empty() {
-                continue;
-            }
-            if let Some(&id) = llc_map.get(&key) {
-                return id;
-            }
-            let new_id = llc_map.len() as i32;
-            llc_map.insert(key, new_id);
-            return new_id;
+        let Ok(key) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let key = key.trim().to_string();
+        if key.is_empty() {
+            continue;
         }
+        if let Some(&id) = llc_map.get(&key) {
+            return id;
+        }
+        let new_id = llc_map.len() as i32;
+        llc_map.insert(key, new_id);
+        return new_id;
     }
     0
 }
@@ -227,16 +224,10 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
                     "cpufreq/cpuinfo_max_freq",
                 ];
 
-                let mut metric = None;
-                for p in paths {
-                    let cap_path = base.join(p);
-                    if let Ok(cap_str) = fs::read_to_string(&cap_path)
-                        && let Ok(cap) = cap_str.trim().parse::<u64>()
-                    {
-                        metric = Some(cap);
-                        break;
-                    }
-                }
+                let metric = paths.into_iter().find_map(|p| {
+                    let cap_str = fs::read_to_string(base.join(p)).ok()?;
+                    cap_str.trim().parse::<u64>().ok()
+                });
 
                 if let Some(val) = metric {
                     metric_to_cores.entry(val).or_default().insert(cpu_id);

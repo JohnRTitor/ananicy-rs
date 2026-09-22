@@ -1,4 +1,3 @@
-#![allow(clippy::collapsible_if)]
 use {
     crate::{cgroup::CgroupIdentity, config::ConfigSnapshot, cpuset::CpuSet, spawn_named_thread},
     std::{
@@ -119,10 +118,10 @@ impl Worker {
         while let Ok(p) = self.receiver.recv() {
             processed_count += 1;
 
-            if let Some(limit) = self.benchmark_count {
-                if processed_count >= limit as usize {
-                    self.shutdown_flag.store(true, SeqCst);
-                }
+            if let Some(limit) = self.benchmark_count
+                && processed_count >= limit as usize
+            {
+                self.shutdown_flag.store(true, SeqCst);
             }
 
             if p.identity.pid.0 == 0 {
@@ -151,12 +150,11 @@ impl Worker {
                         .rfind('-')
                         .is_some_and(|idx| "-wrapped".starts_with(&lookup_name[idx..]));
 
-                if is_wrapped || is_truncated_wrapped {
-                    if let Some(end_idx) = lookup_name.rfind('-') {
-                        if end_idx > 1 {
-                            lookup_name = &lookup_name[1..end_idx];
-                        }
-                    }
+                if (is_wrapped || is_truncated_wrapped)
+                    && let Some(end_idx) = lookup_name.rfind('-')
+                    && end_idx > 1
+                {
+                    lookup_name = &lookup_name[1..end_idx];
                 }
             }
 
@@ -242,10 +240,9 @@ impl Worker {
             if let Err(e) = self
                 .platform
                 .set_priority(p.identity.pid.0, tids, nice as i32)
+                && !e.is_skippable()
             {
-                if !e.is_skippable() {
-                    return Err(e);
-                }
+                return Err(e);
             }
 
             if self.platform.is_cgroup_v2() {
@@ -264,12 +261,12 @@ impl Worker {
         }
 
         if cfg.apply_latnice {
-            let mut latnice_val = None;
-            if let Some(l) = rule.get("latency_nice").and_then(|v| v.as_i64()) {
-                latnice_val = Some(l as i32);
-            } else if let Some(n) = rule.get("nice").and_then(|v| v.as_i64()) {
-                latnice_val = Some(n as i32);
-            }
+            // An explicit `latency_nice` wins; otherwise fall back to the rule's `nice`.
+            let latnice_val = rule
+                .get("latency_nice")
+                .and_then(|v| v.as_i64())
+                .or_else(|| rule.get("nice").and_then(|v| v.as_i64()))
+                .map(|n| n as i32);
 
             if let Some(latnice) = latnice_val {
                 debug!(
@@ -279,10 +276,9 @@ impl Worker {
                 if let Err(e) = self
                     .platform
                     .set_latency_nice(p.identity.pid.0, tids, latnice)
+                    && !e.is_skippable()
                 {
-                    if !e.is_skippable() {
-                        return Err(e);
-                    }
+                    return Err(e);
                 }
             }
         }
@@ -295,10 +291,10 @@ impl Worker {
                 "Setting scheduler of {}({}) to {}",
                 p.name, p.identity.pid.0, sched
             );
-            if let Err(e) = self.platform.set_sched(p.identity.pid.0, sched, rtprio) {
-                if !e.is_skippable() {
-                    return Err(e);
-                }
+            if let Err(e) = self.platform.set_sched(p.identity.pid.0, sched, rtprio)
+                && !e.is_skippable()
+            {
+                return Err(e);
             }
         }
 
@@ -313,10 +309,9 @@ impl Worker {
             if let Err(e) = self
                 .platform
                 .set_io_priority(p.identity.pid.0, ioclass, ionice)
+                && !e.is_skippable()
             {
-                if !e.is_skippable() {
-                    return Err(e);
-                }
+                return Err(e);
             }
         }
 
@@ -330,10 +325,9 @@ impl Worker {
             if let Err(e) = self
                 .platform
                 .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)
+                && !e.is_skippable()
             {
-                if !e.is_skippable() {
-                    return Err(e);
-                }
+                return Err(e);
             }
         }
 
@@ -348,46 +342,45 @@ impl Worker {
                 "Adding process {}({}) to cgroup {}",
                 p.name, p.identity.pid.0, cgroup
             );
-            if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup) {
-                if !e.is_skippable() {
-                    return Err(e);
-                }
+            if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup)
+                && !e.is_skippable()
+            {
+                return Err(e);
             }
         }
 
-        if cfg.apply_cpuset {
-            if let Some(raw_cpuset) = rule.get("cpuset").and_then(|v| v.as_str()) {
-                let mut cpuset_str = raw_cpuset;
+        if cfg.apply_cpuset
+            && let Some(raw_cpuset) = rule.get("cpuset").and_then(|v| v.as_str())
+        {
+            let mut cpuset_str = raw_cpuset;
 
-                if let Some(resolved) = self.cpuset_aliases.get(raw_cpuset) {
-                    if resolved.is_empty() {
-                        debug!(
-                            "cpuset alias '{}' resolved to empty set, skipping for {}",
-                            raw_cpuset, p.name
-                        );
-                        return Ok(());
-                    }
-                    cpuset_str = resolved.as_str();
+            if let Some(resolved) = self.cpuset_aliases.get(raw_cpuset) {
+                if resolved.is_empty() {
+                    debug!(
+                        "cpuset alias '{}' resolved to empty set, skipping for {}",
+                        raw_cpuset, p.name
+                    );
+                    return Ok(());
                 }
+                cpuset_str = resolved.as_str();
+            }
 
-                debug!(
-                    "Setting cpuset of {}({}) to {}",
-                    p.name, p.identity.pid.0, cpuset_str
-                );
-                match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
-                    Some(parsed_set) => {
-                        if let Err(e) =
-                            self.platform
-                                .set_affinity(p.identity.pid.0, tids, &parsed_set)
-                        {
-                            if !e.is_skippable() {
-                                return Err(e);
-                            }
-                        }
+            debug!(
+                "Setting cpuset of {}({}) to {}",
+                p.name, p.identity.pid.0, cpuset_str
+            );
+            match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
+                Some(parsed_set) => {
+                    if let Err(e) = self
+                        .platform
+                        .set_affinity(p.identity.pid.0, tids, &parsed_set)
+                        && !e.is_skippable()
+                    {
+                        return Err(e);
                     }
-                    None => {
-                        warn!("Invalid cpuset string '{}' for {}", cpuset_str, p.name);
-                    }
+                }
+                None => {
+                    warn!("Invalid cpuset string '{}' for {}", cpuset_str, p.name);
                 }
             }
         }

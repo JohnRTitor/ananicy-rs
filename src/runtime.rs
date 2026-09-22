@@ -35,18 +35,16 @@ pub(crate) fn run(
     benchmark: bool,
     benchmark_count: Option<u32>,
 ) {
-    if benchmark || benchmark_count.is_some() {
-        if benchmark {
-            warn!("Benchmark enabled!");
-            let shutdown = shutdown_flag.clone();
-            spawn(move || {
-                sleep(Duration::from_secs(30));
-                shutdown.store(true, SeqCst);
-            });
-        }
-        if let Some(count) = benchmark_count {
-            warn!("Benchmark count: {}", count);
-        }
+    if benchmark {
+        warn!("Benchmark enabled!");
+        let shutdown = shutdown_flag.clone();
+        spawn(move || {
+            sleep(Duration::from_secs(30));
+            shutdown.store(true, SeqCst);
+        });
+    }
+    if let Some(count) = benchmark_count {
+        warn!("Benchmark count: {}", count);
     }
 
     info!("Initializing cgroups based on rules");

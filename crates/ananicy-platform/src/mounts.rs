@@ -83,10 +83,10 @@ pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
 }
 
 pub fn get_cgroup_info() -> CgroupInfo {
-    if let Ok(info) = CGROUP_INFO.read() {
-        if let Some(i) = &*info {
-            return i.clone();
-        }
+    if let Ok(info) = CGROUP_INFO.read()
+        && let Some(i) = &*info
+    {
+        return i.clone();
     }
 
     let mut info = CgroupInfo {

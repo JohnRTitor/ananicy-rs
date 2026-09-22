@@ -138,36 +138,36 @@ struct Opts {
 
 impl Args {
     pub fn parse() -> Self {
-        let parsed_opts = match opts().run_inner(bpaf::Args::from(&std::env::args().collect::<Vec<_>>()[1..])) {
-            Ok(o) => o,
-            Err(e) => {
-                let code = if let bpaf::ParseFailure::Stdout(..) = e { 0 } else { 2 };
-                // bpaf exits with 1 but tests expect 2
-                e.print_message(80);
-                exit(code);
-            }
-        };
+        let parsed_opts =
+            match opts().run_inner(bpaf::Args::from(&std::env::args().collect::<Vec<_>>()[1..])) {
+                Ok(o) => o,
+                Err(e) => {
+                    let code = if let bpaf::ParseFailure::Stdout(..) = e {
+                        0
+                    } else {
+                        2
+                    };
+                    // bpaf exits with 1 but tests expect 2
+                    e.print_message(80);
+                    exit(code);
+                }
+            };
 
         let mut final_command = None;
 
         if let Some(cmd) = parsed_opts.command {
             match cmd {
-                BpafCommands::Dump { sub_action } => {
-                    match sub_action.parse::<DumpTarget>() {
-                        Ok(target) => final_command = Some(Commands::Dump { sub_action: target }),
-                        Err(e) => {
-                            eprintln!("error: {}", e);
-                            exit(2);
-                        }
+                BpafCommands::Dump { sub_action } => match sub_action.parse::<DumpTarget>() {
+                    Ok(target) => final_command = Some(Commands::Dump { sub_action: target }),
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        exit(2);
                     }
-                }
+                },
                 BpafCommands::Debug { sub_action } => {
-                    let sub_action = match sub_action {
-                        Some(sub) => sub,
-                        None => {
-                            eprintln!("error: A sub-action must be specified for debug.");
-                            exit(1);
-                        }
+                    let Some(sub_action) = sub_action else {
+                        eprintln!("error: A sub-action must be specified for debug.");
+                        exit(1);
                     };
                     let target = sub_action.parse::<DebugTarget>().unwrap();
                     final_command = Some(Commands::Debug { sub_action: target });
@@ -178,12 +178,16 @@ impl Args {
                     match shell.as_str() {
                         "bash" | "zsh" | "fish" | "elvish" => {
                             let arg = format!("--bpaf-complete-style-{}", shell);
-                            let args = vec![arg];
-                            let _ = opts().run_inner(bpaf::Args::from(&args[..]).set_name("ananicy-rs"));
+                            let args = [arg];
+                            let _ = opts()
+                                .run_inner(bpaf::Args::from(&args[..]).set_name("ananicy-rs"));
                             unreachable!("bpaf completion generator should have exited");
                         }
                         _ => {
-                            eprintln!("error: invalid shell '{}'; expected one of: bash, zsh, fish, elvish", shell);
+                            eprintln!(
+                                "error: invalid shell '{}'; expected one of: bash, zsh, fish, elvish",
+                                shell
+                            );
                             exit(2);
                         }
                     }

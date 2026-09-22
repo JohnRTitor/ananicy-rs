@@ -88,26 +88,26 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
 
         if let Ok(entries) = read_dir(format!("/proc/{}/task", pid)) {
             for entry in entries.flatten() {
-                if let Ok(file_name) = entry.file_name().into_string() {
-                    if let Ok(tid) = file_name.parse::<i32>() {
-                        let rule_opt = if rule_name.is_empty() {
-                            None
-                        } else {
-                            Some(rule_name.clone())
-                        };
-                        let info = ProcessInfo::from_parts(
-                            pid,
-                            tid,
-                            exe.clone(),
-                            cmd.clone(),
-                            cmdline.clone(),
-                            oom_score_adj,
-                            rule_opt,
-                        );
+                if let Ok(file_name) = entry.file_name().into_string()
+                    && let Ok(tid) = file_name.parse::<i32>()
+                {
+                    let rule_opt = if rule_name.is_empty() {
+                        None
+                    } else {
+                        Some(rule_name.clone())
+                    };
+                    let info = ProcessInfo::from_parts(
+                        pid,
+                        tid,
+                        exe.clone(),
+                        cmd.clone(),
+                        cmdline.clone(),
+                        oom_score_adj,
+                        rule_opt,
+                    );
 
-                        if let Ok(val) = serde_json::to_value(info) {
-                            process_map.insert(tid.to_string(), val);
-                        }
+                    if let Ok(val) = serde_json::to_value(info) {
+                        process_map.insert(tid.to_string(), val);
                     }
                 }
             }
@@ -130,48 +130,42 @@ fn dump_autogroup(rules: &Rules) {
     let process_info_map = get_process_info_map(rules);
 
     for (tpid, mut process_info) in process_info_map {
-        let process_info_obj = if let serde_json::Value::Object(obj) = &mut process_info {
-            obj
-        } else {
+        let serde_json::Value::Object(process_info_obj) = &mut process_info else {
             continue;
         };
 
-        if let Some(autogroup) = process_info_obj.get("autogroup") {
-            if !autogroup.is_null() {
-                let autogroup_obj = if let serde_json::Value::Object(obj) = autogroup {
-                    obj
-                } else {
-                    continue;
-                };
+        // Entries without an `autogroup` object (absent, null or otherwise) are skipped.
+        let Some(serde_json::Value::Object(autogroup_obj)) = process_info_obj.get("autogroup")
+        else {
+            continue;
+        };
 
-                let group_num = autogroup_obj
-                    .get("group")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0)
-                    .to_string();
-                let nice = autogroup_obj
-                    .get("nice")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
+        let group_num = autogroup_obj
+            .get("group")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            .to_string();
+        let nice = autogroup_obj
+            .get("nice")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
-                if !autogroup_map.contains_key(&group_num) {
-                    let mut entry = serde_json::Map::new();
-                    entry.insert("nice".into(), nice);
-                    entry.insert(
-                        "proc".into(),
-                        serde_json::Value::Object(serde_json::Map::new()),
-                    );
-                    autogroup_map.insert(group_num.clone(), serde_json::Value::Object(entry));
-                }
+        if !autogroup_map.contains_key(&group_num) {
+            let mut entry = serde_json::Map::new();
+            entry.insert("nice".into(), nice);
+            entry.insert(
+                "proc".into(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
+            autogroup_map.insert(group_num.clone(), serde_json::Value::Object(entry));
+        }
 
-                process_info_obj.remove("autogroup");
+        process_info_obj.remove("autogroup");
 
-                if let Some(serde_json::Value::Object(entry)) = autogroup_map.get_mut(&group_num) {
-                    if let Some(serde_json::Value::Object(proc_map)) = entry.get_mut("proc") {
-                        proc_map.insert(tpid, process_info);
-                    }
-                }
-            }
+        if let Some(serde_json::Value::Object(entry)) = autogroup_map.get_mut(&group_num)
+            && let Some(serde_json::Value::Object(proc_map)) = entry.get_mut("proc")
+        {
+            proc_map.insert(tpid, process_info);
         }
     }
 

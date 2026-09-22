@@ -3,14 +3,9 @@ use std::io;
 pub const SCHED_FIFO: i32 = libc::SCHED_FIFO;
 pub const SCHED_RR: i32 = libc::SCHED_RR;
 
+#[derive(Default)]
 pub struct SchedParam {
     pub sched_priority: i32,
-}
-
-impl Default for SchedParam {
-    fn default() -> Self {
-        Self { sched_priority: 0 }
-    }
 }
 
 /// # Safety

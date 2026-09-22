@@ -35,14 +35,13 @@ impl CgroupManager {
             None
         };
 
-        if info.version == CgroupVersion::V2
-            && let Some(ref root) = delegated_root
-        {
-            debug!("Cgroup v2: Discovered delegated root at {:?}", root);
-        } else if info.version == CgroupVersion::V2 {
-            warn!(
-                "Cgroup v2: No writable delegated root discovered. Cgroup modifications will be disabled. Please run ananicy-rs as a systemd service with `Delegate=yes`."
-            );
+        if info.version == CgroupVersion::V2 {
+            match &delegated_root {
+                Some(root) => debug!("Cgroup v2: Discovered delegated root at {:?}", root),
+                None => warn!(
+                    "Cgroup v2: No writable delegated root discovered. Cgroup modifications will be disabled. Please run ananicy-rs as a systemd service with `Delegate=yes`."
+                ),
+            }
         }
 
         Self {
@@ -118,11 +117,8 @@ impl CgroupManager {
     }
 
     pub fn cgroup_exists(&self, name: &str) -> bool {
-        if let Some(target) = self.resolve_target_dir(name) {
-            target.exists()
-        } else {
-            false
-        }
+        self.resolve_target_dir(name)
+            .is_some_and(|target| target.exists())
     }
 }
 
@@ -139,11 +135,11 @@ impl CgroupController for CgroupManager {
         match ownership {
             CgroupOwnership::Legacy => {
                 // Legacy v1 behavior: just create the directory
-                if !target_dir.exists() {
-                    if let Err(e) = fs::create_dir_all(&target_dir) {
-                        error!("ensure_child(V1): Failed to create cgroup {}: {}", name, e);
-                        return None;
-                    }
+                if !target_dir.exists()
+                    && let Err(e) = fs::create_dir_all(&target_dir)
+                {
+                    error!("ensure_child(V1): Failed to create cgroup {}: {}", name, e);
+                    return None;
                 }
                 Some(target_dir)
             }
@@ -152,20 +148,20 @@ impl CgroupController for CgroupManager {
                 if let Some(parent) = target_dir.parent() {
                     // Try to enable cpu controller on parent
                     let subtree_control = parent.join("cgroup.subtree_control");
-                    if subtree_control.exists() {
-                        if let Ok(mut f) = OpenOptions::new().write(true).open(&subtree_control) {
-                            // It's okay if this fails (e.g. if cpu is not in cgroup.controllers)
-                            // but we must attempt it to adhere to hierarchy rules.
-                            let _ = f.write_all(b"+cpu\n");
-                        }
+                    if subtree_control.exists()
+                        && let Ok(mut f) = OpenOptions::new().write(true).open(&subtree_control)
+                    {
+                        // It's okay if this fails (e.g. if cpu is not in cgroup.controllers)
+                        // but we must attempt it to adhere to hierarchy rules.
+                        let _ = f.write_all(b"+cpu\n");
                     }
                 }
 
-                if !target_dir.exists() {
-                    if let Err(e) = fs::create_dir_all(&target_dir) {
-                        error!("ensure_child(V2): Failed to create cgroup {}: {}", name, e);
-                        return None;
-                    }
+                if !target_dir.exists()
+                    && let Err(e) = fs::create_dir_all(&target_dir)
+                {
+                    error!("ensure_child(V2): Failed to create cgroup {}: {}", name, e);
+                    return None;
                 }
                 Some(target_dir)
             }
@@ -206,12 +202,10 @@ impl CgroupController for CgroupManager {
         };
         let procs_path = target.join(procs_file);
 
-        let start_time_before = crate::procfs::get_start_time(pid);
-
-        if start_time_before.is_none() {
-            // Process doesn't exist or we can't read its stat.
+        // Process doesn't exist or we can't read its stat.
+        let Some(start_time_before) = crate::procfs::get_start_time(pid) else {
             return false;
-        }
+        };
 
         // If in CgroupV2, we must write the TGID (process ID), not the TID, to cgroup.procs
         // Writing a TID that is not a thread group leader to cgroup.procs fails with EINVAL (os error 22)
@@ -239,22 +233,21 @@ impl CgroupController for CgroupManager {
                 }
 
                 let start_time_after = crate::procfs::get_start_time(pid);
-                match (start_time_before, start_time_after) {
-                    (Some(before), Some(after)) if before == after => {} // Safe
-                    (Some(_), None) => {
+                match start_time_after {
+                    Some(after) if after == start_time_before => {} // Safe
+                    None => {
                         debug!("move_pid: PID {} died during move operation", pid);
                         // It died, so the move succeeded but the process is gone.
                         // Returning true is fine, or false. We'll return false to stop further rules.
                         return false;
                     }
-                    (Some(before), Some(after)) => {
+                    Some(after) => {
                         warn!(
                             "move_pid: PID {} was reused during move operation! ({} -> {})",
-                            pid, before, after
+                            pid, start_time_before, after
                         );
                         return false;
                     }
-                    _ => return false,
                 }
 
                 debug!("move_pid: Successfully added {} to {:?}", pid, target);
