@@ -81,19 +81,18 @@ fn print_debug_cgroups() {
 /// Read the first line of `/proc/<pid>/cgroup` and take everything after
 /// the last `:`.
 fn get_cgroup_for_pid(pid: u32) -> String {
-    match read_to_string(format!("/proc/{pid}/cgroup")) {
-        Ok(content) => {
-            let first_line = content.lines().next().unwrap_or("");
-            if first_line.is_empty() {
-                "<empty>".to_string()
-            } else {
-                match first_line.rfind(':') {
-                    Some(idx) => first_line[idx + 1..].to_string(),
-                    None => first_line.to_string(),
-                }
-            }
-        }
-        Err(_) => "<empty>".to_string(),
+    let Ok(content) = read_to_string(format!("/proc/{pid}/cgroup")) else {
+        return "<empty>".to_string();
+    };
+
+    let first_line = content.lines().next().unwrap_or("");
+    if first_line.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    match first_line.rfind(':') {
+        Some(idx) => first_line[idx + 1..].to_string(),
+        None => first_line.to_string(),
     }
 }
 

@@ -66,27 +66,24 @@ pub(crate) fn request_reload() -> ! {
         shm::{self, OFlags as ShmOFlags},
     };
 
-    match shm::open(IPC_NAME, ShmOFlags::RDONLY, Mode::empty()) {
-        Ok(fd) => {
-            let mut file = File::from(fd);
-            let mut buf = String::new();
-            if file.read_to_string(&mut buf).is_ok()
-                && let Ok(old_pid) = buf.trim().parse::<i32>()
-                && let Some(pid) = Pid::from_raw(old_pid)
-            {
-                if let Err(e) = rustix::process::kill_process(pid, Signal::USR1) {
-                    eprintln!("Failed to send reload signal: {}", e);
-                    exit(1);
-                }
-                println!("Reload signal sent to PID {}", old_pid);
-                exit(0);
-            }
-            eprintln!("Unable to read PID from IPC singleton");
+    let Ok(fd) = shm::open(IPC_NAME, ShmOFlags::RDONLY, Mode::empty()) else {
+        eprintln!("Unable to reload. Ananicy is not running!");
+        exit(1);
+    };
+
+    let mut file = File::from(fd);
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_ok()
+        && let Ok(old_pid) = buf.trim().parse::<i32>()
+        && let Some(pid) = Pid::from_raw(old_pid)
+    {
+        if let Err(e) = rustix::process::kill_process(pid, Signal::USR1) {
+            eprintln!("Failed to send reload signal: {}", e);
             exit(1);
         }
-        Err(_) => {
-            eprintln!("Unable to reload. Ananicy is not running!");
-            exit(1);
-        }
+        println!("Reload signal sent to PID {}", old_pid);
+        exit(0);
     }
+    eprintln!("Unable to read PID from IPC singleton");
+    exit(1);
 }

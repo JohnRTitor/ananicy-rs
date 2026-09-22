@@ -28,18 +28,17 @@ pub(crate) fn init_logging(
         tracing::Level::from(&config_level)
     };
 
-    let (filter, reload_handle) = tracing_subscriber::reload::Layer::new(LevelFilter::from_level(log_level));
+    let (filter, reload_handle) =
+        tracing_subscriber::reload::Layer::new(LevelFilter::from_level(log_level));
 
     #[cfg(feature = "systemd")]
-    if is_systemd {
-        if let Ok(layer) = tracing_journald::layer() {
-            use tracing_subscriber::layer::SubscriberExt;
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(filter)
-                .with(layer);
-            let _ = tracing::subscriber::set_global_default(subscriber);
-            return reload_handle;
-        }
+    if is_systemd && let Ok(layer) = tracing_journald::layer() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = tracing_subscriber::Registry::default()
+            .with(filter)
+            .with(layer);
+        let _ = tracing::subscriber::set_global_default(subscriber);
+        return reload_handle;
     }
 
     use tracing_subscriber::layer::SubscriberExt;
@@ -66,9 +65,7 @@ pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {
     (config_path, config_dir_path)
 }
 
-pub(crate) fn load_config(
-    config_path: &str,
-) -> (Arc<Config>, Option<String>, bool) {
+pub(crate) fn load_config(config_path: &str) -> (Arc<Config>, Option<String>, bool) {
     let latnice_supported = ananicy_platform::test_latnice_support();
     match Config::load_file(config_path, latnice_supported) {
         Ok(cfg) => (Arc::new(cfg), None, latnice_supported),

@@ -160,46 +160,29 @@ impl NetlinkMonitor {
                         }
                     };
 
-                    let payload = match event.get_payload() {
-                        Some(p) => p,
-                        None => continue,
+                    let Some(payload) = event.get_payload() else {
+                        continue;
                     };
 
-                    match payload.payload().event {
-                        ProcEvent::Exec { process_pid, .. } => {
-                            if process_pid != prev_pid {
-                                prev_pid = process_pid;
-                                let name = get_command_from_pid(process_pid);
-                                tx.send(
-                                    Process::new(Pid(process_pid), name).with_authoritative_name(),
-                                )
-                                .expect("Worker thread died");
-                            }
-                        }
-                        ProcEvent::Fork { child_pid, .. } => {
-                            if child_pid != prev_pid {
-                                prev_pid = child_pid;
-                                let name = get_command_from_pid(child_pid);
-                                tx.send(
-                                    Process::new(Pid(child_pid), name).with_authoritative_name(),
-                                )
-                                .expect("Worker thread died");
-                            }
-                        }
-                        ProcEvent::Comm { process_pid, .. } => {
-                            if process_pid != prev_pid {
-                                prev_pid = process_pid;
-                                let name = get_command_from_pid(process_pid);
-                                tx.send(
-                                    Process::new(Pid(process_pid), name).with_authoritative_name(),
-                                )
-                                .expect("Worker thread died");
-                            }
-                        }
-                        ProcEvent::Exit { .. } => {
-                            // We can send Exit if needed in the future
-                        }
-                        _ => {}
+                    // Exec/Fork/Comm are handled identically: report the pid if it differs
+                    // from the last one we saw (`get_command_from_pid` does the slow
+                    // procfs lookup; `prev_pid` avoids repeating it for the same process).
+                    let reported_pid = match payload.payload().event {
+                        ProcEvent::Exec { process_pid, .. }
+                        | ProcEvent::Comm { process_pid, .. } => Some(process_pid),
+                        ProcEvent::Fork { child_pid, .. } => Some(child_pid),
+                        // We can send Exit if needed in the future
+                        ProcEvent::Exit { .. } => None,
+                        _ => None,
+                    };
+
+                    if let Some(pid) = reported_pid
+                        && pid != prev_pid
+                    {
+                        prev_pid = pid;
+                        let name = get_command_from_pid(pid);
+                        tx.send(Process::new(Pid(pid), name).with_authoritative_name())
+                            .expect("Worker thread died");
                     }
                 }
             }

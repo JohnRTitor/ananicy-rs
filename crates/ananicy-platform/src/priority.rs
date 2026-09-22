@@ -18,22 +18,22 @@ use {
 // Note: In C++ original code, `test_errno` handles EPERM, ESRCH, etc.
 // We will replicate similar logic.
 fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformError> {
-    if let Some(raw_os_error) = err.raw_os_error() {
-        if raw_os_error == 0 {
-            debug!("{}: Successfully applied to {}", func_name, pid);
-            return Ok(());
-        }
-
-        if err.kind() == io::ErrorKind::NotFound
-            || raw_os_error == Errno::SRCH.raw_os_error()
-            || raw_os_error == Errno::ACCESS.raw_os_error()
-            || raw_os_error == Errno::PERM.raw_os_error()
-        {
-            return Err(PermissionDenied);
-        }
+    let Some(raw_os_error) = err.raw_os_error() else {
         return Err(Io(err));
+    };
+
+    if raw_os_error == 0 {
+        debug!("{}: Successfully applied to {}", func_name, pid);
+        return Ok(());
     }
 
+    if err.kind() == io::ErrorKind::NotFound
+        || raw_os_error == Errno::SRCH.raw_os_error()
+        || raw_os_error == Errno::ACCESS.raw_os_error()
+        || raw_os_error == Errno::PERM.raw_os_error()
+    {
+        return Err(PermissionDenied);
+    }
     Err(Io(err))
 }
 
@@ -50,10 +50,11 @@ pub fn set_priority(pid: i32, tids: &[i32], nice_value: i32) -> Result<(), Platf
         }
     }
 
-    match last_err {
-        Some(err) => test_errno(err, "set_priority", pid),
-        None => test_errno(io::Error::from_raw_os_error(0), "set_priority", pid),
-    }
+    test_errno(
+        last_err.unwrap_or_else(|| io::Error::from_raw_os_error(0)),
+        "set_priority",
+        pid,
+    )
 }
 
 pub fn set_latency_nice(
@@ -85,10 +86,11 @@ pub fn set_latency_nice(
         }
     }
 
-    match last_err {
-        Some(err) => test_errno(err, "set_latency_nice", pid),
-        None => test_errno(io::Error::from_raw_os_error(0), "set_latency_nice", pid),
-    }
+    test_errno(
+        last_err.unwrap_or_else(|| io::Error::from_raw_os_error(0)),
+        "set_latency_nice",
+        pid,
+    )
 }
 
 pub fn get_latency_nice(pid: i32) -> Option<i32> {
@@ -97,18 +99,14 @@ pub fn get_latency_nice(pid: i32) -> Option<i32> {
         ..Default::default()
     };
 
-    if crate::abi::sched_attr::sched_getattr(
+    crate::abi::sched_attr::sched_getattr(
         pid,
         &mut attr,
         std::mem::size_of::<sched_attr>() as u32,
         0,
     )
-    .is_err()
-    {
-        None
-    } else {
-        Some(attr.sched_latency_nice)
-    }
+    .ok()?;
+    Some(attr.sched_latency_nice)
 }
 
 pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), PlatformError> {
@@ -174,17 +172,16 @@ pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), Platfor
 
 pub fn set_oom_score_adjust(pid: i32, value: i32) -> Result<(), PlatformError> {
     let path = format!("/proc/{}/oom_score_adj", pid);
-    if let Err(e) = fs::write(&path, value.to_string()) {
-        if e.kind() == io::ErrorKind::NotFound {
-            return Err(NotFound);
+    match fs::write(&path, value.to_string()) {
+        Ok(()) => {
+            debug!("set_oom_score_adjust: Successfully applied to {}", pid);
+            Ok(())
         }
-        if e.kind() == io::ErrorKind::PermissionDenied {
-            return Err(PermissionDenied);
-        }
-        Err(Io(e))
-    } else {
-        debug!("set_oom_score_adjust: Successfully applied to {}", pid);
-        Ok(())
+        Err(e) => match e.kind() {
+            io::ErrorKind::NotFound => Err(NotFound),
+            io::ErrorKind::PermissionDenied => Err(PermissionDenied),
+            _ => Err(Io(e)),
+        },
     }
 }
 

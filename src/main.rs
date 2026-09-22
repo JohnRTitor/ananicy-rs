@@ -1,5 +1,3 @@
-#![allow(clippy::collapsible_if)]
-
 #[cfg(not(any(feature = "bpf", feature = "netlink")))]
 compile_error!("At least one event source feature ('bpf' or 'netlink') must be enabled.");
 

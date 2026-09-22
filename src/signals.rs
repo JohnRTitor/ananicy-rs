@@ -17,30 +17,34 @@ pub(crate) fn install(
     tx: Sender<Process>,
     log_reload_handle: crate::startup::LogReloadHandle,
 ) {
-    let config_clone = config;
-    if let Ok(mut signals) = signal_hook::iterator::Signals::new([
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGUSR1,
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
-    ]) {
-        spawn_named_thread!("ananicy-signal", move || {
-            for sig in signals.forever() {
-                if sig == signal_hook::consts::SIGUSR1 {
+    ]) else {
+        return;
+    };
+
+    spawn_named_thread!("ananicy-signal", move || {
+        for sig in signals.forever() {
+            match sig {
+                signal_hook::consts::SIGUSR1 => {
                     info!("Received SIGUSR1, reloading config...");
                     let latnice_supported = ananicy_platform::test_latnice_support();
-                    if let Err(e) = config_clone.reload_file(&config_path, latnice_supported) {
+                    if let Err(e) = config.reload_file(&config_path, latnice_supported) {
                         error!("Failed to reload config: {}", e);
                     } else {
                         // Config reloaded successfully. Now update the active logger verbosity.
-                        let new_config_level = config_clone.get().loglevel.clone();
+                        let new_config_level = config.get().loglevel.clone();
                         let new_level = tracing::Level::from(&new_config_level);
                         let _ = log_reload_handle.modify(|filter| {
-                            *filter = tracing_subscriber::filter::LevelFilter::from_level(new_level);
+                            *filter =
+                                tracing_subscriber::filter::LevelFilter::from_level(new_level);
                         });
                         info!("Config and log level reloaded (now {})", new_config_level);
                     }
-                } else if sig == signal_hook::consts::SIGINT || sig == signal_hook::consts::SIGTERM
-                {
+                }
+                signal_hook::consts::SIGINT | signal_hook::consts::SIGTERM => {
                     info!("Received termination signal. Shutting down...");
                     shutdown_flag.store(true, Ordering::SeqCst);
                     drop(tx);
@@ -50,7 +54,8 @@ pub(crate) fn install(
                     }
                     break;
                 }
+                _ => {}
             }
-        });
-    }
+        }
+    });
 }
