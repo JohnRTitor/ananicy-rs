@@ -35,7 +35,13 @@ pub fn set_affinity(pid: i32, tids: &[i32], cpuset: &CpuSet) -> io::Result<()> {
 
     let mut last_err = None;
 
-    for &tid in tids {
+    let target_tids = if tids.is_empty() {
+        std::slice::from_ref(&pid)
+    } else {
+        tids
+    };
+
+    for &tid in target_tids {
         let ret = unsafe { sched_setaffinity(tid, num_bytes, mask.as_ptr() as *const cpu_set_t) };
         if ret != 0 {
             last_err = Some(io::Error::last_os_error());
