@@ -88,6 +88,22 @@ fn test_cli_bare_invocation() {
 }
 
 #[test]
+fn test_cli_accepts_both_spellings_of_manual_scanning() {
+    // `--manualscanning` is the spelling the Ananicy command line used and
+    // ananicy-cpp still accepts, so a unit file or wrapper that carries it must
+    // keep working. `--help` is used as the terminating argument, because
+    // without it the flag would start the daemon.
+    for flag in ["--manual-scanning", "--manualscanning"] {
+        let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+        cmd.arg(flag).arg("--help");
+        cmd.assert()
+            .success()
+            .code(0)
+            .stdout(predicate::str::contains("ANother Auto NICe daemon rewrite"));
+    }
+}
+
+#[test]
 fn test_cli_start_non_root() {
     if rustix::process::geteuid().as_raw() == 0 {
         return; // skip if running as root

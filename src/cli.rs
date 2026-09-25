@@ -158,8 +158,10 @@ struct Opts {
     #[bpaf(long)]
     /// Force remove IPC semaphore
     force_remove_semaphore: bool,
-    #[bpaf(long)]
-    /// Enable manual periodic scanning
+    // Both spellings: `--manualscanning` is what the Ananicy command line this
+    // daemon is compatible with used, and ananicy-cpp still accepts it.
+    #[bpaf(long("manual-scanning"), long("manualscanning"))]
+    /// Enable manual periodic scanning (also accepted as `--manualscanning`)
     manual_scanning: bool,
     #[bpaf(long)]
     /// Benchmark mode

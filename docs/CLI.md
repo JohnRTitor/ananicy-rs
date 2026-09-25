@@ -89,7 +89,7 @@ behaviour of the service manager, the delegation model, and the shipped unit.
 - `--config-dir <CONFIG_DIR>`: Override the rules directory (default: `/etc/ananicy.d`).
 - `--reload`: Send a signal to the running `ananicy-rs` instance (via an IPC semaphore) to reload global configuration and the active log level. Rule, type, and cgroup files require a daemon restart.
 - `--force-remove-semaphore`: Force remove the IPC semaphore (use only if the daemon crashed and left a stale semaphore).
-- `--manual-scanning`: Enable periodic manual procfs scanning (useful if event listeners miss events).
+- `--manual-scanning` (`--manualscanning`): Enable periodic manual procfs scanning (useful if event listeners miss events).
 - `--benchmark`: Run the daemon in benchmark mode for performance profiling.
 - `--benchmark-count <BENCHMARK_COUNT>`: Number of iterations to run in benchmark mode.
 - `--bpf-min-us <BPF_MIN_US>`: Minimum microseconds for BPF intervals.
