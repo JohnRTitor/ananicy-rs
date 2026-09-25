@@ -6,9 +6,12 @@
 **Exception list under audit:** `docs/ANANICY_CPP_DIFFERENCES.md`
 
 > **Status: the findings have been worked through.** Every item of the remediation list in §9 was
-> addressed in a commit of its own; §11 records what each of them turned out to be. The report below
-> is left as it was written, because the point of an audit is what was true when it was made, and
-> §11 says where that no longer holds. The verdict in §1 and §10 was the verdict at `e131b18`.
+> addressed in a commit of its own; §11 records what each of them turned out to be. §12 is a second
+> axis, added after the original Ananicy was cloned: it covers the features that are missing from
+> *both* rewrites, which a comparison against `ananicy-cpp` cannot see, and it overturned one §9
+> remediation. The report below is left as it was written, because the point of an audit is what was
+> true when it was made, and §11 and §12 say where that no longer holds. The verdict in §1 and §10
+> was the verdict at `e131b18`.
 
 ---
 
@@ -865,8 +868,10 @@ differences document is amended to cover §5, the answer becomes **yes**.
 
 ## 11. What was done about it
 
-Twenty-six commits, each one finding, in the order §9 lists them. The table says
-what became of each item; the commit column is the evidence.
+Twenty-nine commits, each one finding, in the order §9 lists them. The table says
+what became of each item; the commit column is the evidence. The last three are not §9 items:
+`69e8c1c` made a deadline test independent of the sandbox, and `0bd0df2`/`3386d6d` are the two
+findings of §12.
 
 | §9 | Item | Outcome | Commit |
 |---|---|---|---|
@@ -881,7 +886,7 @@ what became of each item; the commit column is the evidence.
 | 9 | `--manualscanning` rejected | **Fixed.** Both spellings parse and the help names the alias. | `332e5da` |
 | 10 | `CPUWeight` documented, not implemented | **Fixed** by implementing it, not by deleting the claim: `create_cgroup` takes a `CgroupSettings` and writes the weight, and a malformed value configures nothing. | `b6ae3de` |
 | 11 | `.expect()` on the netlink send | **Fixed.** A failed send sets the shutdown flag and the listener returns, which is what the BPF callback already did. | `b22da6b` |
-| 12 | `apply_ioclass` parsed and ignored | **Fixed.** It gates the attribute; the reference reference also never acted on it, so the reported state and the behaviour now agree. | `f4e8305` |
+| 12 | `apply_ioclass` parsed and ignored | **Fixed, then reverted.** The audit only had the C++ daemon to compare against, and could not tell that the key gates a log line upstream. `f4e8305` made it a real gate; `0bd0df2` undid that once the original was read — see §12.1. The key is now inert again, as in the reference, and the reason why is documented rather than guessed at. | `f4e8305`, `0bd0df2` |
 | 13 | Realtime detection by policy | **Fixed.** Aligned to the reference: a static priority above zero. `sched_getscheduler` had no other caller and is gone. | `474f7a9` |
 | 14 | The rest undocumented | **Documented** in `ANANICY_CPP_DIFFERENCES.md` §5, and the `perf`-buffer claim was corrected — libbpf-rs already defaults to the reference's 64 pages, so there was nothing to align. | `6148529`, `a31b7ff` |
 | 15 | NixOS `-wrapped` matching undocumented | **Documented** in §5. | `474f7a9` |
@@ -916,3 +921,143 @@ what became of each item; the commit column is the evidence.
 * `ananicy-bpf` still cannot be built in the audit environment (no libbpf), so the `--verbose`
   plumbing into libbpf's print callback rests on the libbpf-rs 0.27 API rather than on a compile.
   That is the one change in the list that is not verified by a build.
+
+---
+
+## 12. The other parent: ananicy-rs vs the original Ananicy
+
+Every finding above is `ananicy-rs` against `ananicy-cpp`. That comparison is blind to a whole class
+of defect. `ananicy-cpp` is a port of the Python Ananicy, and when a port drops a feature the port
+and the rewrite look identical from the Rust side — the feature is absent from both, so no C++-vs-Rust
+difference exists to report. §9 item 12 is a live example: the audit could tell that `ananicy-rs` and
+`ananicy-cpp` both ignored `apply_ioclass`, and could not tell whether ignoring it was right, because
+the only thing that ever gave the key meaning was in neither file.
+
+**Method.** `git clone --depth 50 https://github.com/RogueScholar/ananicy.git` at `ce7b19b`; compared
+`ananicy.py` and `ananicy.d/ananicy.conf` against the daemon. The comparison is not a line-by-line
+diff of a ~900-line script against ~30k lines of Rust; it is restricted to what is observable from a
+rule file, a configuration file, or the original's start-up output, because those are the surfaces a
+user of the original has to be missing.
+
+**Key coverage is now complete.** Every key `ananicy.py` parses has a counterpart in
+`config.rs` — `check_freq`, `cgroup_load`, `type_load`, `rule_load`, `apply_nice`, `apply_ioclass`,
+`apply_ionice`, `apply_sched`, `apply_oom_score_adj`, `apply_cgroup`, `check_disks_schedulers`. The
+reverse is not true and should not be: `apply_latnice`, `apply_cpuset`, `apply_cpu_weight`,
+`x3d_mode`, `loglevel` and `cgroup_realtime_workaround` have no upstream counterpart, and two of them
+(`latnice`, cpuset) did not exist in any Ananicy before the C++ rewrite.
+
+### 12.1 The `apply_*` flags only ever silenced a log line — Severity: High (it invalidated a remediation)
+
+The six `apply_*` keys are collected into `self.verbose` (`ananicy.py:501-511`) and their *only*
+consumer is:
+
+```python
+def print_verbose_msg(msg, verbose_opts, key):   # ananicy.py:27
+    if key in verbose_opts:
+        if verbose_opts[key]:
+            print(msg)
+```
+
+called from inside the setters themselves — `ananicy.py:113,140,223,229,267,289`. `TPID.apply_rules`
+(`ananicy.py:292-318`) applies whatever the rule contains, with no reference to any of them:
+
+```python
+if rules.get("nice"):
+    if self.nice(rules["nice"]):
+```
+
+So `apply_nice=false` did not stop `nice` from being applied; it stopped the daemon from printing
+"Set nice to …". The one place the flags are decisive is `ananicy.py:409-411`, where `dump` passes
+`daemon=False` and every flag is forced off to silence the whole load.
+
+This is the third meaning `apply_ioclass` has had, and the audit's remediation picked the wrong one.
+§9 item 12 had turned it into a real gate, on the reasoning that the reported state and the behaviour
+should agree. They now do not: §12.1 says the reported state and the *original's* behaviour agreed,
+which is a different and more useful property. `0bd0df2` reverts the gate; the key is inert again, as
+it is in `ananicy-cpp`, and `CONFIGURATION.md` now explains where it came from instead of implying it
+works. See §11's amended row 12.
+
+**The generalisable finding:** the C++ port gave these flags real teeth and wired them to syscalls,
+so "the C++ daemon honours them" looked self-evidently right. It was right about the five it wires,
+and it had nothing to wire for the sixth, because one `ioprio_set(2)` sets the class and the priority
+together. Whether a rewrite should *keep* a flag that gates only a log line is a design question
+about compatibility with the original that a C++-vs-Rust audit cannot even pose.
+
+### 12.2 `check_disks_schedulers` — missing from both rewrites — Severity: Medium (restored)
+
+`__check_disks_schedulers()` (`ananicy.py:455-481`) walks `/sys/class/block/*/queue/scheduler` at
+start-up, skips `loop`/`ram`/`sr` devices and any device with no scheduler file, and prints one line
+per device whose active scheduler is not `cfq`, `bfq` or `bfq-mq` — the message being
+`Disk {disk} not use cfq/bfq scheduler IOCLASS/IONICE will not work on it`. It ships enabled
+(`ananicy.d/ananicy.conf:19`) and is gated on the flag at `ananicy.py:480`.
+
+Neither rewrite has it, and `docs/CONFIGURATION.md` had carried the sentence "only the BFQ/CFQ I/O
+schedulers fully support `ioclass` and `ionice`" without anything acting on it. The check matters
+because `ioprio_set(2)` is implemented by CFQ and BFQ alone: elsewhere it returns success, the daemon
+reports the rule as applied, and the I/O priority is unchanged.
+
+Restored in `3386d6d` as `src/disks.rs`, enabled by default to match upstream, on the daemon start
+path only, read-only. The same reasoning as `apply_cpu_weight` does *not* apply here, and the
+distinction is the reason this one was accepted: the key exists upstream and already means something,
+so restoring it is not inventing a new option.
+
+### 12.3 `CPUQuota` also sets `cpu.shares` upstream — Severity: Low (deliberate divergence, documented)
+
+`CgroupController.__init__` (`ananicy.py:339-350`) writes both `cpu.cfs_quota` and
+`1024 * cpuquota // 100` to `cpu.shares`, so a `{"CPUQuota": 80}` cgroup ends up with shares 819 in
+the original. `ananicy-cpp` writes only the quota, and `ananicy-rs` writes the quota plus a weight
+only when the rule carries an explicit `CPUWeight` (§9 item 10).
+
+The original's coupling is the reason `CPUWeight` is defensible as a *superset* rather than an
+invention: the value is derivable, and the derivation is arithmetic on a key that already exists.
+Deriving it silently would be a surprise, and a rule that sets the quota and the weight to different
+things would be ambiguous; a separate key is the honest version. Documented in
+`ANANICY_CPP_DIFFERENCES.md` §5 and `CONFIGURATION.md`.
+
+### 12.4 `check_freq` is a float upstream — Severity: Low (deliberate, documented)
+
+`ananicy.py:493` parses it with `float()` and `ananicy.d/ananicy.conf:3` says "supported values
+0.01..86400"; the full-scan loop sleeps on it (`ananicy.py:752`). Both rewrites made it an integer
+number of seconds, and the sub-second range is unreachable in them.
+
+**Not changed.** Ananicy's full scan is a `/proc` walk; a sub-second interval on it is a way to burn a
+core, and the rewritten scanner is event-driven with the interval only used in manual mode. Accepting
+`0.5` and rounding it to `0` (or to 1) would be worse than rejecting it, and rejecting a value the
+original accepted is a compatibility break for a configuration nobody sane writes. Recorded here so
+the divergence is a decision on the record rather than an oversight.
+
+### 12.5 Upstream keeps a live task→cgroup map — Severity: Informational (not a gap)
+
+The original's `__tread_update_tasks` thread maintains `cgroup_task_map`, refreshed on a timer, so
+rule application can find a task's cgroup without re-reading `/proc`. `ananicy-cpp` re-reads
+`/proc/<pid>/cgroup` per event. This is an internal design choice with the same observable result, not
+a missing capability; it is listed because it is the one upstream behaviour that is a real structural
+difference rather than a porting artefact.
+
+### 12.6 Non-findings — Severity: Informational
+
+* **Autogroup is not missing.** `ananicy.py:162-166` has a setter, but nothing calls it; the property
+  exists to be read for `dump autogroup` (`ananicy.py:781`). Both rewrites match the original, which
+  reads and never writes.
+* **The CLI is smaller than either rewrite's, not larger.** `main()` (`ananicy.py:844-876`) takes
+  `start` and `dump <rules|types|cgroups|proc|autogroup>` with no flags. There is no upstream
+  equivalent of `--benchmark`, `--verbose`, or `debug`, so nothing is missing on that axis.
+* **`systemd-notify --ready`** is called when `NOTIFY_SOCKET` is set (`ananicy.py:416-417`); this
+  daemon uses the `sd-notify` crate on the same condition.
+* **`daemon=False` silencing the load output** has no configuration equivalent here, because this
+  daemon's `dump` and the daemon log through different layers.
+
+### 12.7 What this section changed
+
+| §12 | Item | Outcome | Commit |
+|---|---|---|---|
+| 1 | `apply_ioclass` given a meaning the original never had | **Reverted.** Left inert, as in `ananicy-cpp`; the upstream provenance is documented and pinned by a test. | `0bd0df2` |
+| 2 | `check_disks_schedulers` missing from both rewrites | **Restored**, defaulting to the original's value. | `3386d6d` |
+| 3 | `CPUQuota` → `cpu.shares` coupling | **No change.** Deliberate; `CPUWeight` is the explicit form. Documented. | — |
+| 4 | `check_freq` is a float upstream | **No change.** Deliberate; recorded. | — |
+| 5–6 | Task map, CLI, autogroup, `systemd-notify` | **No change.** Not gaps. | — |
+
+The remaining §5 registers are unaffected: every item there is a `ananicy-cpp`-relative behaviour and
+both reimplementations still agree with each other. What §12 changes is the *reason* two of them can
+be trusted — §5.4 and the `apply_*` rows are now anchored to the original rather than to whichever
+rewrite happened to be read first.
