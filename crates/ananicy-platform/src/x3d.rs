@@ -124,12 +124,13 @@ fn detect_x3d_topology_impl(sys_root: &Path, proc_root: &Path) -> Option<X3DTopo
 
                 die_to_cores.entry(die_id).or_default().insert(cpu_id);
 
-                // Read L3 cache size (index3 is usually L3)
+                // Read the L3 cache size (index3 is usually L3), in the same
+                // units the topology detector uses so the two agree on which
+                // CCD holds the V-Cache.
                 let cache_path = entry.path().join("cache/index3/size");
                 if let Ok(cache_str) = fs::read_to_string(&cache_path) {
-                    // "98304K" -> parse out K
-                    let val_str = cache_str.trim().trim_end_matches('K');
-                    if let Ok(cache_size) = val_str.parse::<u64>() {
+                    let cache_size = crate::topology::parse_size_string(&cache_str);
+                    if cache_size > 0 {
                         die_to_cache.insert(die_id, cache_size);
                     }
                 }

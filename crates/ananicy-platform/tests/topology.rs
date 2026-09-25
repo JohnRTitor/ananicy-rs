@@ -321,3 +321,24 @@ fn summary_reports_a_homogeneous_machine_without_smt_or_big_little() {
         topo.summary()
     );
 }
+
+/// Cache sizes are compared to pick the largest last-level cache and the
+/// V-Cache CCD, so the units only have to be consistent — but they do have to
+/// be, and the two readers used to disagree about them.
+#[test]
+fn cache_sizes_are_read_in_bytes() {
+    use ananicy_platform::topology::parse_size_string;
+
+    assert_eq!(parse_size_string("32K"), 32 * 1024);
+    assert_eq!(parse_size_string("32k"), 32 * 1024);
+    assert_eq!(parse_size_string("1536K\n"), 1536 * 1024);
+    assert_eq!(parse_size_string("16M"), 16 * 1024 * 1024);
+    assert_eq!(parse_size_string("2G"), 2 * 1024 * 1024 * 1024);
+    assert_eq!(parse_size_string("  16M  "), 16 * 1024 * 1024);
+    assert_eq!(parse_size_string("4096"), 4096, "no suffix means bytes");
+
+    // Anything unreadable is 0, which every caller reads as "not reported".
+    assert_eq!(parse_size_string(""), 0);
+    assert_eq!(parse_size_string("unknown"), 0);
+    assert_eq!(parse_size_string("16X"), 0);
+}
