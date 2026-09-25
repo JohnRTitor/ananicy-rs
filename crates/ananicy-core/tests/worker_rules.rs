@@ -125,7 +125,7 @@ fn an_explicit_latency_nice_wins_over_nice() {
 
 #[test]
 fn each_apply_flag_suppresses_only_its_own_attribute() {
-    let cases: [(ConfigSnapshot, &str, &str); 7] = [
+    let cases: [(ConfigSnapshot, &str, &str); 8] = [
         (
             ConfigSnapshot {
                 apply_nice: false,
@@ -153,6 +153,16 @@ fn each_apply_flag_suppresses_only_its_own_attribute() {
         (
             ConfigSnapshot {
                 apply_ionice: false,
+                ..all_attributes_enabled()
+            },
+            "set_io_priority",
+            "set_priority",
+        ),
+        (
+            // `apply_ioclass` switches the class, `apply_ionice` the priority
+            // within it; both have to be on for the ioprio_set call.
+            ConfigSnapshot {
+                apply_ioclass: false,
                 ..all_attributes_enabled()
             },
             "set_io_priority",

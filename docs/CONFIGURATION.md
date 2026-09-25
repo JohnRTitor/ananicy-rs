@@ -18,6 +18,7 @@ The format is `key=value`, one per line.
 | `apply_nice` | `true` | Apply nice values from rules |
 | `apply_sched` | `true` | Apply scheduling policy from rules |
 | `apply_ionice` | `true` | Apply I/O nice values from rules |
+| `apply_ioclass` | `true` | Apply the I/O class from rules. Together with `apply_ionice`, which switches the priority within the class; both have to be on for a rule's `ioclass` to be written |
 | `apply_oom_score_adj` | `true` | Apply OOM score adjustments from rules |
 | `apply_latnice` | `true` | Apply latency nice values from rules |
 | `apply_cpuset` | `true` | Apply CPU affinity (cpuset) from rules |
