@@ -147,10 +147,16 @@ in
       packages = [ cfg.package ];
 
       services."ananicy-rs" = {
-        serviceConfig.ExecStart = lib.mkForce [
-          "" # Clear the existing default
-          "${cfg.package}/bin/ananicy-rs ${lib.escapeShellArgs cfg.extraArgs} start"
-        ];
+        serviceConfig = {
+          # Delegate only the service's cgroup subtree; this does not grant
+          # control over user.slice, session scopes, or other systemd units.
+          Delegate = true;
+          ExecReload = "${cfg.package}/bin/ananicy-rs --reload";
+          ExecStart = lib.mkForce [
+            "" # Clear the existing default
+            "${cfg.package}/bin/ananicy-rs ${lib.escapeShellArgs cfg.extraArgs} start"
+          ];
+        };
 
         wantedBy = [ "multi-user.target" ];
       };

@@ -10,6 +10,11 @@ ExecReload=@bindir@/ananicy-rs --reload
 Nice=-5
 SuccessExitStatus=143
 OOMScoreAdjust=-999
+
+# Delegate only the service's cgroup subtree to ananicy-rs.
+# This does not grant control over user.slice, session scopes, or other units.
+Delegate=yes
+
 Restart=always
 RestartSec=10
 
