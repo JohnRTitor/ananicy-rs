@@ -29,7 +29,7 @@ fixture instead of the host.
 | File | Verifies |
 | --- | --- |
 | `src/config.rs` | defaults, log level parsing, writing a default config, live reload |
-| `src/cgroup.rs`, `src/cgroup_rules.rs` | cgroup path handling and `cgroup` matching |
+| `src/cgroup.rs` | the cgroup path type a process is resolved into |
 | `tests/config.rs` | `ananicy.conf` syntax, unknown keys, malformed values, missing files |
 | `tests/config_logging.rs` | `loglevel` / `log_applied_rule` handling and reload |
 | `tests/rules.rs` | rule, type and cgroup loading, matching, directory loading, inheritance |
