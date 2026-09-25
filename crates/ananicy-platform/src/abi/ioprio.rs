@@ -15,6 +15,16 @@ pub const fn ioprio_prio_value(class: i32, data: i32) -> i32 {
     (class << IOPRIO_CLASS_SHIFT) | data
 }
 
+/// Whether a class is one a task can actually hold.
+///
+/// `IOPRIO_CLASS_NONE` is the "nothing was set" reading, not a priority, which
+/// is also why it must never be written back: the kernel's default for a new
+/// task is best-effort, not `none`.
+#[inline]
+pub const fn ioprio_valid(class: i32) -> bool {
+    class != IOPRIO_CLASS_NONE
+}
+
 /// # Safety
 ///
 /// Makes a raw `ioprio_set` syscall. The caller must ensure `which` and `who`

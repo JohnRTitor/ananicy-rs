@@ -114,6 +114,19 @@ pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), Platf
         }
     };
 
+    // Class `none` is not a priority a task can hold: it is what a task reads as
+    // "nothing was ever set", and the kernel's default for a fresh task is
+    // best-effort at the middle of the range. Writing it would not restore that
+    // default, it would replace it with class `none`, so a rule asking for
+    // `none` leaves the process' I/O priority exactly as it is.
+    if !ioprio_valid(io_class_value) {
+        debug!(
+            "set_io_priority: '{}' is not an ioprio class, leaving the I/O priority of {} untouched",
+            io_class, pid
+        );
+        return Ok(());
+    }
+
     let io_prio = ioprio_prio_value(io_class_value, value);
 
     if let Err(e) = ioprio_set(IOPRIO_WHO_PROCESS, pid, io_prio) {
