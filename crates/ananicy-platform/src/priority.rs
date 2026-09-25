@@ -109,8 +109,11 @@ pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), Platf
         "realtime" => IOPRIO_CLASS_RT,
         "idle" => IOPRIO_CLASS_IDLE,
         "none" => IOPRIO_CLASS_NONE,
-        _ => {
-            return Err(Unsupported);
+        other => {
+            // An unrecognised class is a typo in a rule, not a condition of the
+            // machine: the attribute is dropped and the rest of the rule still
+            // applies, which is what the caller has to be told with `Skipped`.
+            return Err(PlatformError::Skipped(format!("unknown io class {other}")));
         }
     };
 
@@ -224,5 +227,48 @@ pub fn test_latnice_support() -> bool {
         true
     } else {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A PID above any plausible `pid_max` can never refer to a live process, so
+    /// anything the function does before calling the kernel cannot be confused
+    /// with what the kernel did.
+    const DEAD_PID: i32 = i32::MAX;
+
+    #[test]
+    fn an_unknown_io_class_is_skipped_rather_than_fatal() {
+        // The worker treats a skippable error as "this attribute did not apply,
+        // carry on with the rest of the rule" and everything else as "the rule
+        // cannot be applied". A typo in `ioclass` is the former.
+        match set_io_priority(DEAD_PID, "best-effortt", 3) {
+            Err(PlatformError::Skipped(message)) => {
+                assert!(
+                    message.contains("best-effortt"),
+                    "the reported reason names the class: {message}"
+                );
+            }
+            other => panic!("expected a skipped attribute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unapplicable_class_is_not_an_error() {
+        // `none` is recognised, so it is not a skipped attribute: the rule did
+        // everything it asked to, there was simply nothing to write.
+        assert!(set_io_priority(DEAD_PID, "none", 0).is_ok());
+    }
+
+    #[test]
+    fn a_recognised_class_reaches_the_kernel() {
+        // Nothing is pre-empted for a valid class, so a dead PID surfaces the
+        // kernel's own ESRCH. That proves the guard did not swallow it.
+        match set_io_priority(DEAD_PID, "idle", 0) {
+            Err(PlatformError::NotFound) => {}
+            other => panic!("expected the kernel to reject a dead pid, got {other:?}"),
+        }
     }
 }
