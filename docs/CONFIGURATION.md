@@ -122,4 +122,4 @@ environment (`$INVOCATION_ID`, `$NOTIFY_SOCKET`, `$JOURNAL_STREAM`) and can be
 forced with `--systemd`/`--no-systemd`. It is deliberately not a configuration
 file key, since it describes how the process was launched rather than how it
 should tune processes. See
-[Systemd Auto-Detection Research](./SYSTEMD_AUTO_DETECTION_RESEARCH.md).
+[systemd Reference](./SYSTEMD.md).
