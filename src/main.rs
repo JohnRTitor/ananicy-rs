@@ -16,6 +16,7 @@ use {
 
 mod cli;
 mod debug;
+mod disks;
 mod dump;
 mod ipc;
 mod monitor;
@@ -143,6 +144,10 @@ fn main() {
     // Every exit path above this line leaves the machine as it was; from here on
     // the daemon owns the X3D mode and restores it on the way out.
     let saved_x3d_mode = startup::apply_x3d_mode(&config);
+
+    // Only the running daemon has use for this, so `dump` and `debug` skip it —
+    // the same place the original Ananicy ran its version of the check.
+    disks::check_disk_schedulers_if_enabled(config.get().check_disks_schedulers);
 
     runtime::run(
         config.clone(),
