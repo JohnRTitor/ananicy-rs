@@ -293,7 +293,10 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
         return top;
     };
 
-    // C++ BIG_LITTLE_RATIO requires at least 1.3x difference
+    // A machine needs at least a 1.3x capacity difference before it is
+    // considered heterogeneous; below that the noise is larger than the
+    // difference. The same 1.3x threshold is used by the reference daemon, so
+    // the same machine is classified the same way by both.
     if (highest_metric as f64) < (lowest_metric as f64) * 1.3 {
         debug!(
             "detect_topology: Max capacity ({}) is not >= 1.3x min capacity ({}). Assuming homogeneous.",
@@ -305,7 +308,9 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
         return top;
     }
 
-    // C++ average-based threshold for middle tiers
+    // Cores within 10% of the average capacity form the middle tier, the rest
+    // are grouped by capacity. The average-based split matches the reference
+    // daemon's, so a three-tier machine gets the same core groups.
     let mut sum = 0.0;
     let mut count = 0;
     for (&metric, cores) in &metric_to_cores {

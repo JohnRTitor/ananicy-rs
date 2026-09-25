@@ -42,8 +42,10 @@ pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
 pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformError> {
     let manager = get_manager();
 
-    // In C++, the cgroup must have been created already by `.cgroups` rules
-    // (i.e., `create_cgroup`). If it doesn't exist, we error out to match parity.
+    // A cgroup is expected to be created first, either by `create_cgroup` or by
+    // a `.cgroups` rule that declares it. Moving a process into a target that
+    // does not exist is reported as `NotFound` instead of creating it here, so
+    // a typo in a rule cannot silently create a cgroup nobody configured.
     let target = manager.resolve_target_dir(cgroup_name).ok_or(NotFound)?;
     if !target.exists() {
         return Err(NotFound);

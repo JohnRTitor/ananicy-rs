@@ -372,24 +372,35 @@ mod tests {
         PathBuf,
     };
 
+    /// Integration tests in `tests/cgroup_manager.rs` drive the manager through
+    /// `new_with_root` against a temporary hierarchy, so this module only keeps
+    /// the checks that need the private fields.
+
     #[test]
-    fn test_resolve_target_dir_traversal() {
+    fn a_manager_without_a_hierarchy_resolves_nothing() {
+        let manager = CgroupManager {
+            info: CgroupInfo {
+                mount_point: PathBuf::new(),
+                version: CgroupVersion::None,
+            },
+            delegated_root: None,
+        };
+
+        assert_eq!(manager.resolve_target_dir("anything"), None);
+        assert!(!manager.cgroup_exists("anything"));
+    }
+
+    #[test]
+    fn info_is_reported_back() {
         let manager = CgroupManager {
             info: CgroupInfo {
                 mount_point: PathBuf::from("/sys/fs/cgroup"),
                 version: CgroupVersion::V2,
             },
-            delegated_root: Some(PathBuf::from("/sys/fs/cgroup/system.slice/ananicy.service")),
+            delegated_root: None,
         };
 
-        // Traversal attempt should be rejected
-        let res = manager.resolve_target_dir("../../other.slice");
-        assert!(res.is_none());
-
-        let res = manager.resolve_target_dir("some/../../path");
-        assert!(res.is_none());
-
-        let res = manager.resolve_target_dir("/../../etc/passwd");
-        assert!(res.is_none());
+        assert_eq!(manager.info().version, CgroupVersion::V2);
+        assert_eq!(manager.info().mount_point, PathBuf::from("/sys/fs/cgroup"));
     }
 }
