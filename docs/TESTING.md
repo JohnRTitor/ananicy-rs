@@ -77,7 +77,15 @@ their module documentation, and the ones that need privileges print a
 
 ```bash
 cargo +nightly fuzz run parse_mounts
+cargo +nightly fuzz run parse_cpuset
+cargo +nightly fuzz run parse_rule
 ```
+
+There is one target per parser that sees operator-written text — the mount table, the cpuset
+notation and a rule line. They need nightly and `cargo-fuzz`, and they are the only thing in the
+tree that cannot be built with the toolchain the rest of it uses; the invariants they check are
+also asserted by `crates/ananicy-core/tests/property_tests.rs`, which do run in CI, so a target
+that has never been run does not leave anything unverified.
 
 `crates/ananicy-platform/fuzz` is its own workspace (see its `Cargo.toml`)
 because the targets are compiled with sanitizer instrumentation. The fuzzed

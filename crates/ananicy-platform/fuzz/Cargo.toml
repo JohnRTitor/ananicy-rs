@@ -15,11 +15,26 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
+[dependencies.ananicy-core]
+path = "../../ananicy-core"
+
 [dependencies.ananicy-platform]
 path = ".."
 
 [[bin]]
 name = "parse_mounts"
 path = "fuzz_targets/parse_mounts.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parse_cpuset"
+path = "fuzz_targets/parse_cpuset.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parse_rule"
+path = "fuzz_targets/parse_rule.rs"
 test = false
 doc = false
