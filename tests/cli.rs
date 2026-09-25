@@ -189,6 +189,34 @@ fn test_cli_completions_invalid_shell() {
         ));
 }
 
+/// The `dump` sub-action is a closed set, so completion must offer the valid
+/// targets instead of the positional's metavar.
+#[test]
+fn test_cli_completion_offers_dump_targets() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    // bpaf reports completion requests on stdout with a non-zero status.
+    cmd.arg("--bpaf-complete-rev=8")
+        .arg("dump")
+        .arg("")
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("'rules'"))
+        .stdout(predicate::str::contains("'autogroup'"))
+        .stdout(predicate::str::contains("SUB_ACTION").not());
+}
+
+#[test]
+fn test_cli_completion_filters_dump_targets_by_prefix() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("--bpaf-complete-rev=8")
+        .arg("dump")
+        .arg("cg")
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("'cgroups'"))
+        .stdout(predicate::str::contains("'rules'").not());
+}
+
 #[test]
 fn test_cli_loglevel_config_propagation() {
     let temp_dir = std::env::temp_dir();
