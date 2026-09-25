@@ -264,3 +264,23 @@ fn latnice_is_disabled_when_the_kernel_does_not_support_it() {
     let supported = Config::load_file(&path, true).unwrap();
     assert!(supported.get().apply_latnice);
 }
+
+#[test]
+fn apply_cpu_weight_is_read_from_the_configuration() {
+    // The mirror of `nice` into `cpu.weight` is on by default, and the one
+    // switch that turns it off is a plain `apply_*` key like the others.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ananicy.conf");
+    std::fs::write(&path, "apply_cpu_weight=false\n").unwrap();
+
+    let (config, diagnostics) = Config::load_file_with_diagnostics(&path, true).unwrap();
+    assert!(!config.get().apply_cpu_weight);
+    assert!(
+        diagnostics.is_empty(),
+        "the key is a documented one, not an unknown key: {diagnostics:?}"
+    );
+    assert!(
+        ConfigSnapshot::default().apply_cpu_weight,
+        "the mirror stays on unless it is switched off"
+    );
+}

@@ -313,6 +313,7 @@ fn test_cli_reports_every_configuration_value_at_startup() {
             "apply_ioclass=false\n",
             "apply_cgroup=false\n",
             "apply_cpuset=false\n",
+            "apply_cpu_weight=false\n",
             "apply_oom_score_adj=false\n",
             "apply_latnice=false\n",
             "cgroup_load=false\n",
@@ -366,6 +367,7 @@ fn test_cli_reports_every_configuration_value_at_startup() {
         "Config cgroup_realtime_workaround: false",
         "Config check_freq: 42",
         "Config apply_cpuset: false",
+        "Config apply_cpu_weight: false",
         "Config x3d_mode: cache",
         "Config loglevel: info",
     ];

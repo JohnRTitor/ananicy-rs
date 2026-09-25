@@ -22,6 +22,7 @@ The format is `key=value`, one per line.
 | `apply_latnice` | `true` | Apply latency nice values from rules |
 | `apply_cpuset` | `true` | Apply CPU affinity (cpuset) from rules |
 | `apply_cgroup` | `true` | Apply cgroup membership from rules |
+| `apply_cpu_weight` | `true` | On cgroup v2, mirror an applied `nice` value into the `cpu.weight` of the cgroup the process already belongs to. See [Applied-rule logging](#applied-rule-logging) |
 | `cgroup_load` | `true` | Load cgroup definitions (`.cgroups` files) |
 | `type_load` | `true` | Load type definitions (`.types` files) |
 | `rule_load` | `true` | Load rule definitions (`.rules` files) |
@@ -37,6 +38,24 @@ The format is `key=value`, one per line.
 The event is intentionally not emitted for a rule match with no enabled applicable attributes, a partial application, or a failed application. A process can produce more than one event when it is observed through multiple monitor events or repeated procfs scans; the daemon does not deduplicate those observations. `loglevel` still applies normally, so `warn`, `error`, and `critical` suppress the `INFO` event. Use `loglevel = info` (or a more verbose level) when enabling this option.
 
 Rust uses the `tracing` severity set, which has no separate `critical` event level. The configuration value `critical` is therefore accepted as an error-threshold alias; it does not create a distinct output severity. The legacy spelling `fatal` is also accepted as an input alias and is serialized as `critical`. An unknown `loglevel` value falls back to `info` and produces a warning through the configured logger.
+
+### The `nice` → `cpu.weight` mirror
+
+On cgroup v2 the kernel does not use `nice` for bandwidth control, so a rule that sets
+`nice` is additionally mirrored into the `cpu.weight` of **the cgroup the process already belongs
+to** — the one it was in before the rule was applied, which for a desktop session is typically a
+systemd scope shared with every other application in that session.
+
+That write is a cgroup write, not a process write: it changes the weight of the whole cgroup, and
+therefore of the other tasks in it, not only of the process that matched the rule. The value is
+`100 × 1.25⁻ⁿⁱᶜᵉ`, clamped to the kernel's `1..10000` range, so a rule with `nice: 5` sets a weight
+of about `32` for the entire cgroup.
+
+Set `apply_cpu_weight = false` to keep the `nice` value and drop the mirror. The mirror is also
+skipped, at `debug` level, whenever the kernel does not expose a `cpu.weight` (cgroup v2) or
+`cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled there first, and
+`ananicy-rs` never enables it in a cgroup it does not own. `ananicy-cpp` has no equivalent
+behaviour: it only ever calls `setpriority(2)`.
 
 ## Rules (`*.rules`)
 

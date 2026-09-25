@@ -310,7 +310,11 @@ impl Worker {
                 Err(e) => return Err(e),
             }
 
-            if self.platform.is_cgroup_v2() {
+            // On cgroup v2 a nice value is also mirrored into `cpu.weight`. The
+            // write lands on the cgroup the process already belongs to, so it
+            // also reweights every other task in that cgroup; `apply_cpu_weight`
+            // turns it off for operators who do not want that.
+            if cfg.apply_cpu_weight && self.platform.is_cgroup_v2() {
                 let weight = (100.0 * 1.25f64.powi(-nice as i32)) as u32;
                 let weight = weight.clamp(1, 10000);
                 match self.platform.set_cpu_weight(p.identity.pid.0, weight) {
