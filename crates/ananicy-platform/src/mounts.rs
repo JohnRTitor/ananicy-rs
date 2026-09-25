@@ -9,21 +9,32 @@ pub use crate::cgroup::{CgroupInfo, CgroupVersion};
 
 static CGROUP_INFO: RwLock<Option<CgroupInfo>> = RwLock::new(None);
 
+/// How many times [`init_cgroups`] re-detects before giving up, and how long it
+/// waits in between. Together they bound the startup delay at ten seconds.
+pub const CGROUP_INIT_ATTEMPTS: usize = 20;
+pub const CGROUP_INIT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// The total time [`init_cgroups`] can spend waiting, for reporting.
+pub const CGROUP_INIT_TIMEOUT: Duration =
+    Duration::from_millis(CGROUP_INIT_ATTEMPTS as u64 * CGROUP_INIT_INTERVAL.as_millis() as u64);
+
 pub fn reset_cgroup_info() {
     if let Ok(mut info) = CGROUP_INFO.write() {
         *info = None;
     }
 }
 
+/// Re-detects the hierarchy until one is found, or the attempts run out.
+///
+/// Returns whether a hierarchy is available.
 pub fn init_cgroups() -> bool {
-    for _ in 0..20 {
-        reset_cgroup_info();
-        let info = get_cgroup_info();
-        if info.version != CgroupVersion::None {
+    for _ in 0..CGROUP_INIT_ATTEMPTS {
+        if get_cgroup_info().version != CgroupVersion::None {
             return true;
         }
-        sleep(Duration::from_millis(500));
+        sleep(CGROUP_INIT_INTERVAL);
     }
+    reset_cgroup_info();
     false
 }
 

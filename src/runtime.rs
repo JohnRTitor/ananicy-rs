@@ -5,7 +5,7 @@ use {
         sync::{atomic::Ordering::SeqCst, mpsc::Sender},
         thread::{sleep, spawn},
     },
-    tracing::{debug, info},
+    tracing::{debug, info, warn},
 };
 
 use {
@@ -48,7 +48,7 @@ pub(crate) fn run(
     }
 
     info!("Initializing cgroups based on rules");
-    if !create_cgroups(&rules) {
+    if !wait_for_cgroup_hierarchy() || !create_cgroups(&rules) {
         return;
     }
 
@@ -86,6 +86,32 @@ pub(crate) fn run(
     }
 
     monitor::run(tx, shutdown_flag, worker_handle, saved_x3d_mode, bpf_min_us);
+}
+
+/// Waits for a usable cgroup hierarchy before the first cgroup creation.
+///
+/// On a host that mounts its cgroup filesystems slightly after the daemon — a
+/// container image without cgroupfs, or a very early boot — the first detection
+/// can legitimately come back empty. Retrying for a bounded while turns that
+/// into a short delay instead of a daemon that silently never applies its
+/// cgroup rules. A host with no cgroup support at all is reported and given up
+/// on, because waiting cannot help there.
+fn wait_for_cgroup_hierarchy() -> bool {
+    if ananicy_platform::cgroups::has_cgroup_hierarchy() {
+        return true;
+    }
+
+    warn!("No cgroup hierarchy detected yet, waiting for it to appear...");
+    if ananicy_platform::mounts::init_cgroups() {
+        info!("cgroup hierarchy became available");
+        true
+    } else {
+        warn!(
+            "Still no cgroup hierarchy after {:?}; cgroup rules will not be applied",
+            ananicy_platform::mounts::CGROUP_INIT_TIMEOUT
+        );
+        false
+    }
 }
 
 fn create_cgroups(rules: &Arc<Rules>) -> bool {
