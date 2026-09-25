@@ -21,13 +21,22 @@ The format is `key=value`, one per line.
 | `apply_oom_score_adj` | `true` | Apply OOM score adjustments from rules |
 | `apply_latnice` | `true` | Apply latency nice values from rules |
 | `apply_cpuset` | `true` | Apply CPU affinity (cpuset) from rules |
+| `apply_cgroup` | `true` | Apply cgroup membership from rules |
 | `cgroup_load` | `true` | Load cgroup definitions (`.cgroups` files) |
 | `type_load` | `true` | Load type definitions (`.types` files) |
 | `rule_load` | `true` | Load rule definitions (`.rules` files) |
 | `cgroup_realtime_workaround` | `true` | Enable cgroup realtime workaround |
-| `log_applied_rule` | `false` | Log each applied rule |
-| `loglevel` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`, `critical`) |
+| `log_applied_rule` | `false` | Emit an INFO event after a matching rule is applied successfully |
+| `loglevel` | `info` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`, `critical`) |
 | `x3d_mode` | `auto` | AMD X3D driver mode: `auto` (don't touch), `cache`, or `frequency` |
+
+### Applied-rule logging
+
+`log_applied_rule` is opt-in. When it is `true`, the daemon emits one `INFO` event for each task whose matching rule has at least one enabled attribute and whose application completes without an error or a skipped attribute. The event includes the task name, PID, and matched rule.
+
+The event is intentionally not emitted for a rule match with no enabled applicable attributes, a partial application, or a failed application. A process can produce more than one event when it is observed through multiple monitor events or repeated procfs scans; the daemon does not deduplicate those observations. `loglevel` still applies normally, so `warn`, `error`, and `critical` suppress the `INFO` event. Use `loglevel = info` (or a more verbose level) when enabling this option.
+
+Rust uses the `tracing` severity set, which has no separate `critical` event level. The configuration value `critical` is therefore accepted as an error-threshold alias; it does not create a distinct output severity. The legacy spelling `fatal` is also accepted as an input alias and is serialized as `critical`. An unknown `loglevel` value falls back to `info` and produces a warning through the configured logger.
 
 ## Rules (`*.rules`)
 

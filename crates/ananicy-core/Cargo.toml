@@ -19,3 +19,4 @@ rustix = { workspace = true, features = ["process"] }
 [dev-dependencies]
 proptest = "1.11.0"
 tempfile.workspace = true
+tracing-subscriber = "0.3.23"

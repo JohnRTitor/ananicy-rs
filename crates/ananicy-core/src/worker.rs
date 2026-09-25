@@ -7,7 +7,6 @@ use {
         },
         time::{Duration, Instant},
     },
-    tracing::{Level, enabled},
 };
 
 use {
@@ -23,8 +22,12 @@ pub enum PlatformError {
     NotFound,
     #[error("Permission denied")]
     PermissionDenied,
+    #[error("Skipped: {0}")]
+    Skipped(String),
     #[error("Unsupported")]
     Unsupported,
+    #[error("Invalid cpuset: {0}")]
+    InvalidCpuset(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -33,7 +36,10 @@ impl PlatformError {
     /// Whether this error should skip the current attribute and allow the rest of the rule to proceed,
     /// or abort the entire rule application for this process.
     pub fn is_skippable(&self) -> bool {
-        matches!(self, PlatformError::PermissionDenied)
+        matches!(
+            self,
+            PlatformError::PermissionDenied | PlatformError::Skipped(_)
+        )
     }
 }
 
@@ -72,6 +78,12 @@ pub trait PlatformActions: Send + Sync {
     fn add_pid_to_cgroup(&self, pid: i32, cgroup: &str) -> Result<(), PlatformError>;
     fn set_cpu_weight(&self, pid: i32, weight: u32) -> Result<(), PlatformError>;
     fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError>;
+}
+
+enum RuleApplication {
+    Applied,
+    NoApplicable,
+    Partial(PlatformError),
 }
 
 pub struct Worker {
@@ -164,20 +176,17 @@ impl Worker {
 
             if let Some(rule) = rule {
                 let cfg = self.config.get();
-                let do_log_applied_rule = cfg.log_applied_rule; // In Debug builds we would override this
+                let do_log_applied_rule = cfg.log_applied_rule;
 
-                if enabled!(Level::DEBUG) {
-                    debug!("Found rule for {}: {}", p.name, rule.to_string());
-                } else if do_log_applied_rule {
-                    info!("{}({})", p.name, p.identity.pid.0);
-                }
+                debug!(name = %p.name, pid = p.identity.pid.0, rule = ?rule, "Found rule");
 
-                let tids = self
-                    .platform
-                    .get_tids(p.identity.pid.0)
-                    .unwrap_or_else(|_| vec![p.identity.pid.0]);
+                let (tids, tids_failed) = match self.platform.get_tids(p.identity.pid.0) {
+                    Ok(tids) if tids.is_empty() => (vec![p.identity.pid.0], true),
+                    Ok(tids) => (tids, false),
+                    Err(_) => (vec![p.identity.pid.0], true),
+                };
 
-                if let Err(e) = self.apply_rule(
+                match self.apply_rule(
                     &p,
                     &tids,
                     &rule,
@@ -185,11 +194,57 @@ impl Worker {
                     is_realtime,
                     is_affected_by_cgroup_bug,
                 ) {
-                    error!(
-                        "Failed to apply rule for {}({}): {}",
-                        p.name, p.identity.pid.0, e
-                    );
-                    continue;
+                    Ok(RuleApplication::Applied) if tids_failed => {
+                        warn!(
+                            "Failed to enumerate threads for {}({}); rule application incomplete",
+                            p.name, p.identity.pid.0
+                        );
+                    }
+                    Ok(RuleApplication::Applied) => {
+                        if do_log_applied_rule {
+                            info!(
+                                name = %p.name,
+                                pid = p.identity.pid.0,
+                                rule = ?rule,
+                                "{}({})",
+                                p.name,
+                                p.identity.pid.0
+                            );
+                        }
+                    }
+                    Ok(RuleApplication::NoApplicable) => {
+                        debug!(
+                            name = %p.name,
+                            pid = p.identity.pid.0,
+                            "Matched rule has no enabled applicable attributes"
+                        );
+                    }
+                    Ok(RuleApplication::Partial(e)) => {
+                        if matches!(e, PlatformError::NotFound) {
+                            debug!(
+                                "Process {}({}) exited before rule could be applied",
+                                p.name, p.identity.pid.0
+                            );
+                        } else {
+                            warn!(
+                                "Rule application partially failed for {}({}): {}",
+                                p.name, p.identity.pid.0, e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if matches!(e, PlatformError::NotFound) {
+                            debug!(
+                                "Process {}({}) exited before rule could be applied",
+                                p.name, p.identity.pid.0
+                            );
+                        } else {
+                            error!(
+                                "Failed to apply rule for {}({}): {}",
+                                p.name, p.identity.pid.0, e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -220,7 +275,11 @@ impl Worker {
         (processed_count, start_time.elapsed())
     }
 
-    #[tracing::instrument(skip(self, p, tids, rule, cfg), fields(pid = p.identity.pid.0, name = %p.name))]
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, p, tids, rule, cfg),
+        fields(pid = p.identity.pid.0, name = %p.name)
+    )]
     fn apply_rule(
         &self,
         p: &Process,
@@ -229,7 +288,10 @@ impl Worker {
         cfg: &ConfigSnapshot,
         is_realtime: bool,
         is_affected_by_cgroup_bug: bool,
-    ) -> Result<(), PlatformError> {
+    ) -> Result<RuleApplication, PlatformError> {
+        let mut applied_any = false;
+        let mut partial_failure = None;
+
         if cfg.apply_nice
             && let Some(nice) = rule.get("nice").and_then(|v| v.as_i64())
         {
@@ -237,31 +299,37 @@ impl Worker {
                 "Setting priority of {}({}) to {}",
                 p.name, p.identity.pid.0, nice
             );
-            if let Err(e) = self
+            match self
                 .platform
                 .set_priority(p.identity.pid.0, tids, nice as i32)
-                && !e.is_skippable()
             {
-                return Err(e);
+                Ok(()) => applied_any = true,
+                Err(e) if e.is_skippable() => {
+                    partial_failure.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
             }
 
             if self.platform.is_cgroup_v2() {
-                // Map nice (-20 to 19) to cpu.weight (1 to 10000) using CFS approximation
                 let weight = (100.0 * 1.25f64.powi(-nice as i32)) as u32;
                 let weight = weight.clamp(1, 10000);
-                if let Err(e) = self.platform.set_cpu_weight(p.identity.pid.0, weight) {
-                    debug!(
-                        "Failed to apply cpu.weight {} for {}: {:?}",
-                        weight, p.name, e
-                    );
-                } else {
-                    debug!("Applied cpu.weight {} for {}", weight, p.name);
+                match self.platform.set_cpu_weight(p.identity.pid.0, weight) {
+                    Ok(()) => {
+                        applied_any = true;
+                        debug!("Applied cpu.weight {} for {}", weight, p.name);
+                    }
+                    Err(e) => {
+                        debug!(
+                            "Failed to apply cpu.weight {} for {}: {:?}",
+                            weight, p.name, e
+                        );
+                        partial_failure.get_or_insert(e);
+                    }
                 }
             }
         }
 
         if cfg.apply_latnice {
-            // An explicit `latency_nice` wins; otherwise fall back to the rule's `nice`.
             let latnice_val = rule
                 .get("latency_nice")
                 .and_then(|v| v.as_i64())
@@ -273,12 +341,15 @@ impl Worker {
                     "Setting latency nice of {}({}) to {}",
                     p.name, p.identity.pid.0, latnice
                 );
-                if let Err(e) = self
+                match self
                     .platform
                     .set_latency_nice(p.identity.pid.0, tids, latnice)
-                    && !e.is_skippable()
                 {
-                    return Err(e);
+                    Ok(()) => applied_any = true,
+                    Err(e) if e.is_skippable() => {
+                        partial_failure.get_or_insert(e);
+                    }
+                    Err(e) => return Err(e),
                 }
             }
         }
@@ -291,10 +362,12 @@ impl Worker {
                 "Setting scheduler of {}({}) to {}",
                 p.name, p.identity.pid.0, sched
             );
-            if let Err(e) = self.platform.set_sched(p.identity.pid.0, sched, rtprio)
-                && !e.is_skippable()
-            {
-                return Err(e);
+            match self.platform.set_sched(p.identity.pid.0, sched, rtprio) {
+                Ok(()) => applied_any = true,
+                Err(e) if e.is_skippable() => {
+                    partial_failure.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -306,12 +379,15 @@ impl Worker {
                 "Setting ioclass of {}({}) to {}",
                 p.name, p.identity.pid.0, ioclass
             );
-            if let Err(e) = self
+            match self
                 .platform
                 .set_io_priority(p.identity.pid.0, ioclass, ionice)
-                && !e.is_skippable()
             {
-                return Err(e);
+                Ok(()) => applied_any = true,
+                Err(e) if e.is_skippable() => {
+                    partial_failure.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -322,12 +398,15 @@ impl Worker {
                 "Setting OOM score adjustment of {}({}) to {}",
                 p.name, p.identity.pid.0, oom_adj
             );
-            if let Err(e) = self
+            match self
                 .platform
                 .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)
-                && !e.is_skippable()
             {
-                return Err(e);
+                Ok(()) => applied_any = true,
+                Err(e) if e.is_skippable() => {
+                    partial_failure.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -335,6 +414,9 @@ impl Worker {
             debug!(
                 "Cgroups are not compatible with realtime scheduling for now (linux limitation)"
             );
+            if cfg.apply_cgroups && rule.get("cgroup").and_then(|v| v.as_str()).is_some() {
+                partial_failure.get_or_insert(PlatformError::Unsupported);
+            }
         } else if cfg.apply_cgroups
             && let Some(cgroup) = rule.get("cgroup").and_then(|v| v.as_str())
         {
@@ -342,10 +424,12 @@ impl Worker {
                 "Adding process {}({}) to cgroup {}",
                 p.name, p.identity.pid.0, cgroup
             );
-            if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup)
-                && !e.is_skippable()
-            {
-                return Err(e);
+            match self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup) {
+                Ok(()) => applied_any = true,
+                Err(e) if e.is_skippable() => {
+                    partial_failure.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -353,6 +437,7 @@ impl Worker {
             && let Some(raw_cpuset) = rule.get("cpuset").and_then(|v| v.as_str())
         {
             let mut cpuset_str = raw_cpuset;
+            let mut skip_cpuset = false;
 
             if let Some(resolved) = self.cpuset_aliases.get(raw_cpuset) {
                 if resolved.is_empty() {
@@ -360,31 +445,45 @@ impl Worker {
                         "cpuset alias '{}' resolved to empty set, skipping for {}",
                         raw_cpuset, p.name
                     );
-                    return Ok(());
+                    partial_failure.get_or_insert(PlatformError::Unsupported);
+                    skip_cpuset = true;
+                } else {
+                    cpuset_str = resolved.as_str();
                 }
-                cpuset_str = resolved.as_str();
             }
 
-            debug!(
-                "Setting cpuset of {}({}) to {}",
-                p.name, p.identity.pid.0, cpuset_str
-            );
-            match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
-                Some(parsed_set) => {
-                    if let Err(e) = self
-                        .platform
-                        .set_affinity(p.identity.pid.0, tids, &parsed_set)
-                        && !e.is_skippable()
-                    {
-                        return Err(e);
+            if !skip_cpuset {
+                debug!(
+                    "Setting cpuset of {}({}) to {}",
+                    p.name, p.identity.pid.0, cpuset_str
+                );
+                match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
+                    Some(parsed_set) => {
+                        match self
+                            .platform
+                            .set_affinity(p.identity.pid.0, tids, &parsed_set)
+                        {
+                            Ok(()) => applied_any = true,
+                            Err(e) if e.is_skippable() => {
+                                partial_failure.get_or_insert(e);
+                            }
+                            Err(e) => return Err(e),
+                        }
                     }
-                }
-                None => {
-                    warn!("Invalid cpuset string '{}' for {}", cpuset_str, p.name);
+                    None => {
+                        partial_failure
+                            .get_or_insert(PlatformError::InvalidCpuset(cpuset_str.to_string()));
+                    }
                 }
             }
         }
 
-        Ok(())
+        if let Some(e) = partial_failure {
+            Ok(RuleApplication::Partial(e))
+        } else if applied_any {
+            Ok(RuleApplication::Applied)
+        } else {
+            Ok(RuleApplication::NoApplicable)
+        }
     }
 }

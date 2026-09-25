@@ -5,14 +5,13 @@ use {
         PlatformError::{Io, NotFound, PermissionDenied, Unsupported},
     },
     rustix::io::Errno,
-    tracing::error,
 };
 
 use crate::abi::{ioprio::*, sched_attr::*};
 
 use {
     std::{fs, io},
-    tracing::{debug, warn},
+    tracing::debug,
 };
 
 // Note: In C++ original code, `test_errno` handles EPERM, ESRCH, etc.
@@ -27,11 +26,10 @@ fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformE
         return Ok(());
     }
 
-    if err.kind() == io::ErrorKind::NotFound
-        || raw_os_error == Errno::SRCH.raw_os_error()
-        || raw_os_error == Errno::ACCESS.raw_os_error()
-        || raw_os_error == Errno::PERM.raw_os_error()
-    {
+    if err.kind() == io::ErrorKind::NotFound || raw_os_error == Errno::SRCH.raw_os_error() {
+        return Err(NotFound);
+    }
+    if raw_os_error == Errno::ACCESS.raw_os_error() || raw_os_error == Errno::PERM.raw_os_error() {
         return Err(PermissionDenied);
     }
     Err(Io(err))
@@ -39,19 +37,19 @@ fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformE
 
 pub fn set_priority(pid: i32, tids: &[i32], nice_value: i32) -> Result<(), PlatformError> {
     use rustix::process::{Pid, setpriority_process};
-    let mut last_err = None;
+    let mut first_err = None;
 
     for &tid in tids {
         let who = Pid::from_raw(tid);
-        if let Err(e) = setpriority_process(who, nice_value) {
-            last_err = Some(e.into());
-        } else {
-            last_err = Some(io::Error::from_raw_os_error(0));
+        if let Err(e) = setpriority_process(who, nice_value)
+            && first_err.is_none()
+        {
+            first_err = Some(e.into());
         }
     }
 
     test_errno(
-        last_err.unwrap_or_else(|| io::Error::from_raw_os_error(0)),
+        first_err.unwrap_or_else(|| io::Error::from_raw_os_error(0)),
         "set_priority",
         pid,
     )
@@ -63,13 +61,9 @@ pub fn set_latency_nice(
     latency_nice_value: i32,
 ) -> Result<(), PlatformError> {
     // LATENCY_NICE is applied via sched_setattr
-    let mut last_err = None;
-
-    // SCHED_FLAG_LATENCY_NICE (matching C++ exactly)
     const SCHED_FLAG_LATENCY_NICE: u64 = 0x80;
     const SCHED_FLAG_KEEP_PARAMS: u64 = 0x10;
-
-    // ananicy_sched_attr in C++ had sched_latency_nice as the 11th field
+    let mut first_err = None;
 
     for &tid in tids {
         let attr = sched_attr {
@@ -79,15 +73,15 @@ pub fn set_latency_nice(
             ..Default::default()
         };
 
-        if let Err(e) = crate::abi::sched_attr::sched_setattr(tid, &attr, 0) {
-            last_err = Some(e);
-        } else {
-            last_err = Some(io::Error::from_raw_os_error(0));
+        if let Err(e) = crate::abi::sched_attr::sched_setattr(tid, &attr, 0)
+            && first_err.is_none()
+        {
+            first_err = Some(e);
         }
     }
 
     test_errno(
-        last_err.unwrap_or_else(|| io::Error::from_raw_os_error(0)),
+        first_err.unwrap_or_else(|| io::Error::from_raw_os_error(0)),
         "set_latency_nice",
         pid,
     )
@@ -132,6 +126,7 @@ pub fn set_io_priority(pid: i32, io_class: &str, value: i32) -> Result<(), Platf
 
 pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), PlatformError> {
     let mut param = SchedParam::default();
+    let mut skipped = false;
 
     let sched = match sched_name {
         "idle" => SCHED_IDLE,
@@ -145,7 +140,8 @@ pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), Platfor
             SCHED_FIFO
         }
         "deadline" => {
-            warn!("deadline scheduler is not available yet, falling back to OTHER");
+            debug!("deadline scheduler is not available yet, falling back to OTHER");
+            skipped = true;
             SCHED_NORMAL
         }
         "batch" => SCHED_BATCH,
@@ -161,12 +157,18 @@ pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), Platfor
             && raw != Errno::PERM.raw_os_error()
             && raw != Errno::ACCESS.raw_os_error()
         {
-            error!("set_sched: Unknown error {} applying to {}", raw, pid);
+            debug!("set_sched: Unknown error {} applying to {}", raw, pid);
         }
         test_errno(e, "set_sched", pid)
     } else {
         debug!("set_sched: Successfully applied to {}", pid);
-        Ok(())
+        if skipped {
+            Err(PlatformError::Skipped(
+                "deadline scheduler is unavailable".to_string(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 

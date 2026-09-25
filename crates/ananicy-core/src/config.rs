@@ -17,18 +17,32 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    fn parse(s: &str) -> Self {
+    fn parse_with_status(s: &str) -> (Self, bool) {
         match s.to_lowercase().as_str() {
-            "trace" => LogLevel::Trace,
-            "debug" => LogLevel::Debug,
-            "info" => LogLevel::Info,
-            "warn" => LogLevel::Warn,
-            "error" => LogLevel::Error,
-            "critical" | "fatal" => LogLevel::Critical,
-            _ => {
-                warn!("Unknown loglevel '{}', falling back to info", s);
-                LogLevel::Info
-            }
+            "trace" => (LogLevel::Trace, true),
+            "debug" => (LogLevel::Debug, true),
+            "info" => (LogLevel::Info, true),
+            "warn" => (LogLevel::Warn, true),
+            "error" => (LogLevel::Error, true),
+            "critical" | "fatal" => (LogLevel::Critical, true),
+            _ => (LogLevel::Info, false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigDiagnostic {
+    Info(String),
+    Warn(String),
+    Error(String),
+}
+
+impl ConfigDiagnostic {
+    pub fn emit(&self) {
+        match self {
+            Self::Info(message) => info!("{}", message),
+            Self::Warn(message) => warn!("{}", message),
+            Self::Error(message) => error!("{}", message),
         }
     }
 }
@@ -103,8 +117,19 @@ impl Default for ConfigSnapshot {
 
 impl ConfigSnapshot {
     pub fn parse_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let (snapshot, diagnostics) = Self::parse_file_with_diagnostics(path)?;
+        for diagnostic in &diagnostics {
+            diagnostic.emit();
+        }
+        Ok(snapshot)
+    }
+
+    pub fn parse_file_with_diagnostics<P: AsRef<Path>>(
+        path: P,
+    ) -> io::Result<(Self, Vec<ConfigDiagnostic>)> {
         let content = fs::read_to_string(&path)?;
         let mut config = Self::default();
+        let mut diagnostics = Vec::new();
 
         for line in content.lines() {
             let line = line.trim();
@@ -121,7 +146,10 @@ impl ConfigSnapshot {
                         if let Ok(freq) = value.parse() {
                             config.check_freq = freq;
                         } else {
-                            error!("Invalid check_freq value: {}", value);
+                            diagnostics.push(ConfigDiagnostic::Error(format!(
+                                "Invalid check_freq value: {}",
+                                value
+                            )));
                         }
                     }
                     "cgroup_load" => config.cgroup_load = value == "true",
@@ -140,13 +168,25 @@ impl ConfigSnapshot {
                     }
                     "x3d_mode" => config.x3d_mode = value.to_string(),
                     "log_applied_rule" => config.log_applied_rule = value == "true",
-                    "loglevel" => config.loglevel = LogLevel::parse(value),
-                    _ => warn!("Unknown config key: {}", key),
+                    "loglevel" => {
+                        let (level, valid) = LogLevel::parse_with_status(value);
+                        config.loglevel = level;
+                        if !valid {
+                            diagnostics.push(ConfigDiagnostic::Warn(format!(
+                                "Unknown loglevel '{}', falling back to info",
+                                value
+                            )));
+                        }
+                    }
+                    _ => diagnostics.push(ConfigDiagnostic::Warn(format!(
+                        "Unknown config key: {}",
+                        key
+                    ))),
                 }
             }
         }
 
-        Ok(config)
+        Ok((config, diagnostics))
     }
 
     pub fn to_config_string(&self) -> String {
@@ -162,6 +202,7 @@ impl ConfigSnapshot {
             type_load={}\n\
             rule_load={}\n\
             cgroup_realtime_workaround={}\n\
+            apply_cgroup={}\n\
             apply_cpuset={}\n\
             x3d_mode={}\n\
             loglevel={}\n\
@@ -176,6 +217,7 @@ impl ConfigSnapshot {
             self.type_load,
             self.rule_load,
             self.cgroup_realtime_workaround,
+            self.apply_cgroups,
             self.apply_cpuset,
             self.x3d_mode,
             self.loglevel,
@@ -197,35 +239,63 @@ impl Config {
     }
 
     pub fn load_file<P: AsRef<Path>>(path: P, latnice_supported: bool) -> io::Result<Self> {
-        let mut snapshot = match ConfigSnapshot::parse_file(&path) {
-            Ok(s) => s,
+        let (config, diagnostics) = Self::load_file_with_diagnostics(path, latnice_supported)?;
+        for diagnostic in &diagnostics {
+            diagnostic.emit();
+        }
+        Ok(config)
+    }
+
+    pub fn load_file_with_diagnostics<P: AsRef<Path>>(
+        path: P,
+        latnice_supported: bool,
+    ) -> io::Result<(Self, Vec<ConfigDiagnostic>)> {
+        let path = path.as_ref();
+        let mut diagnostics = Vec::new();
+        let mut snapshot = match ConfigSnapshot::parse_file_with_diagnostics(path) {
+            Ok((snapshot, parse_diagnostics)) => {
+                diagnostics.extend(parse_diagnostics);
+                snapshot
+            }
             Err(ref e) if e.kind() == io::ErrorKind::NotFound => {
-                error!("file {} does not exist", path.as_ref().display());
-                let mut s = ConfigSnapshot::default();
+                diagnostics.push(ConfigDiagnostic::Info(format!(
+                    "Configuration file {} does not exist; using defaults",
+                    path.display()
+                )));
+                let mut snapshot = ConfigSnapshot::default();
                 if !latnice_supported {
-                    s.apply_latnice = false;
+                    snapshot.apply_latnice = false;
                 }
 
-                let config_string = s.to_config_string();
+                let config_string = snapshot.to_config_string();
+                diagnostics.push(ConfigDiagnostic::Info(format!(
+                    "Default config:\n{}",
+                    config_string
+                )));
+                diagnostics.push(ConfigDiagnostic::Info(format!(
+                    "Writing default config to {}",
+                    path.display()
+                )));
 
-                info!("Default config:\n{}", config_string);
-                info!("Writing default config to {}", path.as_ref().display());
-
-                if let Some(parent) = path.as_ref().parent()
+                if let Some(parent) = path.parent()
                     && !parent.exists()
-                    && fs::create_dir_all(parent).is_err()
+                    && let Err(create_err) = fs::create_dir_all(parent)
                 {
-                    error!("Cannot create config directory {}", parent.display());
+                    diagnostics.push(ConfigDiagnostic::Error(format!(
+                        "Cannot create config directory {}: {}",
+                        parent.display(),
+                        create_err
+                    )));
                 }
 
-                if let Err(write_err) = fs::write(&path, config_string) {
-                    error!(
+                if let Err(write_err) = fs::write(path, config_string) {
+                    diagnostics.push(ConfigDiagnostic::Error(format!(
                         "Cannot write config to {}: {}",
-                        path.as_ref().display(),
+                        path.display(),
                         write_err
-                    );
+                    )));
                 }
-                s
+                snapshot
             }
             Err(e) => return Err(e),
         };
@@ -233,7 +303,7 @@ impl Config {
         if !latnice_supported {
             snapshot.apply_latnice = false;
         }
-        Ok(Self::new(snapshot))
+        Ok((Self::new(snapshot), diagnostics))
     }
 
     pub fn get(&self) -> arc_swap::Guard<Arc<ConfigSnapshot>> {
@@ -241,13 +311,24 @@ impl Config {
     }
 
     pub fn reload_file<P: AsRef<Path>>(&self, path: P, latnice_supported: bool) -> io::Result<()> {
-        let mut snapshot = ConfigSnapshot::parse_file(path)?;
+        let diagnostics = self.reload_file_with_diagnostics(path, latnice_supported)?;
+        for diagnostic in &diagnostics {
+            diagnostic.emit();
+        }
+        Ok(())
+    }
+
+    pub fn reload_file_with_diagnostics<P: AsRef<Path>>(
+        &self,
+        path: P,
+        latnice_supported: bool,
+    ) -> io::Result<Vec<ConfigDiagnostic>> {
+        let (mut snapshot, diagnostics) = ConfigSnapshot::parse_file_with_diagnostics(path)?;
         if !latnice_supported {
             snapshot.apply_latnice = false;
         }
         self.snapshot.store(Arc::new(snapshot));
-        info!("Configuration reloaded");
-        Ok(())
+        Ok(diagnostics)
     }
 }
 
@@ -299,6 +380,26 @@ mod tests {
         assert!(
             !config.get().apply_latnice,
             "Reload should disable apply_latnice if unsupported"
+        );
+    }
+
+    #[test]
+    fn test_loglevel_parsing() {
+        assert_eq!(LogLevel::parse_with_status("trace").0, LogLevel::Trace);
+        assert_eq!(LogLevel::parse_with_status("debug").0, LogLevel::Debug);
+        assert_eq!(LogLevel::parse_with_status("info").0, LogLevel::Info);
+        assert_eq!(LogLevel::parse_with_status("warn").0, LogLevel::Warn);
+        assert_eq!(LogLevel::parse_with_status("error").0, LogLevel::Error);
+        assert_eq!(
+            LogLevel::parse_with_status("critical").0,
+            LogLevel::Critical
+        );
+        assert_eq!(LogLevel::parse_with_status("fatal").0, LogLevel::Critical);
+
+        // Fallback to Info on unknown level
+        assert_eq!(
+            LogLevel::parse_with_status("unknown_level"),
+            (LogLevel::Info, false)
         );
     }
 }

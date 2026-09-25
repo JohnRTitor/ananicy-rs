@@ -3,7 +3,7 @@ use {
     crate::abi::sched::{SCHED_FIFO, SCHED_RR},
     ananicy_core::worker::{PlatformError, PlatformError::Unsupported},
     std::time::Duration,
-    tracing::error,
+    tracing::debug,
 };
 
 pub mod abi;
@@ -106,7 +106,7 @@ impl PlatformActions for LinuxPlatform {
 
     fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError> {
         if let Err(e) = abi::affinity::set_affinity(pid, tids, cpuset) {
-            error!("set_affinity failed for pid {}: {}", pid, e);
+            debug!("set_affinity failed for pid {}: {}", pid, e);
             Err(Unsupported)
         } else {
             Ok(())

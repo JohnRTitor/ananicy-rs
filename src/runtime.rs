@@ -5,7 +5,7 @@ use {
         sync::{atomic::Ordering::SeqCst, mpsc::Sender},
         thread::{sleep, spawn},
     },
-    tracing::{info, warn},
+    tracing::{debug, info},
 };
 
 use {
@@ -36,7 +36,7 @@ pub(crate) fn run(
     benchmark_count: Option<u32>,
 ) {
     if benchmark {
-        warn!("Benchmark enabled!");
+        info!("Benchmark enabled!");
         let shutdown = shutdown_flag.clone();
         spawn(move || {
             sleep(Duration::from_secs(30));
@@ -44,7 +44,7 @@ pub(crate) fn run(
         });
     }
     if let Some(count) = benchmark_count {
-        warn!("Benchmark count: {}", count);
+        info!("Benchmark count: {}", count);
     }
 
     info!("Initializing cgroups based on rules");
@@ -105,7 +105,7 @@ fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag:
         while !shutdown_flag.load(SeqCst) {
             thread::sleep(Duration::from_secs(1));
             if last_scan.elapsed().as_secs() >= check_freq as u64 {
-                info!("Running periodic manual procfs scan");
+                debug!("Running periodic manual procfs scan");
                 ProcfsScanner::full_scan(tx.clone());
                 last_scan = Instant::now();
             }
