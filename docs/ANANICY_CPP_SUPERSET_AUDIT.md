@@ -149,7 +149,7 @@ Classification key: **EQ** Equivalent · **SUP** Superset · **MISS** Missing/Re
 | 40 | Rules | exact match beats regex | same | EQ | `src/rules.cpp:184-196` ↔ `rules.rs:201-217` | n/a | none |
 | 41 | Rules | rule lookup cache | LRU 5000 | SUP | C++ has none ↔ `rules.rs:21,183-199` | no | add to diff doc |
 | 42 | Rules | **NixOS `.foo-wrapped` name rewriting** | **added** | BEH (undoc.) | no C++ counterpart ↔ `crates/ananicy-core/src/worker.rs:155-171` | **no** | document |
-| 43 | Rules | cgroup-path rule matching (exact/glob/ancestor/`!`) | **dead code** | UNC | C++ has none ↔ `crates/ananicy-core/src/cgroup_rules.rs` (no callers) | no | remove or finish + document |
+| 43 | Rules | cgroup-path rule matching (exact/glob/ancestor/`!`) | removed | EQ | C++ has none ↔ the module had no callers and has been deleted | no | none — resolved, see §11 |
 | 44 | Attributes | `nice` (all threads) | same | EQ | `src/platform/linux/priority.cpp:41-63` ↔ `priority.rs:38-56` | n/a | none |
 | 45 | Attributes | `nice` → cgroup `cpu.weight` mirror | **added** | BEH (undoc. scope) | C++ has none ↔ `worker.rs:313-328`, `cgroup/manager.rs:321-364` | §4 (incomplete) | document blast radius / add opt-out |
 | 46 | Attributes | `latency_nice` (+ fallback to `nice`) | same | EQ | `src/worker.cpp:108-121` ↔ `worker.rs:331-354` | n/a | none |
@@ -785,7 +785,7 @@ Ignored/discarded results worth noting (all intentional, all logged or documente
 | 13 | **Low** | Align realtime detection (`sched_attr.sched_priority > 0`) or document the difference. | `crates/ananicy-platform/src/lib.rs:46-51` |
 | 14 | **Low** | Document (or align) `--verbose`, the `benchmark-count` exit timing, the unknown-action exit, the `dump` exit codes, the `cpuset` bound, the `CPUQuota` CPU count, and the netlink buffer/timeout. *(Re-checked while fixing: the perf-buffer size was never a difference — libbpf-rs 0.27 already defaults to the reference's 64 pages — and the BPF `--verbose` plumbing is being added.)* | `src/startup.rs:17-33`; `crates/ananicy-core/src/worker.rs:133-137`; `src/main.rs:98-101`; `src/cli.rs:213-219`; `crates/ananicy-platform/src/abi/affinity.rs:10-17`; `crates/ananicy-platform/src/cgroup/manager.rs:278`; `netlink.rs:50-56` |
 | 15 | **Low** | Document the NixOS `.foo-wrapped` matching rewrite. | `crates/ananicy-core/src/worker.rs:155-171`; `docs/ANANICY_CPP_DIFFERENCES.md` §5 |
-| 16 | **Low** | Either finish or delete the dead `cgroup_rules` module (exact/glob/ancestor/`!` cgroup matching is unreachable from the rule engine). | `crates/ananicy-core/src/cgroup_rules.rs`; `crates/ananicy-core/src/lib.rs:2` |
+| 16 | **Low** | The dead `cgroup_rules` module (exact/glob/ancestor/`!` cgroup matching, unreachable from the rule engine) has been deleted, along with the `CgroupPath` methods that existed only for it. | `crates/ananicy-core/src/cgroup.rs` |
 | 17 | **Low** | Add a terminate/backtrace panic hook. | new `src/panics.rs`; `Cargo.toml:75-80` |
 | 18 | **Low** | Add `fuzz` targets for the cpuset and rule parsers (parity with the three C++ fuzzers). | `crates/ananicy-platform/fuzz/`, `crates/ananicy-core` |
 | 19 | **Low** | Add a test for `dump proc` / `dump autogroup` output shape. | `tests/cli.rs` |
