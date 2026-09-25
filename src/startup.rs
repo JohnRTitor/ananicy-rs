@@ -147,6 +147,10 @@ pub(crate) fn log_config(
         info!("Config apply_cpu_weight: {}", snap.apply_cpu_weight);
         info!("Config x3d_mode: {}", snap.x3d_mode);
         info!("Config loglevel: {}", snap.loglevel);
+        info!(
+            "Config check_disks_schedulers: {}",
+            snap.check_disks_schedulers
+        );
     }
 }
 

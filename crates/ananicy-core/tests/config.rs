@@ -284,3 +284,27 @@ fn apply_cpu_weight_is_read_from_the_configuration() {
         "the mirror stays on unless it is switched off"
     );
 }
+
+#[test]
+fn check_disks_schedulers_is_read_from_the_configuration() {
+    assert!(parse("").check_disks_schedulers, "the default stays on");
+    assert!(
+        !parse("check_disks_schedulers=false\n").check_disks_schedulers,
+        "and it can be switched off"
+    );
+    assert!(
+        parse("check_disks_schedulers=true\n").check_disks_schedulers,
+        "and switched back on"
+    );
+}
+
+#[test]
+fn the_default_configuration_mentions_the_disk_check() {
+    // A key the daemon acts on belongs in the file it writes, or a
+    // configuration read back from it will not round-trip.
+    assert!(
+        ConfigSnapshot::default()
+            .to_config_string()
+            .contains("check_disks_schedulers=true")
+    );
+}

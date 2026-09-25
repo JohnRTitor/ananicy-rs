@@ -75,6 +75,9 @@ impl Display for LogLevel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigSnapshot {
     pub check_freq: u32,
+    /// Whether to report the block devices whose I/O scheduler will not honour
+    /// the `ioclass` and `ionice` a rule asks for. From the original Ananicy.
+    pub check_disks_schedulers: bool,
     pub cgroup_load: bool,
     pub type_load: bool,
     pub rule_load: bool,
@@ -100,6 +103,7 @@ impl Default for ConfigSnapshot {
     fn default() -> Self {
         Self {
             check_freq: 60,
+            check_disks_schedulers: true,
             cgroup_load: true,
             type_load: true,
             rule_load: true,
@@ -158,6 +162,7 @@ impl ConfigSnapshot {
                         }
                     }
                     "cgroup_load" => config.cgroup_load = value == "true",
+                    "check_disks_schedulers" => config.check_disks_schedulers = value == "true",
                     "type_load" => config.type_load = value == "true",
                     "rule_load" => config.rule_load = value == "true",
                     "apply_nice" => config.apply_nice = value == "true",
@@ -213,7 +218,8 @@ impl ConfigSnapshot {
             apply_cpu_weight={}\n\
             x3d_mode={}\n\
             loglevel={}\n\
-            check_freq={}\n",
+            check_freq={}\n\
+            check_disks_schedulers={}\n",
             self.apply_nice,
             self.apply_sched,
             self.apply_ionice,
@@ -229,7 +235,8 @@ impl ConfigSnapshot {
             self.apply_cpu_weight,
             self.x3d_mode,
             self.loglevel,
-            self.check_freq
+            self.check_freq,
+            self.check_disks_schedulers
         )
     }
 }
@@ -348,6 +355,10 @@ mod tests {
     fn default_snapshot_enables_the_whole_daemon() {
         let config = ConfigSnapshot::default();
         assert_eq!(config.check_freq, 60);
+        assert!(
+            config.check_disks_schedulers,
+            "the original Ananicy shipped the check enabled"
+        );
         assert_eq!(config.x3d_mode, "auto");
         assert!(config.apply_nice);
         assert!(config.apply_latnice);

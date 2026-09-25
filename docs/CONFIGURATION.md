@@ -15,6 +15,7 @@ The format is `key=value`, one per line.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `check_freq` | `60` | Full process scan interval in seconds (used during manual scanning) |
+| `check_disks_schedulers` | `true` | Report the block devices whose I/O scheduler will not honour `ioclass` and `ionice` |
 | `apply_nice` | `true` | Apply nice values from rules |
 | `apply_sched` | `true` | Apply scheduling policy from rules |
 | `apply_ionice` | `true` | Apply I/O nice values from rules |
@@ -31,6 +32,26 @@ The format is `key=value`, one per line.
 | `log_applied_rule` | `false` | Emit an INFO event after a matching rule is applied successfully |
 | `loglevel` | `info` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`, `critical`) |
 | `x3d_mode` | `auto` | AMD X3D driver mode: `auto` (don't touch), `cache`, or `frequency` |
+
+### `check_disks_schedulers`
+
+At start-up the daemon reads the I/O scheduler of every block device and reports the ones that will
+not honour the `ioclass` and `ionice` of a rule:
+
+```
+WARN Disk sda does not use a cfq/bfq scheduler (it is using "none"), so ioclass and ionice will not work for it
+```
+
+`ioprio_set(2)` is implemented by the CFQ and BFQ family only. Everywhere else it succeeds, the
+daemon logs that it applied the rule, and the I/O priority is unchanged — which is why this is worth
+saying out loud once at start-up rather than leaving each affected disk to be discovered by noticing
+that nothing happened. A device counts as fine when its active scheduler is `cfq`, `bfq` or `bfq-mq`;
+loop, ram and `sr` devices are skipped, as are devices with no scheduler file at all.
+
+This restores a check from the original Ananicy, which shipped it as `check_disks_schedulers=true`
+in `ananicy.conf`. Neither rewrite had it, and without it the configuration reference's own note that
+`ioclass` needs CFQ or BFQ was true and never checked. It is read-only, and `dump` and `debug` skip
+it — only the running daemon has use for it. Set it to `false` to silence it.
 
 ### `apply_ioclass` has no effect
 
