@@ -135,21 +135,23 @@ fn get_llc_id(base: &Path, llc_map: &mut HashMap<String, i32>) -> i32 {
     0
 }
 
-fn parse_size_string(s: &str) -> u64 {
+/// Parses a cache size as the kernel writes it — `32K`, `1536K`, `16M` — into
+/// bytes. A `G` suffix is understood as well, since the kernel is free to use
+/// it for a large last-level cache; an unparsable or zero value reads as 0,
+/// which the callers treat as "no size reported".
+pub fn parse_size_string(s: &str) -> u64 {
     let s = s.trim();
-    if s.is_empty() {
-        return 0;
-    }
-    let mut num_str = s.to_string();
-    let mut mult = 1;
-    if s.ends_with('K') || s.ends_with('k') {
-        num_str.pop();
-        mult = 1024;
-    } else if s.ends_with('M') || s.ends_with('m') {
-        num_str.pop();
-        mult = 1024 * 1024;
-    }
-    num_str.parse::<u64>().unwrap_or(0) * mult
+    let (digits, multiplier) = match s.as_bytes().last() {
+        Some(b'K' | b'k') => (&s[..s.len() - 1], 1024u64),
+        Some(b'M' | b'm') => (&s[..s.len() - 1], 1024 * 1024),
+        Some(b'G' | b'g') => (&s[..s.len() - 1], 1024 * 1024 * 1024),
+        _ => (s, 1),
+    };
+
+    digits
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_mul(multiplier)
 }
 
 #[allow(dead_code)]
