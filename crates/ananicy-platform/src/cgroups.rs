@@ -4,7 +4,7 @@ use {
         PlatformError::{NotFound, Unsupported},
     },
     std::sync::OnceLock,
-    tracing::warn,
+    tracing::debug,
 };
 
 use crate::{
@@ -25,7 +25,7 @@ pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
     let manager = get_manager();
 
     if manager.cgroup_exists(cgroup_name) {
-        warn!("cgroup {} already exists, ignoring", cgroup_name);
+        debug!("cgroup {} already exists, ignoring", cgroup_name);
         return false;
     }
 

@@ -183,7 +183,7 @@ impl CgroupController for CgroupManager {
         );
 
         if ownership == CgroupOwnership::Foreign {
-            warn!(
+            debug!(
                 "move_pid: Target {:?} is Foreign. Refusing to write.",
                 target
             );
@@ -191,7 +191,7 @@ impl CgroupController for CgroupManager {
         }
 
         if !target.exists() {
-            error!("move_pid: Cgroup {:?} does not exist.", target);
+            debug!("move_pid: Cgroup {:?} does not exist.", target);
             return false;
         }
 
@@ -228,7 +228,7 @@ impl CgroupController for CgroupManager {
                 // write_all() issues one atomic write() syscall.
                 let pid_buf = format!("{}\n", pid_to_write);
                 if let Err(e) = file.write_all(pid_buf.as_bytes()) {
-                    error!("move_pid: Failed to write to {:?}: {}", procs_path, e);
+                    debug!("move_pid: Failed to write to {:?}: {}", procs_path, e);
                     return false;
                 }
 
@@ -254,7 +254,7 @@ impl CgroupController for CgroupManager {
                 true
             }
             Err(e) => {
-                error!("move_pid: Failed to open {:?}: {}", procs_path, e);
+                debug!("move_pid: Failed to open {:?}: {}", procs_path, e);
                 false
             }
         }
@@ -282,22 +282,37 @@ impl CgroupController for CgroupManager {
             let period = 100_000u32;
             let quota_val = period * logical_cores * clamped_quota / 100;
             let max_file = target.join("cpu.max");
-            if let Ok(mut f) = OpenOptions::new().write(true).open(&max_file) {
-                let buf = format!("{} {}\n", quota_val, period);
-                let _ = f.write_all(buf.as_bytes());
+            let Ok(mut f) = OpenOptions::new().write(true).open(&max_file) else {
+                error!("set_cpu_max: Failed to open {:?}", max_file);
+                return false;
+            };
+            let buf = format!("{} {}\n", quota_val, period);
+            if let Err(e) = f.write_all(buf.as_bytes()) {
+                error!("set_cpu_max: Failed to write {:?}: {}", max_file, e);
+                return false;
             }
         } else {
             let period = 1_000_000u32;
             let quota_val = period * logical_cores * clamped_quota / 100;
             let period_file = target.join("cpu.cfs_period_us");
-            if let Ok(mut f) = OpenOptions::new().write(true).open(&period_file) {
-                let buf = format!("{}\n", period);
-                let _ = f.write_all(buf.as_bytes());
+            let Ok(mut f) = OpenOptions::new().write(true).open(&period_file) else {
+                error!("set_cpu_max: Failed to open {:?}", period_file);
+                return false;
+            };
+            let buf = format!("{}\n", period);
+            if let Err(e) = f.write_all(buf.as_bytes()) {
+                error!("set_cpu_max: Failed to write {:?}: {}", period_file, e);
+                return false;
             }
             let quota_file = target.join("cpu.cfs_quota_us");
-            if let Ok(mut f) = OpenOptions::new().write(true).open(&quota_file) {
-                let buf = format!("{}\n", quota_val);
-                let _ = f.write_all(buf.as_bytes());
+            let Ok(mut f) = OpenOptions::new().write(true).open(&quota_file) else {
+                error!("set_cpu_max: Failed to open {:?}", quota_file);
+                return false;
+            };
+            let buf = format!("{}\n", quota_val);
+            if let Err(e) = f.write_all(buf.as_bytes()) {
+                error!("set_cpu_max: Failed to write {:?}: {}", quota_file, e);
+                return false;
             }
         }
         true
@@ -318,22 +333,29 @@ impl CgroupController for CgroupManager {
         }
 
         if self.info.version == CgroupVersion::V2 {
-            // Valid values are 1-10000. Default is 100.
             let weight_val = weight.clamp(1, 10000);
             let weight_file = target.join("cpu.weight");
-            if let Ok(mut f) = OpenOptions::new().write(true).open(&weight_file) {
-                let buf = format!("{}\n", weight_val);
-                let _ = f.write_all(buf.as_bytes());
+            let Ok(mut f) = OpenOptions::new().write(true).open(&weight_file) else {
+                debug!("set_cpu_weight: Failed to open {:?}", weight_file);
+                return false;
+            };
+            let buf = format!("{}\n", weight_val);
+            if let Err(e) = f.write_all(buf.as_bytes()) {
+                debug!("set_cpu_weight: Failed to write {:?}: {}", weight_file, e);
+                return false;
             }
         } else {
-            // v1 doesn't have cpu.weight exactly, it has cpu.shares (default 1024, range 2-262144)
-            // 100 weight ~ 1024 shares.
             let shares = (weight as f32 / 100.0 * 1024.0) as u32;
             let shares = shares.clamp(2, 262144);
             let shares_file = target.join("cpu.shares");
-            if let Ok(mut f) = OpenOptions::new().write(true).open(&shares_file) {
-                let buf = format!("{}\n", shares);
-                let _ = f.write_all(buf.as_bytes());
+            let Ok(mut f) = OpenOptions::new().write(true).open(&shares_file) else {
+                debug!("set_cpu_weight: Failed to open {:?}", shares_file);
+                return false;
+            };
+            let buf = format!("{}\n", shares);
+            if let Err(e) = f.write_all(buf.as_bytes()) {
+                debug!("set_cpu_weight: Failed to write {:?}: {}", shares_file, e);
+                return false;
             }
         }
         true

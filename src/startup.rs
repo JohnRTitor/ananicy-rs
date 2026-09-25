@@ -1,12 +1,12 @@
 use {
     crate::cli::Args,
     ananicy_core::{
-        config::{Config, ConfigSnapshot},
+        config::{Config, ConfigDiagnostic, ConfigSnapshot, LogLevel},
         rules::Rules,
     },
     std::{collections::HashMap, env::var, sync::Arc},
     tracing::{Level, error, info, warn},
-    tracing_subscriber::filter::LevelFilter,
+    tracing_subscriber::{filter::LevelFilter, util::SubscriberInitExt},
 };
 
 pub(crate) type LogReloadHandle = tracing_subscriber::reload::Handle<
@@ -14,19 +14,31 @@ pub(crate) type LogReloadHandle = tracing_subscriber::reload::Handle<
     tracing_subscriber::Registry,
 >;
 
+pub(crate) fn log_level_override(verbose: bool, force_trace: bool) -> Option<Level> {
+    if force_trace {
+        Some(Level::TRACE)
+    } else if verbose {
+        Some(Level::DEBUG)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn effective_log_level(
+    config_level: &LogLevel,
+    verbose: bool,
+    force_trace: bool,
+) -> Level {
+    log_level_override(verbose, force_trace).unwrap_or_else(|| tracing::Level::from(config_level))
+}
+
 pub(crate) fn init_logging(
-    config_level: ananicy_core::config::LogLevel,
+    config_level: LogLevel,
     verbose: bool,
     force_trace: bool,
     is_systemd: bool,
-) -> LogReloadHandle {
-    let log_level = if force_trace {
-        Level::TRACE
-    } else if verbose {
-        Level::DEBUG
-    } else {
-        tracing::Level::from(&config_level)
-    };
+) -> Result<LogReloadHandle, String> {
+    let log_level = effective_log_level(&config_level, verbose, force_trace);
 
     let (filter, reload_handle) =
         tracing_subscriber::reload::Layer::new(LevelFilter::from_level(log_level));
@@ -37,8 +49,8 @@ pub(crate) fn init_logging(
         let subscriber = tracing_subscriber::Registry::default()
             .with(filter)
             .with(layer);
-        let _ = tracing::subscriber::set_global_default(subscriber);
-        return reload_handle;
+        subscriber.try_init().map_err(|error| error.to_string())?;
+        return Ok(reload_handle);
     }
 
     use tracing_subscriber::layer::SubscriberExt;
@@ -46,9 +58,15 @@ pub(crate) fn init_logging(
     let subscriber = tracing_subscriber::Registry::default()
         .with(filter)
         .with(fmt_layer);
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    subscriber.try_init().map_err(|error| error.to_string())?;
 
-    reload_handle
+    Ok(reload_handle)
+}
+
+pub(crate) fn set_log_level(handle: &LogReloadHandle, level: Level) -> Result<(), String> {
+    handle
+        .modify(|filter| *filter = LevelFilter::from_level(level))
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {
@@ -65,10 +83,12 @@ pub(crate) fn resolve_config_paths(args: &Args) -> (String, String) {
     (config_path, config_dir_path)
 }
 
-pub(crate) fn load_config(config_path: &str) -> (Arc<Config>, Option<String>, bool) {
+pub(crate) fn load_config(
+    config_path: &str,
+) -> (Arc<Config>, Option<String>, Vec<ConfigDiagnostic>, bool) {
     let latnice_supported = ananicy_platform::test_latnice_support();
-    match Config::load_file(config_path, latnice_supported) {
-        Ok(cfg) => (Arc::new(cfg), None, latnice_supported),
+    match Config::load_file_with_diagnostics(config_path, latnice_supported) {
+        Ok((config, diagnostics)) => (Arc::new(config), None, diagnostics, latnice_supported),
         Err(e) => {
             let mut snapshot = ConfigSnapshot::default();
             if !latnice_supported {
@@ -80,13 +100,22 @@ pub(crate) fn load_config(config_path: &str) -> (Arc<Config>, Option<String>, bo
                     "Failed to load config from {}: {}. Using default.",
                     config_path, e
                 )),
+                Vec::new(),
                 latnice_supported,
             )
         }
     }
 }
 
-pub(crate) fn log_config(config: &Arc<Config>, err: Option<String>, latnice_supported: bool) {
+pub(crate) fn log_config(
+    config: &Arc<Config>,
+    err: Option<String>,
+    diagnostics: &[ConfigDiagnostic],
+    latnice_supported: bool,
+) {
+    for diagnostic in diagnostics {
+        diagnostic.emit();
+    }
     if let Some(e) = err {
         error!("{}", e);
         if !latnice_supported {
@@ -96,6 +125,9 @@ pub(crate) fn log_config(config: &Arc<Config>, err: Option<String>, latnice_supp
         let snap = config.get();
         info!("Config apply_nice: {}", snap.apply_nice);
         info!("Config apply_sched: {}", snap.apply_sched);
+        info!("Config apply_ionice: {}", snap.apply_ionice);
+
+        info!("Config apply_cgroup: {}", snap.apply_cgroups);
         info!("Config cgroup_load: {}", snap.cgroup_load);
         info!("Config apply_oom_score_adj: {}", snap.apply_oom_score_adj);
         info!("Config apply_latnice: {}", snap.apply_latnice);
@@ -108,7 +140,6 @@ pub(crate) fn log_config(config: &Arc<Config>, err: Option<String>, latnice_supp
         );
         info!("Config check_freq: {}", snap.check_freq);
         info!("Config apply_cpuset: {}", snap.apply_cpuset);
-        info!("Config apply_ionice: {}", snap.apply_ionice);
         info!("Config x3d_mode: {}", snap.x3d_mode);
         info!("Config loglevel: {}", snap.loglevel);
     }
@@ -170,4 +201,70 @@ pub(crate) fn load_rules(config: Arc<Config>, config_dir_path: &str) -> Rules {
     let mut rules = Rules::new(config);
     rules.load_directory(config_dir_path);
     rules
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        tracing::{Event, Subscriber, info},
+        tracing_subscriber::{
+            layer::{Context, Layer},
+            prelude::*,
+        },
+    };
+
+    struct EventCount(Arc<AtomicUsize>);
+
+    impl<S> Layer<S> for EventCount
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, _event: &Event<'_>, _ctx: Context<'_, S>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn effective_level_prefers_cli_overrides() {
+        assert_eq!(
+            effective_log_level(&LogLevel::Error, false, false),
+            Level::ERROR
+        );
+        assert_eq!(
+            effective_log_level(&LogLevel::Error, true, false),
+            Level::DEBUG
+        );
+        assert_eq!(
+            effective_log_level(&LogLevel::Error, false, true),
+            Level::TRACE
+        );
+    }
+
+    #[test]
+    fn log_level_reload_changes_the_active_filter() {
+        let (filter, handle) = tracing_subscriber::reload::Layer::new(LevelFilter::ERROR);
+        let count = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(EventCount(count.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            info!("before reload");
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+            set_log_level(&handle, Level::INFO).unwrap();
+            info!("after reload");
+        });
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn critical_uses_error_filter_level() {
+        assert_eq!(Level::from(&LogLevel::Critical), Level::ERROR);
+    }
 }

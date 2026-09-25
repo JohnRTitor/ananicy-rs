@@ -33,22 +33,16 @@ pub fn set_affinity(pid: i32, tids: &[i32], cpuset: &CpuSet) -> io::Result<()> {
         }
     }
 
-    let mut last_err = None;
+    let mut first_err = None;
 
     for &tid in tids {
         let ret = unsafe { sched_setaffinity(tid, num_bytes, mask.as_ptr() as *const cpu_set_t) };
-        if ret != 0 {
-            last_err = Some(io::Error::last_os_error());
-        } else {
-            last_err = Some(io::Error::from_raw_os_error(0));
+        if ret != 0 && first_err.is_none() {
+            first_err = Some(io::Error::last_os_error());
         }
     }
 
-    match last_err {
-        Some(err) if err.raw_os_error() == Some(0) => {
-            debug!("set_affinity: Successfully applied to {}", pid);
-            Ok(())
-        }
+    match first_err {
         Some(err) => Err(err),
         None => {
             debug!("set_affinity: Successfully applied to {}", pid);

@@ -139,7 +139,7 @@ in
         apply_sched = mkOD true;
         apply_oom_score_adj = mkOD true;
         apply_cgroup = mkOD true;
-        loglevel = mkOD "warn";
+        loglevel = mkOD "info";
         log_applied_rule = mkOD false;
       };
 
