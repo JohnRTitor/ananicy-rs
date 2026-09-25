@@ -9,7 +9,7 @@
 //! The question the automatic mode answers is therefore narrow: *is this
 //! process supervised by a systemd service manager as a service?* It is
 //! deliberately not "is systemd running on this host" — see
-//! `docs/SYSTEMD_AUTO_DETECTION_RESEARCH.md`.
+//! `docs/SYSTEMD.md`.
 
 /// What the user asked for on the command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

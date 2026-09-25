@@ -73,9 +73,8 @@ Consequences of that design:
 
 The decision is reported at `debug` level and by the `debug cgroups`
 diagnostic, e.g. `Systemd integration: enabled (auto-detected from
-$INVOCATION_ID)`. See
-[SYSTEMD_AUTO_DETECTION_RESEARCH.md](./SYSTEMD_AUTO_DETECTION_RESEARCH.md) for
-the full rationale.
+$INVOCATION_ID)`. See the [systemd Reference](./SYSTEMD.md) for the full
+behaviour of the service manager, the delegation model, and the shipped unit.
 
 ## Command Line Arguments
 
