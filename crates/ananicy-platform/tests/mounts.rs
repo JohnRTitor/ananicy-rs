@@ -7,9 +7,13 @@
 
 use {
     ananicy_platform::mounts::{
-        CgroupInfo, CgroupVersion, get_cgroup_info, parse_cgroups_from_str,
+        CGROUP_INIT_ATTEMPTS, CGROUP_INIT_INTERVAL, CGROUP_INIT_TIMEOUT, CgroupInfo, CgroupVersion,
+        get_cgroup_info, init_cgroups, parse_cgroups_from_str,
     },
-    std::path::{Path, PathBuf},
+    std::{
+        path::{Path, PathBuf},
+        time::{Duration, Instant},
+    },
 };
 
 fn empty_info() -> CgroupInfo {
@@ -192,4 +196,37 @@ fn the_detected_cgroup_hierarchy_of_this_host_is_consistent() {
             );
         }
     }
+}
+
+/// The startup retry for a late cgroup mount is bounded, so a host that has no
+/// cgroup support at all cannot hold the daemon hostage.
+#[test]
+fn the_cgroup_retry_is_bounded() {
+    assert_eq!(
+        CGROUP_INIT_TIMEOUT,
+        CGROUP_INIT_INTERVAL * CGROUP_INIT_ATTEMPTS as u32,
+        "the reported timeout must be the one the loop actually spends"
+    );
+    assert!(
+        CGROUP_INIT_TIMEOUT <= Duration::from_secs(30),
+        "a startup wait of {:?} is too long to be reasonable",
+        CGROUP_INIT_TIMEOUT
+    );
+}
+
+#[test]
+fn the_cgroup_retry_costs_nothing_when_a_hierarchy_exists() {
+    if get_cgroup_info().version == CgroupVersion::None {
+        return; // no cgroup hierarchy on this host: the daemon waits by design
+    }
+    let start = Instant::now();
+    assert!(
+        init_cgroups(),
+        "an existing hierarchy is found on the first try"
+    );
+    assert!(
+        start.elapsed() < CGROUP_INIT_INTERVAL,
+        "finding a hierarchy that is already there must not sleep, took {:?}",
+        start.elapsed()
+    );
 }

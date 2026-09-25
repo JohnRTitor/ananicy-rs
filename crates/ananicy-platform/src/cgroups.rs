@@ -49,6 +49,14 @@ pub fn reset_cgroup_detection() {
     }
 }
 
+/// Whether a cgroup hierarchy is available, without caching the answer.
+///
+/// Used to decide whether waiting can help at all; deliberately does not build
+/// the manager, so that a later detection is still free to change its mind.
+pub fn has_cgroup_hierarchy() -> bool {
+    get_cgroup_info().version != crate::cgroup::CgroupVersion::None
+}
+
 pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
     let Some(manager) = get_manager() else {
         debug!(
