@@ -157,5 +157,6 @@ fn main() {
         saved_x3d_mode,
         args.benchmark,
         args.benchmark_count,
+        args.verbose,
     );
 }

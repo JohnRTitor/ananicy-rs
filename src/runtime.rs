@@ -36,6 +36,7 @@ pub(crate) fn run(
     saved_x3d_mode: Option<X3DMode>,
     benchmark: bool,
     benchmark_count: Option<u32>,
+    verbose: bool,
 ) {
     if benchmark {
         info!("Benchmark enabled!");
@@ -87,7 +88,14 @@ pub(crate) fn run(
         start_manual_scanner(config.clone(), tx.clone(), shutdown_flag.clone());
     }
 
-    monitor::run(tx, shutdown_flag, worker_handle, saved_x3d_mode, bpf_min_us);
+    monitor::run(
+        tx,
+        shutdown_flag,
+        worker_handle,
+        saved_x3d_mode,
+        bpf_min_us,
+        verbose,
+    );
 }
 
 /// Waits for a usable cgroup hierarchy before the first cgroup creation.
