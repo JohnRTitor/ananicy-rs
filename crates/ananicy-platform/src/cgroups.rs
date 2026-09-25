@@ -57,7 +57,19 @@ pub fn has_cgroup_hierarchy() -> bool {
     get_cgroup_info().version != crate::cgroup::CgroupVersion::None
 }
 
-pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
+/// The resource settings a `.cgroups` rule can ask a cgroup to be created with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CgroupSettings {
+    /// A percentage of the machine's CPUs, written to `cpu.max` on cgroup v2 and
+    /// to `cpu.cfs_quota_us` on cgroup v1. Clamped to `0..=100`.
+    pub cpu_quota: Option<u32>,
+    /// A relative weight, written to `cpu.weight` on cgroup v2 and to
+    /// `cpu.shares` on cgroup v1. The kernel default is 100, the range is
+    /// `1..=10000`; anything outside it is clamped.
+    pub cpu_weight: Option<u32>,
+}
+
+pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
     let Some(manager) = get_manager() else {
         debug!(
             "cgroup {} not created: no hierarchy to create it in",
@@ -75,8 +87,11 @@ pub fn create_cgroup(cgroup_name: &str, cpu_quota: Option<u32>) -> bool {
         return false;
     };
 
-    if let Some(quota) = cpu_quota {
+    if let Some(quota) = settings.cpu_quota {
         manager.set_cpu_max(&target, quota);
+    }
+    if let Some(weight) = settings.cpu_weight {
+        manager.set_cpu_weight(&target, weight);
     }
     true
 }
@@ -139,7 +154,7 @@ mod tests {
             })));
 
         // An operation uses the cached detection, and creates in it.
-        assert!(create_cgroup("cached", None));
+        assert!(create_cgroup("cached", CgroupSettings::default()));
         assert!(
             hierarchy.path().join("cpu/cached").is_dir(),
             "the cgroup is created under the detected hierarchy"
@@ -153,7 +168,7 @@ mod tests {
         // cache, so the next operation has to rebuild from the live hierarchy
         // instead of reusing the injected one.
         reset_cgroup_detection();
-        let _ = create_cgroup("after-reset", None);
+        let _ = create_cgroup("after-reset", CgroupSettings::default());
 
         let rebuilt = cached_info().expect("the next operation rebuilds the manager");
         assert_ne!(

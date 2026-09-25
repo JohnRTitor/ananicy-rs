@@ -1,6 +1,8 @@
 use {
     ananicy_core::spawn_named_thread,
-    ananicy_platform::{LinuxPlatform, procfs::ProcfsScanner, x3d::X3DMode},
+    ananicy_platform::{
+        LinuxPlatform, cgroups::CgroupSettings, procfs::ProcfsScanner, x3d::X3DMode,
+    },
     std::{
         sync::{atomic::Ordering::SeqCst, mpsc::Sender},
         thread::{sleep, spawn},
@@ -114,13 +116,27 @@ fn wait_for_cgroup_hierarchy() -> bool {
     }
 }
 
+/// Reads the cgroup settings a `.cgroups` rule asks for.
+///
+/// An attribute that is absent, or present with a value that is not a number, is
+/// left unset rather than guessed at: a malformed rule must not configure a
+/// cgroup with a value nobody asked for.
+fn settings_from_rule(rule: &serde_json::Value) -> CgroupSettings {
+    let number = |key: &str| {
+        rule.get(key)
+            .and_then(|value| value.as_u64())
+            .map(|value| value as u32)
+    };
+
+    CgroupSettings {
+        cpu_quota: number("CPUQuota"),
+        cpu_weight: number("CPUWeight"),
+    }
+}
+
 fn create_cgroups(rules: &Arc<Rules>) -> bool {
     for (name, value) in rules.get_cgroups() {
-        let quota = value
-            .get("CPUQuota")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
-        ananicy_platform::cgroups::create_cgroup(&name.0, quota);
+        ananicy_platform::cgroups::create_cgroup(&name.0, settings_from_rule(value));
     }
     info!("Finished creating cgroups");
     true
@@ -141,4 +157,65 @@ fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag:
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).expect("a JSON rule")
+    }
+
+    #[test]
+    fn a_cgroup_rule_yields_the_settings_it_declares() {
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"cpu80","CPUQuota":80}"#)),
+            CgroupSettings {
+                cpu_quota: Some(80),
+                cpu_weight: None,
+            }
+        );
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"light","CPUWeight":200}"#)),
+            CgroupSettings {
+                cpu_quota: None,
+                cpu_weight: Some(200),
+            }
+        );
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"both","CPUQuota":50,"CPUWeight":10}"#)),
+            CgroupSettings {
+                cpu_quota: Some(50),
+                cpu_weight: Some(10),
+            }
+        );
+    }
+
+    #[test]
+    fn a_cgroup_rule_that_declares_nothing_configures_nothing() {
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"empty"}"#)),
+            CgroupSettings::default()
+        );
+    }
+
+    #[test]
+    fn a_malformed_setting_is_ignored_rather_than_guessed() {
+        // A quoted number, a negative one and a boolean are all not settings the
+        // daemon can use. Configuring a cgroup with something nobody wrote down
+        // would be worse than leaving it alone.
+        for json in [
+            r#"{"cgroup":"x","CPUQuota":"80"}"#,
+            r#"{"cgroup":"x","CPUQuota":-5}"#,
+            r#"{"cgroup":"x","CPUWeight":true}"#,
+            r#"{"cgroup":"x","CPUWeight":null}"#,
+        ] {
+            assert_eq!(
+                settings_from_rule(&rule(json)),
+                CgroupSettings::default(),
+                "{json} must not configure anything"
+            );
+        }
+    }
 }

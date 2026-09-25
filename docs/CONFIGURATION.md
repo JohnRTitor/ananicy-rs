@@ -116,12 +116,16 @@ Cgroup parameters are defined in `.cgroups` files.
 
 Currently, the following attributes are supported:
 - `CPUQuota`: Maps to `cpu.max` in Cgroups v2 or `cpu.cfs_quota_us` in v1 (expressed as a percentage, e.g., 80 = 80%).
-- `CPUWeight`: Maps to `cpu.weight` in Cgroups v2 or `cpu.shares` in v1.
+- `CPUWeight`: Maps to `cpu.weight` in Cgroups v2 or `cpu.shares` in v1. 100 is the kernel's default weight, and the useful range is `1`–`10000`.
 
 Example:
 ```json
 {"cgroup": "cpu80", "CPUQuota": 80}
+{"cgroup": "light", "CPUWeight": 50}
 ```
+
+An attribute whose value is not a number is ignored, so a malformed rule configures nothing rather
+than an arbitrary amount. Values outside the kernel's range are clamped to it.
 
 ### Cgroups v2 Delegation and Ownership
 

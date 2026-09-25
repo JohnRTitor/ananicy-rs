@@ -8,7 +8,7 @@
 
 use {
     ananicy_platform::{
-        cgroups::{add_pid_to_cgroup, create_cgroup},
+        cgroups::{CgroupSettings, add_pid_to_cgroup, create_cgroup},
         mounts::{CgroupVersion, get_cgroup_info},
     },
     std::{fs, path::PathBuf, process::id},
@@ -126,12 +126,12 @@ fn create_cgroup_refuses_to_recreate_an_existing_cgroup() {
     let _ = fs::remove_dir(&path);
 
     assert!(
-        create_cgroup(TEST_CGROUP, None),
+        create_cgroup(TEST_CGROUP, CgroupSettings::default()),
         "the first creation succeeds"
     );
     assert!(path.exists(), "the cgroup directory must exist");
     assert!(
-        !create_cgroup(TEST_CGROUP, None),
+        !create_cgroup(TEST_CGROUP, CgroupSettings::default()),
         "an existing cgroup is reported, not recreated"
     );
 
@@ -148,7 +148,13 @@ fn create_cgroup_can_apply_a_cpu_quota() {
     };
     let _ = fs::remove_dir(&path);
 
-    assert!(create_cgroup(TEST_CGROUP, Some(90)));
+    assert!(create_cgroup(
+        TEST_CGROUP,
+        CgroupSettings {
+            cpu_quota: Some(90),
+            ..Default::default()
+        },
+    ));
 
     let _ = fs::remove_dir(&path);
 }
@@ -162,7 +168,7 @@ fn a_process_can_be_moved_into_a_cgroup_and_back() {
         return;
     };
     let _ = fs::remove_dir(&path);
-    if !create_cgroup(TEST_CGROUP, None) {
+    if !create_cgroup(TEST_CGROUP, CgroupSettings::default()) {
         return; // the hierarchy refused to delegate a new cgroup here
     }
 
