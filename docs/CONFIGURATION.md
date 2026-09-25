@@ -115,3 +115,11 @@ Outside that subtree, structural changes are refused. In particular, it will not
 There is one limited resource-tuning exception: for a foreign cgroup, `ananicy-rs` may attempt to write an already-existing `cpu.weight` or `cpu.shares` file. It does not create that file or enable its controller. If the controller is not enabled, the file is absent, or it is not writable, the optional mirror is skipped at DEBUG level. Process-level `nice` application can still succeed in that case.
 
 Do not enable controllers in `user.slice` or session scopes merely to satisfy Ananicy; those scopes are managed by systemd. Use a dedicated cgroup under the delegated Ananicy subtree when testing cgroup CPU weighting. See [CLI & Usage](./CLI.md) for the systemd and NixOS service setup.
+
+Whether the daemon logs to journald and sends `sd_notify` status messages is a
+separate concern from delegation: it is auto-detected from the process'
+environment (`$INVOCATION_ID`, `$NOTIFY_SOCKET`, `$JOURNAL_STREAM`) and can be
+forced with `--systemd`/`--no-systemd`. It is deliberately not a configuration
+file key, since it describes how the process was launched rather than how it
+should tune processes. See
+[Systemd Auto-Detection Research](./SYSTEMD_AUTO_DETECTION_RESEARCH.md).

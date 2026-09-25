@@ -16,6 +16,7 @@ Comprehensive documentation is available in the `docs/` directory:
 
 - **[Configuration and Rules](docs/CONFIGURATION.md)**: How to configure the daemon, write rules, types, and cgroup specifications.
 - **[CLI and Usage](docs/CLI.md)**: How to run the daemon, command-line arguments, and systemd integration.
+- **[systemd Auto-Detection Research](docs/SYSTEMD_AUTO_DETECTION_RESEARCH.md)**: How the daemon decides whether it runs under a service manager, and why.
 - **[CPU Topology and Affinity](docs/TOPOLOGY.md)**: Details on CPU pinning, `big.LITTLE` detection, and AMD X3D support.
 - **[Differences from the Reference Implementation](docs/ANANICY_CPP_DIFFERENCES.md)**: Explicit behavioral and implementation differences between `ananicy-rs` and the C++ reference implementation.
 

@@ -4,11 +4,8 @@ compile_error!("At least one event source feature ('bpf' or 'netlink') must be e
 use {
     ananicy_core::process::Process,
     ananicy_platform::LinuxPlatform,
-    std::{
-        env::var,
-        process::{exit, id},
-    },
-    tracing::info,
+    std::process::{exit, id},
+    tracing::{debug, info},
 };
 
 use {
@@ -25,13 +22,20 @@ mod monitor;
 mod runtime;
 mod signals;
 mod startup;
+mod systemd;
 
 fn main() {
     let args = Args::parse();
-    #[cfg(feature = "systemd")]
-    let is_systemd = args.systemd || var("NOTIFY_SOCKET").is_ok();
-    #[cfg(not(feature = "systemd"))]
-    let is_systemd = false;
+    let systemd_mode = systemd::resolve(args.systemd, systemd::SystemdEnvironment::from_process());
+    // The systemd integration (sd_notify, journald logging) is only linked in
+    // when the `systemd` cargo feature is enabled.
+    let systemd_supported = cfg!(feature = "systemd");
+    let is_systemd = systemd_supported && systemd_mode.is_enabled();
+    let systemd_status = if systemd_supported {
+        systemd_mode.description()
+    } else {
+        "disabled (built without the `systemd` feature)"
+    };
     // Force trace-level logging for the whole `debug` action before
     // dispatching to a sub-action so the debug module's diagnostics
     // are actually emitted.
@@ -55,6 +59,8 @@ fn main() {
         }
     };
     let log_level_override = startup::log_level_override(args.verbose, force_trace);
+
+    debug!("Systemd integration: {}", systemd_status);
 
     startup::log_config(&config, config_err, &config_diagnostics, latnice_supported);
 
@@ -83,7 +89,7 @@ fn main() {
     // Like `dump`, the `debug` action runs after config/rules
     // initialization but exits before the root check and daemon startup.
     if let Some(Commands::Debug { sub_action }) = &args.command {
-        debug::run(sub_action);
+        debug::run(sub_action, systemd_status);
         return;
     }
 

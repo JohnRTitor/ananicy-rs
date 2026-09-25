@@ -11,9 +11,9 @@ use {
     tracing::{debug, warn},
 };
 
-pub(crate) fn run(target: &DebugTarget) {
+pub(crate) fn run(target: &DebugTarget, systemd_status: &str) {
     match target {
-        DebugTarget::Cgroups => print_debug_cgroups(),
+        DebugTarget::Cgroups => print_debug_cgroups(systemd_status),
         // Print nothing for unrecognized targets.
         // An unrecognized debug sub-action is silently ignored, and the process still exits successfully.
         DebugTarget::Unknown(_) => {}
@@ -29,7 +29,7 @@ fn print_file(path: &str) {
     println!("#### BEGIN {path} #####\n{file_data}\n#### END {path} #####");
 }
 
-fn print_debug_cgroups() {
+fn print_debug_cgroups(systemd_status: &str) {
     print_file("/etc/mtab");
 
     let cgroup_info = get_cgroup_info();
@@ -74,6 +74,7 @@ fn print_debug_cgroups() {
     }
 
     let pid = id();
+    println!("Systemd integration: {}", systemd_status);
     println!("Unit name: {}", ananicy_platform::service::get_unit_name());
     println!("Cgroup: {}", get_cgroup_for_pid(pid));
 }
@@ -131,6 +132,9 @@ mod tests {
         );
         // And run() with an Unknown target must not panic and must not
         // print anything extra (verified structurally: it's a no-op match arm).
-        run(&DebugTarget::Unknown("nonsense".to_string()));
+        run(
+            &DebugTarget::Unknown("nonsense".to_string()),
+            "disabled (test)",
+        );
     }
 }
