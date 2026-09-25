@@ -568,3 +568,29 @@ fn a_dotted_name_that_is_not_a_wrapper_is_matched_as_is() {
             .contains(&Call::SetPriority { nice: 4 })
     );
 }
+
+#[test]
+fn an_unknown_ioclass_does_not_hide_the_rest_of_the_rule() {
+    // A typo in one attribute must not silently cost the process the others: a
+    // rule whose `ioclass` the platform drops as unrecognised still gets its
+    // oom_score_adj, cgroup and cpuset applied, because the attribute is
+    // reported as a skipped one rather than as a failure of the whole rule.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","ioclass":"bogus","ionice":3,
+            "oom_score_adj":-500,"cgroup":"lowlatency","cpuset":"0-1"}"#,
+        FakePlatform::new().with_max_cores(8).failing(
+            "set_io_priority",
+            PlatformError::Skipped("unknown class".into()),
+        ),
+    );
+
+    let calls = run.platform.calls();
+    assert!(calls.contains(&Call::SetOomScoreAdj { value: -500 }));
+    assert!(calls.contains(&Call::AddPidToCgroup {
+        cgroup: "lowlatency".to_string()
+    }));
+    assert!(calls.contains(&Call::SetAffinity {
+        cpuset: "0-1".to_string()
+    }));
+}
