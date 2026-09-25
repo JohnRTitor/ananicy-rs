@@ -129,3 +129,18 @@ fn the_platform_exposes_the_process_identity_it_was_built_from() {
         assert!(tids.contains(&self_pid()));
     }
 }
+
+/// The event sources hand processes to the worker over a channel, and the
+/// worker is the only receiver. If it stops first — it panics, or the daemon is
+/// shutting it down — a source that keeps sending has to give up rather than
+/// treat the failure as a bug in itself. This is the contract both the netlink
+/// listener and the full scan rely on, and it is the reason a send failure is a
+/// shutdown signal instead of a panic.
+#[test]
+fn a_full_scan_gives_up_when_nothing_is_listening() {
+    let (tx, rx) = std::sync::mpsc::channel::<ananicy_core::process::Process>();
+    drop(rx);
+
+    // Must return, not panic, not loop forever.
+    procfs::ProcfsScanner::full_scan(tx);
+}
