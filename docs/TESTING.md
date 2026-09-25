@@ -5,6 +5,12 @@
 rules installed in `/etc/ananicy.d`, no running service and (with two documented
 exceptions) no root.
 
+`cargo test` covers the three packages that make up a default build: the binary,
+`ananicy-core` and `ananicy-platform`. The `bpf` feature pulls in `ananicy-bpf`,
+whose build needs `clang` and `libbpf`; it is a workspace member but not a
+default one, so a host without the eBPF toolchain can still run the suite. To
+include it, use `cargo test --workspace`.
+
 ## Test layers
 
 | Layer | Where | Needs |

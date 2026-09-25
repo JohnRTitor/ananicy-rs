@@ -15,9 +15,14 @@ members = [
   "crates/ananicy-core",
   "crates/ananicy-platform",
 ]
+# `ananicy-bpf` is deliberately not a default member. Its build script links
+# against libbpf, so a plain `cargo build` or `cargo test` in the workspace would
+# fail on a host that has the daemon's dependencies but not the eBPF ones — even
+# though the default feature set does not use it. It is still a workspace member,
+# so `--workspace` builds and tests it, and enabling the `bpf` feature pulls it
+# in as a dependency.
 default-members = [
   ".",
-  "crates/ananicy-bpf",
   "crates/ananicy-core",
   "crates/ananicy-platform",
 ]
