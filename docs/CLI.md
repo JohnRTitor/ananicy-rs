@@ -80,6 +80,18 @@ behaviour of the service manager, the delegation model, and the shipped unit.
 
 `ananicy-rs` supports the following CLI arguments and subcommands:
 
+### Output streams
+
+Log output goes to **stderr**, or to the journal when the daemon runs as a systemd service. **stdout**
+carries the answer and nothing else, so a `dump` can be piped straight into a JSON tool:
+
+```bash
+ananicy-rs dump rules | jq '.[] | select(.nice == 19)'
+```
+
+Under systemd, `StandardOutput` defaults to the journal, so both streams land there and the daemon
+still behaves the same way.
+
 ### Options
 
 - `--systemd`: Always run as a systemd service; skips auto-detection and sets up `sd_notify`.
