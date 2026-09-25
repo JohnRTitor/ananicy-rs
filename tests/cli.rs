@@ -232,7 +232,7 @@ fn test_cli_dump_prints_the_loaded_state_as_json() {
     )
     .unwrap();
 
-    let mut dump = |target: &str| {
+    let dump = |target: &str| {
         let output = ananicy()
             .arg("--config")
             .arg(&config_path)

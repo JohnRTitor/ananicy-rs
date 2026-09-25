@@ -21,23 +21,51 @@ use {
     },
 };
 
+/// The channel the event sources push processes into and the worker takes them
+/// out of, together with the flag that tells every part to stop.
+pub(crate) struct ProcessEvents {
+    pub rx: Receiver<Process>,
+    pub tx: Sender<Process>,
+    pub shutdown: Arc<AtomicBool>,
+}
+
+/// How the daemon was asked to run, as decided from the command line and the
+/// configuration before it starts.
+pub(crate) struct RunOptions {
+    pub manual_scanning: bool,
+    pub cgroup_realtime_workaround: bool,
+    pub bpf_min_us: Option<u32>,
+    pub is_systemd: bool,
+    pub saved_x3d_mode: Option<X3DMode>,
+    pub benchmark: bool,
+    pub benchmark_count: Option<u32>,
+    pub verbose: bool,
+}
+
 pub(crate) fn run(
     config: Arc<Config>,
     rules: Arc<Rules>,
     platform: Arc<LinuxPlatform>,
     aliases: HashMap<String, String>,
-    rx: Receiver<Process>,
-    tx: Sender<Process>,
-    shutdown_flag: Arc<AtomicBool>,
-    manual_scanning: bool,
-    cgroup_realtime_workaround: bool,
-    bpf_min_us: Option<u32>,
-    is_systemd: bool,
-    saved_x3d_mode: Option<X3DMode>,
-    benchmark: bool,
-    benchmark_count: Option<u32>,
-    verbose: bool,
+    events: ProcessEvents,
+    options: RunOptions,
 ) {
+    let ProcessEvents {
+        rx,
+        tx,
+        shutdown: shutdown_flag,
+    } = events;
+    let RunOptions {
+        manual_scanning,
+        cgroup_realtime_workaround,
+        bpf_min_us,
+        is_systemd,
+        saved_x3d_mode,
+        benchmark,
+        benchmark_count,
+        verbose,
+    } = options;
+
     if benchmark {
         info!("Benchmark enabled!");
         let shutdown = shutdown_flag.clone();

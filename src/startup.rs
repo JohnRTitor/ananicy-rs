@@ -191,7 +191,7 @@ pub(crate) fn load_topology_aliases() -> HashMap<String, String> {
 /// diagnostic invocation must not reach it, and a mode that could be applied has
 /// to come back with a value to restore or it would be left changed.
 pub(crate) fn apply_x3d_mode(config: &Arc<Config>) -> Option<ananicy_platform::x3d::X3DMode> {
-    apply_x3d_mode_in(&Path::new("/sys"), config)
+    apply_x3d_mode_in(Path::new("/sys"), config)
 }
 
 fn apply_x3d_mode_in(
