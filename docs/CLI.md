@@ -15,7 +15,7 @@ sudo ananicy-rs start
 
 ## Systemd Service (Recommended)
 
-For production use, run `ananicy-rs` as a systemd service. The unit enables `Delegate=yes` for the service's own cgroup subtree and configures `ExecReload`; it does not delegate user/session scopes or arbitrary systemd units. The NixOS module applies the same `Delegate` and reload settings.
+For production use, run `ananicy-rs` as a systemd service. The unit enables `Delegate=yes` for the service's own cgroup subtree and other parameters; it does not delegate user/session scopes or arbitrary systemd units.
 
 Enable and start the daemon:
 
