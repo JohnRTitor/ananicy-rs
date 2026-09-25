@@ -43,6 +43,7 @@ To allow both implementations to coexist on the same system without colliding, `
 - **`nice` mirror scope:** On cgroup v2, an applied `nice` value is mirrored into the `cpu.weight` of the cgroup the process *already* belongs to. That is a cgroup write, so it also reweights the other tasks sharing that cgroup — for a desktop application typically its whole systemd session scope. `ananicy-cpp` only calls `setpriority(2)` and has no such side effect. Set `apply_cpu_weight = false` in `ananicy.conf` to keep the `nice` value and drop the mirror. See [Configuration and Rules](./CONFIGURATION.md#the-nice--cpuweight-mirror).
 - **Scope of `Delegate=yes`:** Delegation applies only to the `ananicy-rs.service` subtree, not `user.slice`, desktop session scopes, or other systemd units.
 - **Transient scopes:** Running manually from a terminal leaves the daemon in a systemd-managed transient scope, so it cannot safely perform delegated structural mutations.
+- **Where a rule's cgroup lands:** A rule's `cgroup` name is resolved relative to the delegated subtree, so `{"cgroup": "cpu80"}` creates `/sys/fs/cgroup/system.slice/ananicy-rs.service/cpu80` where `ananicy-cpp` creates `/sys/fs/cgroup/cpu80`. A name that starts with `/` is resolved from the hierarchy root instead. The consequence for a rule set written for the reference is that a `cgroup` naming a cgroup somebody else manages — the reference's README suggests that cgroups "can be any cgroup, including those created outside ananicy-cpp" — is refused rather than used.
 
 ## 5. Process and Rule Handling Improvements
 
@@ -57,6 +58,18 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Strict Success Semantics:** When `log_applied_rule` is enabled, `ananicy-cpp` logs the rule application message *before* applying the rule attributes. If the application fails, a false positive success message remains in the log. `ananicy-rs` intentionally emits the message only after all enabled rule attributes complete successfully; partial, skipped, and failed applications are reported separately. Rust also keeps the opt-in applied-rule event independent of its separate debug rule-match event.
 - **Live Log-Level Reload:** `ananicy-rs` applies a reloaded `loglevel` to the active filter, while `ananicy-cpp` retains its original process-wide level. Because Rust uses `tracing`, its supported `critical` configuration value is an error-threshold alias rather than a distinct emitted severity; Rust also accepts case-insensitive names and the legacy `fatal` alias.
 - **Reload Scope:** Both daemons reload global configuration values, but neither reloads rule files. In `ananicy-rs`, `check_freq` is captured by the manual scanner thread, so changing it also requires a restart; the other per-event apply flags and `log_applied_rule` are read from the current snapshot.
+- **`CPUWeight`:** `ananicy-cpp` reads only `CPUQuota` from a `.cgroups` rule and says so; `ananicy-rs` also honours `CPUWeight`, which its configuration reference has documented all along.
+- **`--verbose`:** `ananicy-cpp` makes `--verbose` one step more verbose than the configured `loglevel` (`error` becomes `warn`). `ananicy-rs` treats it as "at least debug", which is the same in every configuration except `trace`, where the reference stays at `trace` and this daemon drops to `debug`.
+- **`--benchmark-count`:** `ananicy-cpp` compares the count in its main loop, so it keeps running for a whole `check_freq` interval (a minute by default) after reaching it. `ananicy-rs` stops as soon as the worker reaches it, which is a few milliseconds later.
+- **An unknown action:** `ananicy-cpp` logs `Unknown action requested` and then starts the daemon anyway. `ananicy-rs` exits 1.
+- **Exit codes for a misused `dump`:** `ananicy-cpp` exits 1 for a missing or unknown sub-action; `ananicy-rs` exits 2, the code it uses for every usage error. `--reload` and `--force-remove-semaphore` exit 1 in both.
+- **The cpuset CPU bound:** a rule's `cpuset` is validated against at least 1024 CPUs, so a CPU index above the configured count is accepted as long as it is below 1024. `ananicy-cpp` validates against the configured count alone (`sysconf(_SC_NPROCESSORS_CONF)`), which is also what it parses a cpuset with.
+- **`CPUQuota` arithmetic:** both compute the quota as a period times the number of CPUs times the percentage. `ananicy-cpp` uses the total number of logical CPUs, `ananicy-rs` the number the kernel says this process may run on at once, which is smaller under a cgroup CPU limit. The packaged unit sets no CPU limit, so the two agree there.
+- **Netlink receive buffer:** `ananicy-rs` asks for 8 MiB and falls back silently if the kernel refuses, and it drains the socket through `epoll` with a 100 ms tick where `ananicy-cpp` uses a 500 ms `SO_RCVTIMEO`. Fewer overruns, at the cost of a slightly more active loop. After a reconnect the reference keeps its "same pid as last time" filter, this daemon starts over, so one process can be reported twice.
+- **`dump proc`:** the entries carry one field the reference does not have, `rule`, naming the rule that matched the process. An entry whose policy could not be read says `sched: "unknown"` where the reference reports the zeroed `normal`.
+- **`debug cgroups`:** reads the process' cgroup from `/proc/<pid>/cgroup` in both. With systemd support compiled in, `ananicy-cpp` asks `sd_pid_get_cgroup` instead, which answers the same thing except inside a cgroup namespace.
+- **The single-instance lock:** `ananicy-cpp` uses the POSIX shared-memory object `/AnanicyCppMutex` and this daemon uses `/AnanicyRsMutex`, so the two can run side by side — as intended — and the object this daemon creates is mode `0600` where the reference uses `0644`. A `--force-remove-semaphore` from one does not release the other.
+- **Developer tools:** `ananicy-cpp` builds two extra binaries, `runqslower_cpp` and `netlink_proc_cpp`, which print raw event-source output. They are not installed by its `cmake --install` and `ananicy-rs` does not build them; the equivalent check is `loglevel = trace`, which logs the name and PID of every process a rule matched.
 
 ## 6. Compatibility Requirements Kept on Purpose
 
@@ -72,6 +85,11 @@ They are part of the contract, not accidents, and each is pinned by a test:
 | The configuration key for cgroup application is `apply_cgroup`. | `ananicy-core/tests/config.rs` |
 | `loglevel` accepts `critical` and the legacy `fatal` alias, case-insensitively. | `ananicy-core/src/config.rs` |
 | Rules are read from `*.rules`, `*.types` and `*.cgroups`; other extensions are ignored. | `ananicy-core/tests/rules.rs` |
+| One capacity source is chosen for the whole machine, the first that both reports a value and tells two CPUs apart. | `ananicy-platform/tests/topology.rs` |
+| `ioclass: "none"` writes nothing: the class is a reading, not a value. | `ananicy-platform/tests/ioprio.rs` |
+| An unrecognised `ioclass` is dropped and the rest of the rule still applies. | `ananicy-core/tests/worker_rules.rs` |
+| A task counts as realtime by its static priority, not by its policy. | `ananicy-platform/tests/procfs.rs` |
+| stdout carries the answer, stderr carries the log, so `dump` output parses. | `tests/cli.rs` |
 
 Two historical leniencies were deliberately *not* reproduced, because accepting
 malformed input silently is worse than rejecting it:
