@@ -19,12 +19,14 @@ mod debug;
 mod dump;
 mod ipc;
 mod monitor;
+mod panics;
 mod runtime;
 mod signals;
 mod startup;
 mod systemd;
 
 fn main() {
+    panics::install();
     let args = Args::parse();
     let systemd_mode = systemd::resolve(args.systemd, systemd::SystemdEnvironment::from_process());
     // The systemd integration (sd_notify, journald logging) is only linked in
