@@ -65,6 +65,7 @@ assert_cmd = "2.2.2"
 criterion = "0.5"
 predicates = "3.1.4"
 rstest = "0.26.1"
+tempfile.workspace = true
 
 [features]
 default = ["netlink", "systemd"]

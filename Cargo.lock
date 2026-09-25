@@ -80,6 +80,7 @@ dependencies = [
  "sd-notify",
  "serde_json",
  "signal-hook",
+ "tempfile",
  "tracing",
  "tracing-journald",
  "tracing-subscriber",

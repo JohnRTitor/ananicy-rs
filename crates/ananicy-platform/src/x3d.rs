@@ -30,12 +30,12 @@ fn get_x3d_mode_path_in_sysfs(sysfs_root: &Path) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-fn get_x3d_mode_path() -> Option<PathBuf> {
-    get_x3d_mode_path_in_sysfs(Path::new("/sys"))
+pub fn get_driver_mode() -> Option<X3DMode> {
+    get_driver_mode_in(Path::new("/sys"))
 }
 
-pub fn get_driver_mode() -> Option<X3DMode> {
-    let mode_path = get_x3d_mode_path()?;
+pub fn get_driver_mode_in(sysfs_root: &Path) -> Option<X3DMode> {
+    let mode_path = get_x3d_mode_path_in_sysfs(sysfs_root)?;
     let content = fs::read_to_string(&mode_path).ok()?;
     match content.trim() {
         "cache" => Some(X3DMode::Cache),
@@ -45,7 +45,11 @@ pub fn get_driver_mode() -> Option<X3DMode> {
 }
 
 pub fn set_driver_mode(mode: X3DMode) -> bool {
-    let Some(mode_path) = get_x3d_mode_path() else {
+    set_driver_mode_in(Path::new("/sys"), mode)
+}
+
+pub fn set_driver_mode_in(sysfs_root: &Path, mode: X3DMode) -> bool {
+    let Some(mode_path) = get_x3d_mode_path_in_sysfs(sysfs_root) else {
         warn!("x3d: driver sysfs path not found, cannot set mode");
         return false;
     };
