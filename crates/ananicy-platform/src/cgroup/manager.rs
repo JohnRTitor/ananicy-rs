@@ -326,8 +326,10 @@ impl CgroupController for CgroupManager {
         );
 
         if ownership == CgroupOwnership::Foreign {
+            // Resource tuning is allowed outside the delegated root only when
+            // the kernel has already exposed the controller file.
             debug!(
-                "set_cpu_weight: Target {:?} is Foreign. Allowed for resource tuning.",
+                "set_cpu_weight: Target {:?} is outside the delegated cgroup; attempting optional resource tuning if available",
                 target
             );
         }

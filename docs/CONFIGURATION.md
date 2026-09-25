@@ -104,5 +104,14 @@ Example:
 {"cgroup": "cpu80", "CPUQuota": 80}
 ```
 
-### Cgroups V2 Limitations
-While `ananicy-rs` supports Cgroups V2, it does not bypass the kernel's strict "single-writer" rule. To use Cgroups v2 safely, `ananicy-rs` relies on systemd delegation. It will refuse to mutate foreign cgroups to ensure system stability. See [CLI & Usage](./CLI.md) for running `ananicy-rs` under systemd properly.
+### Cgroups v2 Delegation and Ownership
+
+`ananicy-rs` respects the kernel's cgroup-v2 single-writer model. The systemd unit uses `Delegate=yes`, which delegates the cgroup subtree assigned to `ananicy-rs.service` (normally `/sys/fs/cgroup/system.slice/ananicy-rs.service`). It does not delegate `user.slice`, desktop session scopes, or other systemd units.
+
+Within the delegated subtree, `ananicy-rs` may create and configure cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
+
+Outside that subtree, structural changes are refused. In particular, it will not create foreign cgroup directories, enable foreign `cgroup.subtree_control`, write foreign `cpu.max`, or move processes into foreign cgroups.
+
+There is one limited resource-tuning exception: for a foreign cgroup, `ananicy-rs` may attempt to write an already-existing `cpu.weight` or `cpu.shares` file. It does not create that file or enable its controller. If the controller is not enabled, the file is absent, or it is not writable, the optional mirror is skipped at DEBUG level. Process-level `nice` application can still succeed in that case.
+
+Do not enable controllers in `user.slice` or session scopes merely to satisfy Ananicy; those scopes are managed by systemd. Use a dedicated cgroup under the delegated Ananicy subtree when testing cgroup CPU weighting. See [CLI & Usage](./CLI.md) for the systemd and NixOS service setup.

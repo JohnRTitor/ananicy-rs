@@ -28,11 +28,13 @@ To allow both implementations to coexist on the same system without colliding, `
 
 ## 4. Cgroup v2 Delegation and Ownership
 
-`ananicy-rs` is significantly stricter about modifying cgroup structures to prevent conflicting with `systemd` state tracking:
+`ananicy-rs` follows the cgroup-v2 single-writer model and distinguishes structural ownership from optional resource tuning:
 
-- **Strict Ownership:** It will **refuse** to perform structural modifications (like writing to `cpu.max` or `cgroup.subtree_control`) on cgroups that it determines are foreign (managed by systemd).
-- **Transient Scopes:** If you run `ananicy-rs` manually from a terminal using `sudo`, systemd places the daemon in a transient `.scope` cgroup. Because scopes are strictly managed by `systemd-logind`, `ananicy-rs` will intentionally and silently **disable all cgroup structural mutations**. 
-- **Requirement:** To properly use cgroup v2 functionality, you **MUST** run `ananicy-rs` as a systemd `.service` with `Delegate=yes` configured.
+- **Delegated structural ownership:** The systemd unit and NixOS module set `Delegate=yes`. Within the service's delegated subtree, `ananicy-rs` may create cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
+- **Foreign structural protection:** It refuses to create foreign cgroups, enable foreign `cgroup.subtree_control`, write foreign `cpu.max`, or move processes into foreign cgroups.
+- **Optional resource tuning:** It may attempt an already-existing `cpu.weight` or `cpu.shares` write in a foreign cgroup when the kernel exposes that controller. It does not create the file or enable the controller; an absent file is an expected DEBUG-level skip.
+- **Scope of `Delegate=yes`:** Delegation applies only to the `ananicy-rs.service` subtree, not `user.slice`, desktop session scopes, or other systemd units.
+- **Transient scopes:** Running manually from a terminal leaves the daemon in a systemd-managed transient scope, so it cannot safely perform delegated structural mutations.
 
 ## 5. Process and Rule Handling Improvements
 
