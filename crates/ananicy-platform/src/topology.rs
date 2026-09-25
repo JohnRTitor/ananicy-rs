@@ -1,9 +1,8 @@
-use std::path::Path;
-
 use {
     std::{
         collections::{BTreeMap, BTreeSet, HashMap},
         fs,
+        path::{Path, PathBuf},
     },
     tracing::{debug, warn},
 };
@@ -193,6 +192,60 @@ pub fn detect_topology() -> CpuTopology {
     detect_topology_impl(Path::new("/sys"))
 }
 
+/// The sysfs files that report a per-CPU capacity or maximum-frequency figure,
+/// ordered from the most to the least precise. They are only comparable within
+/// one source, so exactly one of them is chosen for the whole machine.
+const CAPACITY_SOURCES: [&str; 5] = [
+    "cpufreq/amd_pstate_prefcore_ranking",
+    "cpufreq/amd_pstate_highest_perf",
+    "acpi_cppc/highest_perf",
+    "cpu_capacity",
+    "cpufreq/cpuinfo_max_freq",
+];
+
+/// Reads a capacity figure for one CPU, or `None` when it is not available.
+///
+/// A reported zero means "offline or not filled in", so it is treated as absent
+/// rather than as the smallest capacity there is.
+fn read_capacity(bases: &BTreeMap<u32, PathBuf>, cpu_id: u32, source: &str) -> Option<u64> {
+    let raw = fs::read_to_string(bases.get(&cpu_id)?.join(source)).ok()?;
+    let value = raw.trim().parse::<u64>().ok()?;
+    (value > 0).then_some(value)
+}
+
+/// Picks the single capacity source the whole machine is measured with.
+///
+/// Taking the first readable source per CPU is not enough: a kernel that
+/// exports a higher-priority source with the same number for every CPU — a
+/// uniform `acpi_cppc/highest_perf`, say — would be taken at face value and
+/// every heterogeneous machine would look homogeneous. So a candidate is only
+/// accepted once it has been seen to tell two CPUs apart, and the least
+/// precise source is the fallback when none of them does.
+fn pick_capacity_source(bases: &BTreeMap<u32, PathBuf>, cpus: &BTreeSet<u32>) -> &'static str {
+    let Some(&first) = cpus.iter().next() else {
+        return CAPACITY_SOURCES[CAPACITY_SOURCES.len() - 1];
+    };
+
+    let mut chosen = None;
+    for source in CAPACITY_SOURCES {
+        let Some(reference) = read_capacity(bases, first, source) else {
+            continue;
+        };
+        chosen = Some(source);
+
+        if cpus
+            .iter()
+            .any(|&cpu| read_capacity(bases, cpu, source).is_some_and(|value| value != reference))
+        {
+            break;
+        }
+    }
+
+    // With no source that tells the CPUs apart, the least precise one is the
+    // fallback, exactly as for a machine with no CPUs at all.
+    chosen.unwrap_or(CAPACITY_SOURCES[CAPACITY_SOURCES.len() - 1])
+}
+
 pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     let mut top = CpuTopology {
         smt_enabled: detect_smt(sys_root),
@@ -200,6 +253,7 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     };
 
     let mut all_cores = BTreeSet::new();
+    let mut bases: BTreeMap<u32, PathBuf> = BTreeMap::new();
     let mut metric_to_cores: BTreeMap<u64, BTreeSet<u32>> = BTreeMap::new();
     let mut llc_map: HashMap<String, i32> = HashMap::new();
 
@@ -230,6 +284,7 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
                 }
 
                 all_cores.insert(cpu_id);
+                bases.insert(cpu_id, base.clone());
 
                 let node_id = get_node_id(&base);
                 let llc_id = get_llc_id(&base, &mut llc_map);
@@ -240,23 +295,6 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
                 if let Ok(l3_str) = fs::read_to_string(base.join("cache/index3/size")) {
                     llc_l3_size.insert(llc_id, parse_size_string(&l3_str));
                 }
-
-                let paths = [
-                    "cpufreq/amd_pstate_prefcore_ranking",
-                    "cpufreq/amd_pstate_highest_perf",
-                    "acpi_cppc/highest_perf",
-                    "cpu_capacity",
-                    "cpufreq/cpuinfo_max_freq",
-                ];
-
-                let metric = paths.into_iter().find_map(|p| {
-                    let cap_str = fs::read_to_string(base.join(p)).ok()?;
-                    cap_str.trim().parse::<u64>().ok()
-                });
-
-                if let Some(val) = metric {
-                    metric_to_cores.entry(val).or_default().insert(cpu_id);
-                }
             }
         }
     }
@@ -264,6 +302,16 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     if all_cores.is_empty() {
         warn!("detect_topology: Could not detect any CPUs in /sys");
         return top;
+    }
+
+    // One source for every CPU, so that all capacities are on one scale and can
+    // be compared with each other.
+    let source = pick_capacity_source(&bases, &all_cores);
+    debug!("detect_topology: measuring capacities with '{source}'");
+    for &cpu_id in &all_cores {
+        if let Some(value) = read_capacity(&bases, cpu_id, source) {
+            metric_to_cores.entry(value).or_default().insert(cpu_id);
+        }
     }
 
     top.all_cores_str = format_cpuset(&all_cores);

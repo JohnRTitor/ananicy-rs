@@ -22,6 +22,14 @@ fn big_little() -> CpuTopology {
     fixture("topology/big-little")
 }
 
+/// The same machine, with a `acpi_cppc/highest_perf` that reports the same
+/// number for every CPU. It sits above `cpu_capacity` in the probing order, so a
+/// per-CPU "first readable source wins" would measure the whole machine with it
+/// and call the machine homogeneous.
+fn uniform_higher_source() -> CpuTopology {
+    fixture("topology/uniform-higher-source")
+}
+
 #[test]
 fn test_detect_produces_valid_topology() {
     let topo = big_little();
@@ -82,6 +90,48 @@ fn test_on_homogeneous_system_all_cores_are_big() {
     // turbo subset.
     let topo = fixture("x3d/amd-x3d-single-ccd");
 
+    assert!(!topo.has_big_little);
+    assert_eq!(topo.big_cores_str, topo.all_cores_str);
+    assert_eq!(topo.little_cores_str, "");
+    assert_eq!(topo.turbo_cores_str, "");
+}
+
+#[test]
+fn a_capacity_source_that_tells_no_cpus_apart_is_skipped() {
+    // `acpi_cppc/highest_perf` reads 2400 on every CPU here, so it cannot
+    // classify anything. The next source that does differentiate — `cpu_capacity`
+    // — is the one the machine is measured with, so the big.LITTLE split is the
+    // same as on the fixture without the uniform file.
+    let topo = uniform_higher_source();
+
+    assert!(topo.has_big_little);
+    assert_eq!(topo.little_cores_str, "0-1");
+    assert_eq!(topo.big_cores_str, "2-3");
+    assert_eq!(topo.turbo_cores_str, "2-3");
+    assert_eq!(
+        topo.big_cores_str,
+        big_little().big_cores_str,
+        "a uniform higher-priority file must not change the classification"
+    );
+}
+
+#[test]
+fn a_machine_with_no_differentiating_capacity_is_homogeneous() {
+    // Every CPU reports the same capacity through every source: there is
+    // nothing to classify, so all of them are big cores and there is neither a
+    // little nor a turbo subset.
+    let root = tempfile::tempdir().unwrap();
+    let cpu_dir = root.path().join("sys/devices/system/cpu");
+    for cpu in 0..4 {
+        let base = cpu_dir.join(format!("cpu{cpu}"));
+        std::fs::create_dir_all(base.join("acpi_cppc")).unwrap();
+        std::fs::write(base.join("cpu_capacity"), "1024\n").unwrap();
+        std::fs::write(base.join("acpi_cppc").join("highest_perf"), "2400\n").unwrap();
+    }
+    std::fs::create_dir_all(cpu_dir.join("smt")).unwrap();
+    std::fs::write(cpu_dir.join("smt").join("active"), "0\n").unwrap();
+
+    let topo = detect_topology_impl(&root.path());
     assert!(!topo.has_big_little);
     assert_eq!(topo.big_cores_str, topo.all_cores_str);
     assert_eq!(topo.little_cores_str, "");
