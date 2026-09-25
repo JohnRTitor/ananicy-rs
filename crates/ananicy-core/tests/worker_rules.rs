@@ -311,6 +311,35 @@ fn a_failing_cpu_weight_does_not_prevent_the_nice_value() {
 }
 
 #[test]
+fn the_cpu_weight_mirror_can_be_switched_off() {
+    // The mirror writes into the cgroup the process already belongs to, so it
+    // reweights that cgroup's other tasks too. `apply_cpu_weight` is the
+    // operator's way to keep the nice value and drop the side effect.
+    let run = run_worker(
+        ConfigSnapshot {
+            apply_cpu_weight: false,
+            ..all_attributes_enabled()
+        },
+        r#"{"name":"worker-test","nice":0}"#,
+        FakePlatform::cgroup_v2(),
+    );
+
+    assert!(
+        run.platform
+            .calls()
+            .contains(&Call::SetPriority { nice: 0 }),
+        "the nice value itself is still applied"
+    );
+    assert!(
+        !run.platform
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::SetCpuWeight { .. })),
+        "but no cgroup is reweighted"
+    );
+}
+
+#[test]
 fn no_cpu_weight_is_mirrored_on_a_cgroup_v1_host() {
     let run = run_worker(
         all_attributes_enabled(),
