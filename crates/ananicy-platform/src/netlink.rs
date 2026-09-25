@@ -6,7 +6,7 @@ use {
         process::id,
         sync::{
             Arc,
-            atomic::{AtomicBool, Ordering::Relaxed},
+            atomic::{AtomicBool, Ordering},
         },
     },
     tracing::warn,
@@ -104,7 +104,7 @@ impl NetlinkMonitor {
         info!("Starting epoll-based Netlink event loop");
 
         loop {
-            if shutdown_flag.load(Relaxed) {
+            if shutdown_flag.load(Ordering::Relaxed) {
                 return Ok(());
             }
 
@@ -181,8 +181,19 @@ impl NetlinkMonitor {
                     {
                         prev_pid = pid;
                         let name = get_command_from_pid(pid);
-                        tx.send(Process::new(Pid(pid), name).with_authoritative_name())
-                            .expect("Worker thread died");
+                        if tx
+                            .send(Process::new(Pid(pid), name).with_authoritative_name())
+                            .is_err()
+                        {
+                            // The receiver is gone, which means the worker has
+                            // stopped and nothing is left to apply rules to.
+                            // Tearing the monitor down lets the caller join the
+                            // worker and shut down; panicking here would take
+                            // the whole daemon down on the main thread instead.
+                            warn!("Worker thread is gone, stopping the netlink listener");
+                            shutdown_flag.store(true, Ordering::SeqCst);
+                            return Ok(());
+                        }
                     }
                 }
             }
