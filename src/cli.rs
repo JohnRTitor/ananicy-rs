@@ -1,6 +1,6 @@
 use std::{convert::Infallible, process::exit, str::FromStr};
 
-use bpaf::Bpaf;
+use bpaf::{Bpaf, ShellComp};
 
 use crate::systemd::SystemdRequest;
 
@@ -30,6 +30,10 @@ pub enum DumpTarget {
     Autogroup,
 }
 
+const DUMP_TARGET_NAMES: [&str; 5] = ["rules", "types", "cgroups", "proc", "autogroup"];
+
+const DEBUG_TARGET_NAMES: [&str; 1] = ["cgroups"];
+
 impl FromStr for DumpTarget {
     type Err = String;
 
@@ -40,9 +44,34 @@ impl FromStr for DumpTarget {
             "cgroups" => Ok(DumpTarget::Cgroups),
             "proc" => Ok(DumpTarget::Proc),
             "autogroup" => Ok(DumpTarget::Autogroup),
-            _ => Err(format!("Invalid dump target: '{}'", s)),
+            _ => Err(format!(
+                "Invalid dump target: '{}'; expected one of: {}",
+                s,
+                DUMP_TARGET_NAMES.join(", ")
+            )),
         }
     }
+}
+
+fn complete_from(
+    names: &'static [&'static str],
+    input: &str,
+) -> Vec<(&'static str, Option<&'static str>)> {
+    names
+        .iter()
+        .filter(|name| name.starts_with(input))
+        .map(|name| (*name, None))
+        .collect()
+}
+
+// bpaf's `complete` takes `&T` where `T` is the parsed type, so `&String` is required here.
+#[allow(clippy::ptr_arg)]
+fn dump_completer(input: &String) -> Vec<(&'static str, Option<&'static str>)> {
+    complete_from(&DUMP_TARGET_NAMES, input)
+}
+
+fn debug_completer(input: &Option<String>) -> Vec<(&'static str, Option<&'static str>)> {
+    complete_from(&DEBUG_TARGET_NAMES, input.as_deref().unwrap_or_default())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,13 +104,22 @@ pub enum BpafCommands {
     #[bpaf(command("dump"))]
     /// Dump internal state
     Dump {
-        #[bpaf(positional("SUB_ACTION"))]
+        #[bpaf(
+            positional("SUB_ACTION"),
+            complete(dump_completer),
+            complete_shell(ShellComp::Nothing)
+        )]
         sub_action: String,
     },
     #[bpaf(command("debug"), hide)]
     /// The undocumented `debug` action.
     Debug {
-        #[bpaf(positional("SUB_ACTION"), optional)]
+        #[bpaf(
+            positional("SUB_ACTION"),
+            optional,
+            complete(debug_completer),
+            complete_shell(ShellComp::Nothing)
+        )]
         sub_action: Option<String>,
     },
     #[bpaf(command("start"))]
