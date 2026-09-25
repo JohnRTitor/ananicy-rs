@@ -278,18 +278,29 @@ mod tests {
         }
     }
 
-    /// The test process is a normal task, so the deadline fallback lands on the
-    /// normal policy. The important half is the result: the attribute is skipped,
-    /// not applied, so a rule asking for it is never reported as fully applied.
+    /// `deadline` is a name the daemon understands, and it is never a policy it
+    /// manages to apply — the attribute is dropped either way.
+    ///
+    /// The test process is asked to switch to the normal policy, which a
+    /// restricted environment may refuse: the write is a priority change for
+    /// whoever runs the suite at a non-negative nice, so a build sandbox without
+    /// `CAP_SYS_NICE` answers `EPERM` instead. What holds regardless is that the
+    /// name is *recognised* — an unknown one comes back as `Unsupported`, which
+    /// aborts the whole rule — and that the attribute is never reported as
+    /// applied.
     #[test]
-    fn the_deadline_policy_falls_back_and_is_reported_as_skipped() {
+    fn the_deadline_policy_is_recognised_but_never_applied() {
         let pid = std::process::id() as i32;
 
         match set_sched(pid, "deadline", 1) {
             Err(PlatformError::Skipped(reason)) => {
                 assert!(reason.contains("deadline"), "the reason names it: {reason}");
             }
-            other => panic!("expected a skipped attribute, got {other:?}"),
+            Err(other) => assert!(
+                !matches!(other, PlatformError::Unsupported),
+                "`deadline` is a known policy, not an unknown one: {other:?}"
+            ),
+            Ok(()) => panic!("`deadline` was reported as applied"),
         }
     }
 }
