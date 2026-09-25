@@ -78,7 +78,9 @@ fn main() {
 
     info!("Ananicy Rs {}", env!("CARGO_PKG_VERSION"));
 
-    let (aliases, saved_x3d_mode) = startup::load_topology_aliases(&config);
+    // Detection only: the X3D driver mode is a persistent kernel setting, so it
+    // is applied further down, once the daemon has committed to running.
+    let aliases = startup::load_topology_aliases();
     let rules_obj = startup::load_rules(config.clone(), &config_dir_path);
 
     if let Some(Commands::Dump { sub_action }) = &args.command {
@@ -135,6 +137,10 @@ fn main() {
         let _ = ananicy_platform::priority::set_priority(id() as i32, &[], 19);
         info!("Checking frequency set to {}", config.get().check_freq);
     }
+
+    // Every exit path above this line leaves the machine as it was; from here on
+    // the daemon owns the X3D mode and restores it on the way out.
+    let saved_x3d_mode = startup::apply_x3d_mode(&config);
 
     runtime::run(
         config.clone(),

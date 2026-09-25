@@ -4,7 +4,7 @@ use {
         config::{Config, ConfigDiagnostic, ConfigSnapshot, LogLevel},
         rules::Rules,
     },
-    std::{collections::HashMap, env::var, sync::Arc},
+    std::{collections::HashMap, env::var, path::Path, sync::Arc},
     tracing::{Level, error, info, warn},
     tracing_subscriber::{filter::LevelFilter, util::SubscriberInitExt},
 };
@@ -146,12 +146,15 @@ pub(crate) fn log_config(
     }
 }
 
-pub(crate) fn load_topology_aliases(
-    config: &Arc<Config>,
-) -> (
-    HashMap<String, String>,
-    Option<ananicy_platform::x3d::X3DMode>,
-) {
+/// Detects the CPU topology and the X3D CCD split, and returns the cpuset
+/// aliases the worker's rules resolve against.
+///
+/// The AMD X3D driver mode is deliberately *not* touched here, even when
+/// `x3d_mode` names one: this runs before the action is known, so `dump` and
+/// `debug` — which only print state — would otherwise switch a persistent
+/// kernel setting and return without restoring it. `apply_x3d_mode` is called
+/// once the daemon has decided to run.
+pub(crate) fn load_topology_aliases() -> HashMap<String, String> {
     let top = ananicy_platform::topology::detect_topology();
     info!("topology: {}", top.summary());
     if top.has_big_little {
@@ -162,7 +165,6 @@ pub(crate) fn load_topology_aliases(
         }
     }
     let mut aliases = top.generate_cpuset_aliases();
-    let mut saved_x3d_mode = None;
 
     if let Some(x3d_top) = ananicy_platform::x3d::detect_x3d_topology() {
         info!(
@@ -173,30 +175,50 @@ pub(crate) fn load_topology_aliases(
         // is identified from X3D-specific die topology.
         aliases.insert("x3d-cache".to_string(), x3d_top.cache_cores_str);
         aliases.insert("x3d-frequency".to_string(), x3d_top.frequency_cores_str);
-
-        let x3d_mode_str = config.get().x3d_mode.clone();
-        if x3d_mode_str != "auto" {
-            saved_x3d_mode = ananicy_platform::x3d::get_driver_mode();
-            if saved_x3d_mode.is_some() {
-                use ananicy_platform::x3d::X3DMode;
-                let target = if x3d_mode_str == "cache" {
-                    X3DMode::Cache
-                } else {
-                    X3DMode::Frequency
-                };
-                if ananicy_platform::x3d::set_driver_mode(target) {
-                    info!("Set X3D mode to '{}'", x3d_mode_str);
-                } else {
-                    warn!("Failed to set X3D mode to '{}'", x3d_mode_str);
-                    saved_x3d_mode = None;
-                }
-            } else {
-                info!("X3D driver not present, x3d_mode config ignored");
-            }
-        }
     }
 
-    (aliases, saved_x3d_mode)
+    aliases
+}
+
+/// Applies the configured AMD X3D driver mode, returning the mode to restore on
+/// shutdown — or `None` when there was nothing to change or the change failed.
+///
+/// Only the daemon calls this. The mode is a persistent kernel setting, so a
+/// diagnostic invocation must not reach it, and a mode that could be applied has
+/// to come back with a value to restore or it would be left changed.
+pub(crate) fn apply_x3d_mode(config: &Arc<Config>) -> Option<ananicy_platform::x3d::X3DMode> {
+    apply_x3d_mode_in(&Path::new("/sys"), config)
+}
+
+fn apply_x3d_mode_in(
+    sys_root: &Path,
+    config: &Arc<Config>,
+) -> Option<ananicy_platform::x3d::X3DMode> {
+    let x3d_mode_str = config.get().x3d_mode.clone();
+    if x3d_mode_str == "auto" {
+        return None;
+    }
+
+    let saved_mode = ananicy_platform::x3d::get_driver_mode_in(sys_root);
+    let Some(saved_mode) = saved_mode else {
+        info!("X3D driver not present, x3d_mode config ignored");
+        return None;
+    };
+
+    use ananicy_platform::x3d::X3DMode;
+    let target = if x3d_mode_str == "cache" {
+        X3DMode::Cache
+    } else {
+        X3DMode::Frequency
+    };
+
+    if ananicy_platform::x3d::set_driver_mode_in(sys_root, target) {
+        info!("Set X3D mode to '{}'", x3d_mode_str);
+        Some(saved_mode)
+    } else {
+        warn!("Failed to set X3D mode to '{}'", x3d_mode_str);
+        None
+    }
 }
 
 pub(crate) fn load_rules(config: Arc<Config>, config_dir_path: &str) -> Rules {
@@ -275,5 +297,72 @@ mod tests {
     #[test]
     fn critical_uses_error_filter_level() {
         assert_eq!(Level::from(&LogLevel::Critical), Level::ERROR);
+    }
+
+    /// A copy of the X3D driver's sysfs entry, so a test can watch what the
+    /// daemon writes without an AMD X3D machine.
+    fn x3d_sysfs(mode: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a temporary sysfs");
+        let entry = dir
+            .path()
+            .join("bus/platform/drivers/amd_x3d_vcache/driver_instance/amd_x3d_mode");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, format!("{mode}\n")).unwrap();
+        dir
+    }
+
+    fn config_with_x3d_mode(mode: &str) -> Arc<Config> {
+        Arc::new(Config::new(ConfigSnapshot {
+            x3d_mode: mode.to_string(),
+            ..ConfigSnapshot::default()
+        }))
+    }
+
+    fn driver_mode(sys_root: &Path) -> Option<String> {
+        let entry =
+            sys_root.join("bus/platform/drivers/amd_x3d_vcache/driver_instance/amd_x3d_mode");
+        std::fs::read_to_string(entry)
+            .ok()
+            .map(|raw| raw.trim().to_string())
+    }
+
+    #[test]
+    fn a_configured_x3d_mode_is_applied_and_the_old_one_is_handed_back() {
+        let sysfs = x3d_sysfs("frequency");
+        let root = sysfs.path();
+
+        let saved = apply_x3d_mode_in(root, &config_with_x3d_mode("cache"));
+
+        assert_eq!(
+            driver_mode(root).as_deref(),
+            Some("cache"),
+            "the driver is switched to the configured mode"
+        );
+        assert!(
+            matches!(saved, Some(ananicy_platform::x3d::X3DMode::Frequency)),
+            "the mode to restore on shutdown is the one that was there before"
+        );
+    }
+
+    #[test]
+    fn the_auto_mode_leaves_the_driver_alone() {
+        let sysfs = x3d_sysfs("cache");
+        let root = sysfs.path();
+
+        assert!(
+            apply_x3d_mode_in(root, &config_with_x3d_mode("auto")).is_none(),
+            "auto has nothing to apply and nothing to restore"
+        );
+        assert_eq!(driver_mode(root).as_deref(), Some("cache"));
+    }
+
+    #[test]
+    fn a_machine_without_the_driver_is_left_alone() {
+        let root = tempfile::tempdir().expect("a temporary sysfs");
+
+        assert!(
+            apply_x3d_mode_in(root.path(), &config_with_x3d_mode("cache")).is_none(),
+            "there is no mode to save, so nothing is written"
+        );
     }
 }
