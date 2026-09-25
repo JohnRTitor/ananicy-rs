@@ -28,6 +28,7 @@ pub struct CpuTopology {
     pub little_cores_str: String,
     pub turbo_cores_str: String,
     pub all_cores_str: String,
+    pub cpu_count: usize,
     pub smt_enabled: bool,
     pub nodes: Vec<NodeInfo>,
     pub llcs: Vec<LlcInfo>,
@@ -35,6 +36,22 @@ pub struct CpuTopology {
 }
 
 impl CpuTopology {
+    /// One-line description of the detected machine, logged at startup so the
+    /// topology a run is using can be read back from the journal.
+    ///
+    /// The phrasing and the naive pluralisation mirror `ananicy-cpp` so both
+    /// daemons can be compared line by line.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} CPUs, {} LLCs, {} NUMA nodes, SMT={}, big.LITTLE={}",
+            self.cpu_count,
+            self.llcs.len(),
+            self.nodes.len(),
+            on_off(self.smt_enabled),
+            yes_no(self.has_big_little),
+        )
+    }
+
     pub fn generate_cpuset_aliases(&self) -> HashMap<String, String> {
         let mut aliases = HashMap::new();
         aliases.insert("all".to_string(), self.all_cores_str.clone());
@@ -69,6 +86,14 @@ impl CpuTopology {
 
         aliases
     }
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value { "on" } else { "off" }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn detect_smt(sys_root: &Path) -> bool {
@@ -242,6 +267,7 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     }
 
     top.all_cores_str = format_cpuset(&all_cores);
+    top.cpu_count = all_cores.len();
 
     for (node_id, cores) in node_groups {
         top.nodes.push(NodeInfo {

@@ -126,7 +126,7 @@ pub(crate) fn log_config(
         info!("Config apply_nice: {}", snap.apply_nice);
         info!("Config apply_sched: {}", snap.apply_sched);
         info!("Config apply_ionice: {}", snap.apply_ionice);
-
+        info!("Config apply_ioclass: {}", snap.apply_ioclass);
         info!("Config apply_cgroup: {}", snap.apply_cgroups);
         info!("Config cgroup_load: {}", snap.cgroup_load);
         info!("Config apply_oom_score_adj: {}", snap.apply_oom_score_adj);
@@ -152,6 +152,7 @@ pub(crate) fn load_topology_aliases(
     Option<ananicy_platform::x3d::X3DMode>,
 ) {
     let top = ananicy_platform::topology::detect_topology();
+    info!("topology: {}", top.summary());
     if top.has_big_little {
         info!("Performance cores: {}", top.big_cores_str);
         info!("Efficiency cores: {}", top.little_cores_str);
@@ -200,6 +201,13 @@ pub(crate) fn load_topology_aliases(
 pub(crate) fn load_rules(config: Arc<Config>, config_dir_path: &str) -> Rules {
     let mut rules = Rules::new(config);
     rules.load_directory(config_dir_path);
+    info!(
+        "Loaded {} rules, {} types and {} cgroups from {}",
+        rules.size(),
+        rules.get_types().len(),
+        rules.get_cgroups().len(),
+        config_dir_path
+    );
     rules
 }
 

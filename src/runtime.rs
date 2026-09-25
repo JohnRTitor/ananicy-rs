@@ -93,6 +93,7 @@ fn create_cgroups(rules: &Arc<Rules>) -> bool {
             .map(|v| v as u32);
         ananicy_platform::cgroups::create_cgroup(&name.0, quota);
     }
+    info!("Finished creating cgroups");
     true
 }
 

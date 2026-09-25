@@ -201,3 +201,30 @@ fn every_alias_resolves_to_a_usable_cpuset() {
         );
     }
 }
+
+#[test]
+fn summary_reports_cpu_llc_node_and_feature_counts() {
+    let topo = big_little();
+
+    assert_eq!(
+        topo.summary(),
+        format!(
+            "{} CPUs, {} LLCs, {} NUMA nodes, SMT=off, big.LITTLE=yes",
+            topo.cpu_count,
+            topo.llcs.len(),
+            topo.nodes.len()
+        )
+    );
+    assert_eq!(topo.cpu_count, 4);
+}
+
+#[test]
+fn summary_reports_a_homogeneous_machine_without_smt_or_big_little() {
+    let topo = fixture("x3d/amd-x3d-single-ccd");
+
+    assert!(
+        topo.summary().ends_with("SMT=off, big.LITTLE=no"),
+        "unexpected summary: {}",
+        topo.summary()
+    );
+}
