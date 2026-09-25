@@ -320,10 +320,9 @@ impl Worker {
                     }
                     Err(e) => {
                         debug!(
-                            "Failed to apply cpu.weight {} for {}: {:?}",
+                            "Skipping optional cgroup-v2 cpu.weight {} for {}: {:?}",
                             weight, p.name, e
                         );
-                        partial_failure.get_or_insert(e);
                     }
                 }
             }
