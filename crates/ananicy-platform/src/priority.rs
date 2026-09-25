@@ -11,7 +11,7 @@ use crate::abi::{ioprio::*, sched_attr::*};
 
 use {
     std::{fs, io},
-    tracing::debug,
+    tracing::{debug, warn},
 };
 
 // Note: In C++ original code, `test_errno` handles EPERM, ESRCH, etc.
@@ -156,7 +156,13 @@ pub fn set_sched(pid: i32, sched_name: &str, rt_prio: u32) -> Result<(), Platfor
             SCHED_FIFO
         }
         "deadline" => {
-            debug!("deadline scheduler is not available yet, falling back to OTHER");
+            // The deadline policy needs a runtime, a deadline and a period, so
+            // it cannot be handed to `sched_setscheduler`. The task is put back
+            // on the normal policy, which is what the reference does, and the
+            // attribute is reported as skipped so the rule is not claimed to
+            // have been applied in full. This is the operator's own rule asking
+            // for something, so it is worth a warning rather than a debug line.
+            warn!("deadline scheduler is not available yet, falling back to OTHER");
             skipped = true;
             SCHED_NORMAL
         }
@@ -269,6 +275,21 @@ mod tests {
         match set_io_priority(DEAD_PID, "idle", 0) {
             Err(PlatformError::NotFound) => {}
             other => panic!("expected the kernel to reject a dead pid, got {other:?}"),
+        }
+    }
+
+    /// The test process is a normal task, so the deadline fallback lands on the
+    /// normal policy. The important half is the result: the attribute is skipped,
+    /// not applied, so a rule asking for it is never reported as fully applied.
+    #[test]
+    fn the_deadline_policy_falls_back_and_is_reported_as_skipped() {
+        let pid = std::process::id() as i32;
+
+        match set_sched(pid, "deadline", 1) {
+            Err(PlatformError::Skipped(reason)) => {
+                assert!(reason.contains("deadline"), "the reason names it: {reason}");
+            }
+            other => panic!("expected a skipped attribute, got {other:?}"),
         }
     }
 }
