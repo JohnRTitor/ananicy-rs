@@ -5,6 +5,11 @@
 **Target:** `/home/masum/Dev-Environment/Rust/ananicy-rs` @ `e131b18` ("feat(logging): report the detected topology and the loaded rules")
 **Exception list under audit:** `docs/ANANICY_CPP_DIFFERENCES.md`
 
+> **Status: the findings have been worked through.** Every item of the remediation list in §9 was
+> addressed in a commit of its own; §11 records what each of them turned out to be. The report below
+> is left as it was written, because the point of an audit is what was true when it was made, and
+> §11 says where that no longer holds. The verdict in §1 and §10 was the verdict at `e131b18`.
+
 ---
 
 ## 1. Executive summary
@@ -855,3 +860,59 @@ differences document is amended to cover §5, the answer becomes **yes**.
   on execution.
 * **Not assessed:** `ananicy-cpp` has no VCS history in this checkout, so "intentional vs accidental"
   judgements rely on comments, tests and the differences document rather than commit messages.
+
+---
+
+## 11. What was done about it
+
+Twenty-six commits, each one finding, in the order §9 lists them. The table says
+what became of each item; the commit column is the evidence.
+
+| §9 | Item | Outcome | Commit |
+|---|---|---|---|
+| 1 | `cgroup_realtime_workaround` inert | **Fixed.** The cgroup manager is behind an `RwLock` and is dropped with the mount-table cache, so a re-detection reaches it. The reported version and the version used for writes can no longer disagree. | `274c1c7` |
+| 2 | Startup cgroup retry documented but never called | **Fixed.** `runtime::run` waits for a hierarchy when there is none, warns before waiting, reports the bounded wait it gives up after, and creates the rule cgroups once one exists. | `80f7169` |
+| 3 | `nice` → `cpu.weight` blast radius | **Fixed.** `apply_cpu_weight` turns the mirror off, defaults to the previous behaviour, and is reported at startup; CONFIGURATION.md and the differences document say whose cgroup is written. | `6964fb9` |
+| 4 | Capacity source chosen per CPU | **Fixed.** One source is chosen for the machine, the first that both reports a value and tells two CPUs apart. | `b25eaba` |
+| 5 | `little-cores`/`turbo-cores` = all CPUs when homogeneous | **Fixed.** Both homogeneous paths go through one `mark_homogeneous` and leave the two aliases empty, so a rule naming one no longer widens the process' affinity. | `998c620` |
+| 6 | `ioclass: "none"` wrote class `none` | **Fixed.** `ioprio_valid` guards the write; a rule naming `none` leaves the priority alone, as the reference does. | `4e76726` |
+| 7 | Unknown `ioclass` aborted the rule | **Fixed.** It is `Skipped` now, so the attributes after it still apply. A `sched` name that is not known still aborts, deliberately. | `eb2ef68` |
+| 8 | X3D mode written on diagnostic paths | **Fixed.** Detection only happens before the dispatch; the write moved to `apply_x3d_mode`, after the root and singleton checks. | `52d2337` |
+| 9 | `--manualscanning` rejected | **Fixed.** Both spellings parse and the help names the alias. | `332e5da` |
+| 10 | `CPUWeight` documented, not implemented | **Fixed** by implementing it, not by deleting the claim: `create_cgroup` takes a `CgroupSettings` and writes the weight, and a malformed value configures nothing. | `b6ae3de` |
+| 11 | `.expect()` on the netlink send | **Fixed.** A failed send sets the shutdown flag and the listener returns, which is what the BPF callback already did. | `b22da6b` |
+| 12 | `apply_ioclass` parsed and ignored | **Fixed.** It gates the attribute; the reference reference also never acted on it, so the reported state and the behaviour now agree. | `f4e8305` |
+| 13 | Realtime detection by policy | **Fixed.** Aligned to the reference: a static priority above zero. `sched_getscheduler` had no other caller and is gone. | `474f7a9` |
+| 14 | The rest undocumented | **Documented** in `ANANICY_CPP_DIFFERENCES.md` §5, and the `perf`-buffer claim was corrected — libbpf-rs already defaults to the reference's 64 pages, so there was nothing to align. | `6148529`, `a31b7ff` |
+| 15 | NixOS `-wrapped` matching undocumented | **Documented** in §5. | `474f7a9` |
+| 16 | Dead `cgroup_rules` module | **Deleted**, with the three `CgroupPath` methods that existed only for it. | `9cf81b3` |
+| 17 | No backtrace on a crash | **Fixed.** A panic hook prints the message, the thread and a forced backtrace on stderr, and steps aside when `RUST_BACKTRACE` is set. | `4977fcb` |
+| 18 | Two of three fuzz targets missing | **Added.** `parse_cpuset` and `parse_rule`, whose invariants the property tests already assert in CI. | `78cf56c` |
+| 19 | `dump` output untested | **Fixed**, and the test found a defect the audit had missed — see below. | `e0c44af` |
+| 20 | Event-source debug tools | **Documented** as not provided, with the reason: the reference builds them but its own `cmake --install` does not install them. | `6148529` |
+| 21 | CLI and configuration reference errors | **Fixed**: `elvish` instead of the unsupported `powershell`, the bare invocation corrected, the `oom_score_adj` range, and what `ioclass: "none"` does. | `9f270d7` |
+| 22 | Cache sizes read in two units | **Fixed.** One exported parser, K/M/G, shared by the topology and X3D readers. | `57fe45f` |
+| 23 | IPC name and permissions undocumented | **Documented** in §1. | `6148529` |
+| 25 | `cargo test` needs libbpf | **Fixed.** `ananicy-bpf` is a workspace member but not a default one, so a default build never touches its build script. | `8b49368` |
+| 24 | `crt-static` release profile | **Not done.** No user-visible defect, and adding a profile is a packaging decision rather than a fix. |
+
+### Two findings the audit got wrong or missed
+
+* **The perf buffer was never smaller.** §3 row 65 and §5.17 said `ananicy-rs` used
+  libbpf-rs' default page count as if it were smaller than the reference's 64.
+  `PerfBufferBuilder::new` already uses 64. No change was made and both places say so.
+* **Logs went to stdout.** §5.20 claimed "`ananicy-rs` keeps stdout clean (JSON only) and logs the
+  version at INFO on stderr — strictly better". It did not: `tracing_subscriber::fmt` defaults to
+  stdout, so every log line was interleaved with the JSON and `ananicy-rs dump cgroups | jq` failed.
+  The claim was made from reading the code and not from running the pipe. The test added for §9 item
+  19 caught it, and `7a56a79` fixed it: logs on stderr, stdout for the answer.
+
+### Verification
+
+* `cargo test` — 20 test binaries, **all passing**, and it now runs on a host without libbpf.
+* `cargo fmt --check` — clean.
+* `cargo clippy --all-targets` — one warning, `LinuxPlatform` having no `Default`, which predates the
+  audit and is unrelated to any finding.
+* `ananicy-bpf` still cannot be built in the audit environment (no libbpf), so the `--verbose`
+  plumbing into libbpf's print callback rests on the libbpf-rs 0.27 API rather than on a compile.
+  That is the one change in the list that is not verified by a build.
