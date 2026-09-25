@@ -18,7 +18,7 @@ The format is `key=value`, one per line.
 | `apply_nice` | `true` | Apply nice values from rules |
 | `apply_sched` | `true` | Apply scheduling policy from rules |
 | `apply_ionice` | `true` | Apply I/O nice values from rules |
-| `apply_ioclass` | `true` | Apply the I/O class from rules. Together with `apply_ionice`, which switches the priority within the class; both have to be on for a rule's `ioclass` to be written |
+| `apply_ioclass` | `true` | Accepted and reported, but it has no effect — see [below](#apply_ioclass-has-no-effect) |
 | `apply_oom_score_adj` | `true` | Apply OOM score adjustments from rules |
 | `apply_latnice` | `true` | Apply latency nice values from rules |
 | `apply_cpuset` | `true` | Apply CPU affinity (cpuset) from rules |
@@ -31,6 +31,25 @@ The format is `key=value`, one per line.
 | `log_applied_rule` | `false` | Emit an INFO event after a matching rule is applied successfully |
 | `loglevel` | `info` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`, `critical`) |
 | `x3d_mode` | `auto` | AMD X3D driver mode: `auto` (don't touch), `cache`, or `frequency` |
+
+### `apply_ioclass` has no effect
+
+The key is accepted, defaulted to `true` and reported at startup, and it changes nothing. A rule's
+`ioclass` is gated by `apply_ionice` alone, as in `ananicy-cpp`.
+
+That is not an oversight in either daemon, it is what the key has always meant. It comes from the
+original Python Ananicy, where it silenced the message the daemon printed when it set an I/O class:
+the `apply_*` flags there are passed to a `print_verbose_msg()` helper and nothing else, so
+`apply_nice=false` did not stop `nice` from being applied either. When the C++ rewrite gave those
+flags teeth it wired them to the syscalls — but a single `ioprio_set(2)` call sets the class and the
+priority together, so there was nothing left for `apply_ioclass` to gate and it was left in the
+configuration map unused.
+
+Giving it a meaning here would change what an existing `ananicy.conf` does: a configuration that
+carries `apply_ioclass=false` from the original — where it meant "do not log this" — would silently
+stop having any I/O class applied at all. A rewrite that keeps the configuration working is worth
+more than one that finally honours a key nobody knew was inert.
+`ananicy-core/tests/worker_rules.rs` pins the behaviour in both directions.
 
 ### Applied-rule logging
 
