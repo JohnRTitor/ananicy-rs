@@ -111,6 +111,35 @@ fn a_live_process_is_never_reported_as_realtime() {
     assert!(!LinuxPlatform::new().is_realtime(self_pid()));
 }
 
+/// The check is a static priority, not a policy, so the two agree on the machine
+/// they both run on. Switching a task to `SCHED_FIFO` and back needs privileges
+/// the suite does not have, so the property is pinned structurally instead: the
+/// answer is read from `sched_getattr`, and a process that cannot be read at all
+/// is not realtime.
+#[test]
+fn a_process_that_cannot_be_inspected_is_not_realtime() {
+    assert!(!LinuxPlatform::new().is_realtime(DEAD_PID));
+}
+
+/// The test process's own static priority, read the same way the daemon reads
+/// it, must agree with the daemon's answer about it.
+#[test]
+fn the_realtime_answer_agrees_with_the_static_priority() {
+    let size = std::mem::size_of::<ananicy_platform::abi::sched_attr::sched_attr>() as u32;
+    let mut attr = ananicy_platform::abi::sched_attr::sched_attr {
+        size,
+        ..Default::default()
+    };
+    ananicy_platform::abi::sched_attr::sched_getattr(self_pid(), &mut attr, size, 0)
+        .expect("a live process can be inspected");
+
+    assert_eq!(
+        LinuxPlatform::new().is_realtime(self_pid()),
+        attr.sched_priority > 0,
+        "realtime means a static priority above zero"
+    );
+}
+
 #[test]
 fn the_platform_exposes_the_process_identity_it_was_built_from() {
     // The comparison cannot be an exact list: the test binary runs its tests in
