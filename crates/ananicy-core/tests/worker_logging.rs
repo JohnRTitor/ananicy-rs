@@ -66,6 +66,8 @@ struct FakePlatform {
     priority_result: Mutex<Option<Result<(), PlatformError>>>,
     priority_calls: Arc<AtomicUsize>,
     tids: Option<Vec<i32>>,
+    cgroup_v2: bool,
+    cpu_weight_result: Mutex<Option<Result<(), PlatformError>>>,
 }
 
 impl FakePlatform {
@@ -74,12 +76,22 @@ impl FakePlatform {
             priority_result: Mutex::new(priority_result),
             priority_calls: Arc::new(AtomicUsize::new(0)),
             tids: None,
+            cgroup_v2: false,
+            cpu_weight_result: Mutex::new(None),
         }
     }
 
     fn with_empty_tids() -> Self {
         Self {
             tids: Some(Vec::new()),
+            ..Self::new(None)
+        }
+    }
+
+    fn with_cgroup_v2_cpu_weight_failure() -> Self {
+        Self {
+            cgroup_v2: true,
+            cpu_weight_result: Mutex::new(Some(Err(PlatformError::Unsupported))),
             ..Self::new(None)
         }
     }
@@ -99,7 +111,7 @@ impl PlatformActions for FakePlatform {
     }
 
     fn is_cgroup_v2(&self) -> bool {
-        false
+        self.cgroup_v2
     }
 
     fn get_max_cores(&self) -> u32 {
@@ -150,7 +162,11 @@ impl PlatformActions for FakePlatform {
     }
 
     fn set_cpu_weight(&self, _pid: i32, _weight: u32) -> Result<(), PlatformError> {
-        Ok(())
+        self.cpu_weight_result
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(Ok(()))
     }
 
     fn set_affinity(
@@ -225,6 +241,19 @@ fn successful_application_logs_when_enabled() {
     );
 
     assert!(events.contains(Level::INFO, "worker-test(42)"));
+}
+
+#[test]
+fn missing_optional_cpu_weight_does_not_hide_successful_nice() {
+    let events = run_worker(
+        snapshot(true),
+        r#"{"name":"worker-test","nice":5}"#,
+        FakePlatform::with_cgroup_v2_cpu_weight_failure(),
+        Level::INFO,
+    );
+
+    assert!(events.contains(Level::INFO, "worker-test(42)"));
+    assert!(!events.contains(Level::WARN, "partially failed"));
 }
 
 #[test]
