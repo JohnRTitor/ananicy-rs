@@ -296,6 +296,96 @@ fn test_cli_loglevel_config_propagation() {
     );
 }
 
+#[test]
+fn test_cli_reports_every_configuration_value_at_startup() {
+    // `dump` runs after the configuration, topology and rules are set up but
+    // before the root check, so this observes the startup reporting without
+    // starting (or needing) the daemon.
+    let temp_dir = std::env::temp_dir().join(format!("ananicy_test_report_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let config_path = temp_dir.join("ananicy.conf");
+    std::fs::write(
+        &config_path,
+        concat!(
+            "apply_nice=false\n",
+            "apply_sched=false\n",
+            "apply_ionice=false\n",
+            "apply_ioclass=false\n",
+            "apply_cgroup=false\n",
+            "apply_cpuset=false\n",
+            "apply_oom_score_adj=false\n",
+            "apply_latnice=false\n",
+            "cgroup_load=false\n",
+            "type_load=false\n",
+            "cgroup_realtime_workaround=false\n",
+            "log_applied_rule=true\n",
+            "check_freq=42\n",
+            "x3d_mode=cache\n",
+            "loglevel=info\n",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        temp_dir.join("test.rules"),
+        "{\"name\": \"ananicy-test\", \"nice\": 5}\n",
+    )
+    .unwrap();
+
+    let mut cmd = ananicy();
+    cmd.arg("--config")
+        .arg(&config_path)
+        .arg("--config-dir")
+        .arg(&temp_dir)
+        .arg("dump")
+        .arg("rules");
+
+    let output = cmd.output().unwrap();
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    // Every configurable value is reported, so a run can be reconstructed from
+    // the journal alone. The values are all non-default on purpose: a line that
+    // silently keeps its default would still contain the key, but the value
+    // proves the file was actually read.
+    let expected = [
+        "Config apply_nice: false",
+        "Config apply_sched: false",
+        "Config apply_ionice: false",
+        "Config apply_ioclass: false",
+        "Config apply_cgroup: false",
+        "Config cgroup_load: false",
+        "Config apply_oom_score_adj: false",
+        "Config apply_latnice: false",
+        "Config log_applied_rule: true",
+        "Config type_load: false",
+        "Config rule_load: true",
+        "Config cgroup_realtime_workaround: false",
+        "Config check_freq: 42",
+        "Config apply_cpuset: false",
+        "Config x3d_mode: cache",
+        "Config loglevel: info",
+    ];
+    for line in expected {
+        assert!(
+            combined.contains(line),
+            "Expected {line:?} at startup, got:\n{combined}"
+        );
+    }
+
+    assert!(
+        combined.contains("topology: "),
+        "Expected the detected topology, got:\n{combined}"
+    );
+    assert!(
+        combined.contains("Loaded 1 rules"),
+        "Expected the loaded rule count, got:\n{combined}"
+    );
+}
+
 /// Extracts the `Systemd integration: ...` line printed by `debug cgroups`.
 fn status_line(stdout: &[u8]) -> String {
     String::from_utf8_lossy(stdout)

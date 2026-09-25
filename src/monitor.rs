@@ -117,10 +117,30 @@ fn finish(
 
 fn finish_join(worker_handle: JoinHandle<(usize, Duration)>, saved_x3d_mode: Option<X3DMode>) {
     match worker_handle.join() {
-        Ok((count, duration)) => info!("Worker processed {} events in {:?}", count, duration),
+        Ok((count, duration)) => {
+            info!("Summary:");
+            info!(
+                "{} processes processed, ran for {} seconds",
+                count,
+                format_elapsed(duration)
+            );
+        }
         Err(e) => error!("Worker thread panicked: {:?}", e),
     }
     restore_x3d(saved_x3d_mode, "on shutdown");
+}
+
+/// `HH:MM:SS.ffffff`, the shape `ananicy-cpp` prints its runtime in, so both
+/// daemons' shutdown summaries can be compared at a glance.
+fn format_elapsed(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!(
+        "{:02}:{:02}:{:02}.{:06}",
+        seconds / 3600,
+        (seconds % 3600) / 60,
+        seconds % 60,
+        duration.subsec_micros()
+    )
 }
 
 fn restore_x3d(saved_x3d_mode: Option<X3DMode>, reason: &str) {
@@ -128,5 +148,23 @@ fn restore_x3d(saved_x3d_mode: Option<X3DMode>, reason: &str) {
         && ananicy_platform::x3d::set_driver_mode(mode)
     {
         info!("Restored X3D mode {}", reason);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_is_reported_as_hours_minutes_and_microseconds() {
+        assert_eq!(format_elapsed(Duration::ZERO), "00:00:00.000000");
+        assert_eq!(
+            format_elapsed(Duration::from_micros(45_110_643)),
+            "00:00:45.110643"
+        );
+        assert_eq!(
+            format_elapsed(Duration::from_secs(3661) + Duration::from_micros(500_000)),
+            "01:01:01.500000"
+        );
     }
 }
