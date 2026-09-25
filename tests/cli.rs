@@ -112,7 +112,7 @@ fn test_cli_start_non_root() {
     cmd.arg("start")
         .assert()
         .failure()
-        .stdout(predicate::str::contains("This program must be run as root"));
+        .stderr(predicate::str::contains("This program must be run as root"));
 }
 
 #[test]
@@ -121,7 +121,7 @@ fn test_cli_unknown_action() {
     cmd.arg("nonsense")
         .assert()
         .failure()
-        .stdout(predicate::str::contains(
+        .stderr(predicate::str::contains(
             "Unknown action requested: nonsense",
         ));
 }

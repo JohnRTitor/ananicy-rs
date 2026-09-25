@@ -54,7 +54,11 @@ pub(crate) fn init_logging(
     }
 
     use tracing_subscriber::layer::SubscriberExt;
-    let fmt_layer = tracing_subscriber::fmt::layer();
+    // stderr, so that stdout carries the answer and nothing else: `dump` prints
+    // JSON there, and a caller piping it into `jq` should not have to strip log
+    // lines first. The journald layer is a separate destination and does not
+    // have this problem.
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
     let subscriber = tracing_subscriber::Registry::default()
         .with(filter)
         .with(fmt_layer);
