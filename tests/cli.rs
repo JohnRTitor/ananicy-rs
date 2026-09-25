@@ -132,6 +132,133 @@ fn test_cli_invalid_dump_action() {
     cmd.arg("dump").arg("invalid_action").assert().failure();
 }
 
+/// `dump proc` is a JSON object keyed by TID, and it is the only place the
+/// daemon reports what it can read about a process: the fields the rules use, the
+/// ones they do not, and which rule matched.
+#[test]
+fn test_cli_dump_proc_reports_every_field() {
+    let output = ananicy().arg("dump").arg("proc").output().unwrap();
+    assert!(
+        output.status.success(),
+        "dump proc must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("dump proc prints JSON on stdout");
+    let processes = dump.as_object().expect("dump proc prints an object");
+    assert!(!processes.is_empty(), "the test process is in there");
+
+    let self_pid = std::process::id().to_string();
+    let entry = processes
+        .get(&self_pid)
+        .unwrap_or_else(|| panic!("the test process {self_pid} is missing from the dump"));
+    let entry = entry.as_object().expect("an entry is an object");
+
+    for field in [
+        "pid",
+        "tpid",
+        "exe",
+        "comm",
+        "cmd",
+        "stat",
+        "stat_name",
+        "autogroup",
+        "sched",
+        "rtprio",
+        "nice",
+        "latency_nice",
+        "ionice",
+        "oom_score_adj",
+        "cmdline",
+    ] {
+        assert!(
+            entry.contains_key(field),
+            "{field} is missing from a dump proc entry: {entry:?}"
+        );
+    }
+
+    // Keys are TIDs, and each entry knows which one it is.
+    let tpid: i64 = entry["tpid"].as_i64().expect("tpid is a number");
+    assert_eq!(tpid.to_string(), self_pid);
+}
+
+/// The same information, regrouped by autogroup. On a host without autogroups
+/// — CONFIG_AUTO_NUMA_GROUPS off, which is the default — the answer is an empty
+/// object rather than a failure, and that is the point of the test.
+#[test]
+fn test_cli_dump_autogroup_is_json() {
+    let output = ananicy().arg("dump").arg("autogroup").output().unwrap();
+    assert!(
+        output.status.success(),
+        "dump autogroup must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("dump autogroup prints JSON on stdout");
+    let groups = dump.as_object().expect("dump autogroup prints an object");
+
+    for (group, value) in groups {
+        let group_entry = value.as_object().expect("a group is an object");
+        assert!(
+            group_entry.contains_key("nice"),
+            "group {group} has no nice value"
+        );
+        assert!(
+            group_entry.contains_key("proc"),
+            "group {group} has no processes"
+        );
+    }
+}
+
+/// The three dumps that are a map of what was loaded: they have to be valid JSON
+/// with the keys of the rule files behind them, not a human-readable table.
+#[test]
+fn test_cli_dump_prints_the_loaded_state_as_json() {
+    let temp_dir = std::env::temp_dir().join(format!("ananicy_test_dump_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let config_path = temp_dir.join("ananicy.conf");
+    std::fs::write(&config_path, "loglevel=error\n").unwrap();
+    std::fs::write(
+        temp_dir.join("test.rules"),
+        "{\"name\": \"ananicy-dump-test\", \"nice\": 5}\n",
+    )
+    .unwrap();
+    std::fs::write(temp_dir.join("test.types"), "{\"type\": \"Dump-Type\"}\n").unwrap();
+    std::fs::write(
+        temp_dir.join("test.cgroups"),
+        "{\"cgroup\": \"dump-cgroup\", \"CPUQuota\": 80}\n",
+    )
+    .unwrap();
+
+    let mut dump = |target: &str| {
+        let output = ananicy()
+            .arg("--config")
+            .arg(&config_path)
+            .arg("--config-dir")
+            .arg(&temp_dir)
+            .arg("dump")
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "dump {target} must succeed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .unwrap_or_else(|e| panic!("dump {target} is not JSON: {e}"))
+    };
+
+    let rules = dump("rules");
+    assert_eq!(rules["ananicy-dump-test"]["nice"], 5);
+    assert!(dump("types").get("Dump-Type").is_some());
+    assert_eq!(dump("cgroups")["dump-cgroup"]["CPUQuota"], 80);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
 #[test]
 fn test_cli_debug_cgroups_accepted() {
     // Reads only world-readable files (/etc/mtab, /proc/self/mounts,
