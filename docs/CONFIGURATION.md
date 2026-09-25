@@ -83,10 +83,12 @@ For instance, to add a rule for GCC, you could do the following:
 - `ioclass: {"best-effort", "realtime", "idle", "none"}`: Define the IO scheduling policy. By default, it is `best-effort`. **Only the BFQ/CFQ I/O schedulers fully support `ioclass` and `ionice`**.
   - `realtime`: Absolute priority above all `best-effort` processes. Can starve other processes.
   - `idle`: Process gets I/O resources after all other processes. Can starve this process. (`ionice` is ignored).
-  - `none`: Reset I/O policy to system default, `ionice` must be `0`.
+  - `none`: Reset I/O policy to system default, `ionice` must be `0`. `none` is the reading a process
+    reports when no I/O priority was ever set for it, not a priority that can be written, so a rule
+    asking for it leaves the process' I/O priority as it is — the same thing `ananicy-cpp` does.
   - `best-effort`: Try to fairly share I/O resources between processes.
 - `ionice: [0..7]`: I/O priority for `realtime` and `best-effort` classes. A lower value is a higher priority.
-- `oom_score_adj: [-999..1000]`: Adjust the Out Of Memory killer score. Negative values decrease the score, making it *less* likely to be killed. Use for critical programs.
+- `oom_score_adj: [-1000..1000]`: Adjust the Out Of Memory killer score. Negative values decrease the score, making it *less* likely to be killed. Use for critical programs. (`ananicy-cpp` documents the range as `[-999, 999]`; the kernel accepts `-1000`, and the daemon writes the value to `/proc/<pid>/oom_score_adj` unchanged, so the kernel is the one that rejects anything outside its own range.)
 - `cpuset`: Pin the process to the specified CPU cores using Linux cpuset notation. Accepts ranges (`0-7`), comma-separated lists (`0,2,4`), mixed (`0-3,8-11`), or [Named Aliases (Topology)](./TOPOLOGY.md).
 - `cgroup`: Put the process in the specified cgroup.
 - `type`: Set the type of the rule. All options defined in the type will be used as if written explicitly in the rule, although you can override each option if needed.

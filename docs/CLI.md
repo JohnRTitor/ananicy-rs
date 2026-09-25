@@ -111,7 +111,7 @@ The active `loglevel` and per-event application flags are reloaded live. `check_
 
 ### Commands
 
-- `start`: Start the daemon (this is the default behavior if no command is specified, but explicitly using `start` is supported).
+- `start`: Start the daemon. A command is required: invoked with no command and no flag, the daemon prints its help and exits 0, as `ananicy-cpp` does.
 - `dump <sub_action>`: Dump internal state. Sub-actions include:
   - `rules`: Dump parsed rules.
   - `types`: Dump parsed types.
@@ -119,7 +119,7 @@ The active `loglevel` and per-event application flags are reloaded live. `check_
   - `proc`: Dump process information cache.
   - `autogroup`: Dump autogroup status.
 - `debug cgroups`: Dump diagnostic information about the system's cgroup mounts.
-- `completions <shell>`: Generate shell completions (supported shells: `bash`, `zsh`, `fish`, `powershell`).
+- `completions <shell>`: Generate shell completions (supported shells: `bash`, `zsh`, `fish`, `elvish`).
 
 Example:
 
@@ -149,8 +149,8 @@ ananicy-rs completions zsh > ~/.zfunc/_ananicy-rs
 ananicy-rs completions fish > ~/.config/fish/completions/ananicy-rs.fish
 ```
 
-### PowerShell
+### Elvish
 
-```powershell
-ananicy-rs completions powershell > ananicy-rs.ps1
+```elvish
+ananicy-rs completions elvish > ~/.config/elvish/lib/ananicy-rs.elv
 ```
