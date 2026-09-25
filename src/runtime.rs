@@ -72,7 +72,10 @@ pub(crate) fn run(
 
     if cgroup_realtime_workaround {
         thread::sleep(Duration::from_millis(100));
-        ananicy_platform::mounts::reset_cgroup_info();
+        // The whole detection is dropped, not just the mount-table cache: the
+        // cgroup manager caches the hierarchy it was built from, so re-creating
+        // the cgroups would keep resolving names against the old one.
+        ananicy_platform::cgroups::reset_cgroup_detection();
         if !create_cgroups(&rules) {
             return;
         }
