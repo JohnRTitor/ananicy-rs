@@ -119,7 +119,10 @@ impl Rules {
             return false;
         }
 
-        // C++ behavior: Find first '{' and last '}'
+        // The rule is the text between the first '{' and the last '}'. Taking
+        // the widest span is what makes a trailing `# comment` and leading
+        // whitespace tolerable, and it is the behaviour of the rule files that
+        // shipped with the C++ daemon.
         let Some(start) = line.find('{') else {
             return false;
         };

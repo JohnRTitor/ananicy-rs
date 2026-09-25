@@ -1,3 +1,11 @@
+//! End-to-end tests of the `ananicy-rs` command line.
+//!
+//! These drive the real binary, so they assert the process' observable
+//! behaviour: exit status and what is written to stdout/stderr. They never
+//! require a configuration in `/etc/ananicy.d`, a running daemon or root, and
+//! the systemd-mode cases neutralise the supervision variables first so they do
+//! not depend on how the test runner itself was started.
+
 use {assert_cmd::Command, predicates::prelude::*};
 
 /// Builds a command with all systemd supervision variables removed, so that
@@ -19,6 +27,46 @@ fn test_cli_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("ANother Auto NICe daemon rewrite"));
+}
+
+// ---------------------------------------------------------
+// Argument parsing
+// ---------------------------------------------------------
+
+#[test]
+fn test_cli_string_argument_with_value() {
+    // A global option before a sub-command: bpaf accepts the pair and then
+    // prints the help text instead of starting the daemon.
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("--config").arg("fake_config.toml").arg("--help");
+    cmd.assert()
+        .success()
+        .code(0)
+        .stdout(predicate::str::contains("ANother Auto NICe daemon rewrite"));
+}
+
+#[test]
+fn test_cli_string_argument_without_default() {
+    // `--config` takes a value, so using it without one is a usage error.
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("--config");
+    cmd.assert().failure().code(2);
+}
+
+#[test]
+fn test_cli_unknown_argument() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("--unknown-arg-12345");
+    cmd.assert().failure().code(2);
+}
+
+#[test]
+fn test_cli_unknown_argument_after_a_valid_one() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    cmd.arg("--config")
+        .arg("fake_config.toml")
+        .arg("--unknown-arg-12345");
+    cmd.assert().failure().code(2);
 }
 
 #[test]

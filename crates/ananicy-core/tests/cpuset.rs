@@ -1,3 +1,9 @@
+//! `CpuSet` behaviour.
+//!
+//! A CPU set is the bridge between the textual `cpuset` field of a rule and the
+//! `sched_setaffinity` call, so it is tested through the public API that
+//! `ananicy-platform` consumes as well.
+
 use ananicy_core::cpuset::CpuSet;
 
 // ---------------------------------------------------------
@@ -255,11 +261,57 @@ fn test_parse_invalid_double_comma() {
 #[test]
 fn test_parse_invalid_range_with_letters() {
     let result = CpuSet::parse("0-a", 16);
-    // In C++, to_int returns 0 for non-numeric, so it becomes "0-0" which is valid.
-    // In Rust, parse() will fail, returning None. This is technically a deviation,
-    // but a desirable one since "0-a" is clearly malformed.
-    // We will ensure it doesn't crash and returns None.
+    // "0-a" is clearly malformed. The parser rejects it instead of silently
+    // treating the range as "0-0" the way a lenient integer reader would.
     assert!(result.is_none());
+}
+
+#[test]
+fn test_parse_is_whitespace_tolerant_around_tokens() {
+    let cs = CpuSet::parse("  0-1 , 4 ,  8-9  ", 16).unwrap();
+    assert_eq!(cs.get_cores(), vec![0, 1, 4, 8, 9]);
+
+    // Whitespace *inside* a range is not part of the accepted syntax.
+    assert!(CpuSet::parse("8 - 9", 16).is_none());
+}
+
+#[test]
+fn test_parse_accepts_leading_zeros_and_the_upper_bound() {
+    assert!(CpuSet::parse("007", 16).unwrap().has_cpu(7));
+    assert!(CpuSet::parse("15", 16).unwrap().has_cpu(15));
+    assert!(CpuSet::parse("0-15", 16).unwrap().get_cores().len() == 16);
+}
+
+#[test]
+fn test_parse_rejects_out_of_range_range_endpoints() {
+    // The whole range must fit, not just its first CPU.
+    assert!(CpuSet::parse("8-16", 16).is_none());
+    assert!(CpuSet::parse("0-16", 16).is_none());
+    assert!(CpuSet::parse("16", 16).is_none());
+}
+
+#[test]
+fn test_parse_rejects_values_beyond_u32() {
+    assert!(CpuSet::parse("4294967296", 16).is_none());
+    assert!(CpuSet::parse("0-99999999999999999999", 16).is_none());
+}
+
+#[test]
+fn test_parse_rejects_whitespace_only_and_comma_only_input() {
+    assert!(CpuSet::parse("   ", 16).is_none());
+    assert!(CpuSet::parse(",", 16).is_none());
+    assert!(CpuSet::parse(",0", 16).is_none());
+    assert!(
+        CpuSet::parse("0,", 16).is_some(),
+        "a trailing comma is tolerated"
+    );
+}
+
+#[test]
+fn test_parse_with_zero_cores_never_succeeds() {
+    assert!(CpuSet::parse("0", 0).is_none());
+    assert!(CpuSet::parse("0-3", 0).is_none());
+    assert!(CpuSet::parse("", 0).is_none());
 }
 
 // ---------------------------------------------------------

@@ -52,10 +52,9 @@ fn print_debug_cgroups(systemd_status: &str) {
         );
         match read_dir(cgroup_path) {
             Ok(entries) => {
-                // Deliberately not sorted: std::filesystem::directory_iterator
-                // yields entries in whatever order the underlying filesystem
-                // returns them, and the reference implementation preserves
-                // that order verbatim.
+                // Deliberately not sorted: this is a diagnostic dump, so the
+                // listing is printed in whatever order the filesystem returns,
+                // and the output is meant to be pasted as-is into a bug report.
                 for entry in entries {
                     match entry {
                         Ok(entry) => println!("{:?}", entry.path()),
@@ -86,14 +85,21 @@ fn get_cgroup_for_pid(pid: u32) -> String {
         return "<empty>".to_string();
     };
 
-    let first_line = content.lines().next().unwrap_or("");
-    if first_line.is_empty() {
+    cgroup_path_from_line(content.lines().next().unwrap_or(""))
+}
+
+/// Extracts the cgroup path from one `hierarchy:controllers:path` line of
+/// `/proc/<pid>/cgroup`. The path is everything after the last `:` so that the
+/// v1 form (`4:cpu,cpuacct:/user.slice`) and the v2 form
+/// (`0::/user.slice/…`) are both handled.
+fn cgroup_path_from_line(line: &str) -> String {
+    if line.is_empty() {
         return "<empty>".to_string();
     }
 
-    match first_line.rfind(':') {
-        Some(idx) => first_line[idx + 1..].to_string(),
-        None => first_line.to_string(),
+    match line.rfind(':') {
+        Some(idx) => line[idx + 1..].to_string(),
+        None => line.to_string(),
     }
 }
 
@@ -102,24 +108,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cgroup_for_pid_takes_substring_after_last_colon() {
-        // Simulates the parsing logic against representative /proc/<pid>/cgroup
-        // content without touching the real filesystem.
-        let v2_line = "0::/user.slice/user-1000.slice/session-2.scope";
-        let idx = v2_line.rfind(':').unwrap();
+    fn cgroup_path_is_taken_from_after_the_last_colon() {
+        // The v2 form: an empty controller field, so the path starts right
+        // after the second colon.
         assert_eq!(
-            &v2_line[idx + 1..],
+            cgroup_path_from_line("0::/user.slice/user-1000.slice/session-2.scope"),
             "/user.slice/user-1000.slice/session-2.scope"
         );
+        // The v1 form: a comma separated controller list before the path.
+        assert_eq!(
+            cgroup_path_from_line("4:cpu,cpuacct:/user.slice"),
+            "/user.slice"
+        );
+        assert_eq!(
+            cgroup_path_from_line("7:memory:/user.slice/app.slice"),
+            "/user.slice/app.slice"
+        );
+    }
 
-        let v1_line = "4:cpu,cpuacct:/user.slice";
-        let idx = v1_line.rfind(':').unwrap();
-        assert_eq!(&v1_line[idx + 1..], "/user.slice");
+    #[test]
+    fn a_cgroup_line_without_a_path_is_reported_as_empty() {
+        assert_eq!(cgroup_path_from_line(""), "<empty>");
+        assert_eq!(cgroup_path_from_line("0::"), "");
+    }
+
+    #[test]
+    fn a_line_without_any_colon_is_returned_verbatim() {
+        assert_eq!(cgroup_path_from_line("/user.slice"), "/user.slice");
+    }
+
+    /// System test: the cgroup of the test process is whatever the kernel says,
+    /// but the helper must never panic and must never invent a path.
+    #[test]
+    fn the_cgroup_of_this_process_is_reported() {
+        let pid = id();
+        let reported = get_cgroup_for_pid(pid);
+        assert!(!reported.is_empty());
+    }
+
+    /// A PID above any plausible `pid_max` has no cgroup file at all.
+    #[test]
+    fn a_dead_process_has_no_cgroup() {
+        assert_eq!(get_cgroup_for_pid(u32::MAX), "<empty>");
     }
 
     #[test]
     fn debug_target_unknown_is_infallible_and_silent() {
-        // "debug cgroups" recognized...
+        // "debug cgroups" is recognized...
         assert_eq!(
             "cgroups".parse::<DebugTarget>().unwrap(),
             DebugTarget::Cgroups

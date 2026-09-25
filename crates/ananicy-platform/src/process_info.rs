@@ -173,3 +173,130 @@ fn get_io_class_name(class: i32) -> &'static str {
         _ => "unknown",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A realistic `/proc/<pid>/stat` line. The `comm` field is wrapped in
+    /// parentheses and may itself contain spaces and parentheses, so everything
+    /// after the *last* `)` is a field.
+    fn stat_line(comm: &str, rest: &[&str]) -> String {
+        format!(
+            "42 ({comm}) S 1 42 42 0 -1 4194560 {} rest\n",
+            rest.join(" ")
+        )
+    }
+
+    #[test]
+    fn parse_stat_extracts_the_comm_field() {
+        assert_eq!(parse_stat("42 (bash) S 1 2 3").as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn parse_stat_handles_a_comm_with_spaces_and_parentheses() {
+        // A process called `Web Content (Renderer)` must not truncate the line.
+        assert_eq!(
+            parse_stat("42 (Web Content (Renderer)) S 1 2 3").as_deref(),
+            Some("Web Content (Renderer)")
+        );
+        assert_eq!(parse_stat("42 ((a b)) S").as_deref(), Some("(a b)"));
+    }
+
+    #[test]
+    fn parse_stat_rejects_a_line_without_parentheses() {
+        assert_eq!(parse_stat("42 bash S 1 2 3"), None);
+        assert_eq!(parse_stat(""), None);
+        assert_eq!(parse_stat("42 (bash"), None);
+    }
+
+    #[test]
+    fn parse_stat_is_never_affected_by_trailing_content() {
+        let long = stat_line("bash", &["0"; 30]);
+        assert_eq!(parse_stat(&long).as_deref(), Some("bash"));
+    }
+
+    #[test]
+    fn autogroup_lines_are_parsed_into_group_and_nice() {
+        // The shape written by the kernel to /proc/<pid>/task/<tid>/autogroup.
+        let parsed = get_autogroup_from_str("/autogroup-3 nice 7").unwrap();
+        assert_eq!(parsed["group"], 3);
+        assert_eq!(parsed["nice"], 7);
+    }
+
+    #[test]
+    fn autogroup_lines_tolerate_surrounding_whitespace() {
+        assert_eq!(
+            get_autogroup_from_str("  /autogroup-12 nice -3 \n"),
+            get_autogroup_from_str("/autogroup-12 nice -3")
+        );
+    }
+
+    #[test]
+    fn unrelated_or_incomplete_autogroup_content_is_ignored() {
+        assert_eq!(get_autogroup_from_str(""), None);
+        assert_eq!(get_autogroup_from_str("/"), None);
+        assert_eq!(get_autogroup_from_str("not-an-autogroup"), None);
+        // Missing the `nice` value.
+        assert_eq!(get_autogroup_from_str("/autogroup-3:1"), None);
+        // Non-numeric group or nice value.
+        assert_eq!(get_autogroup_from_str("/autogroup-x:1 nice 7"), None);
+        assert_eq!(get_autogroup_from_str("/autogroup-3:1 nice seven"), None);
+    }
+
+    #[test]
+    fn scheduler_policy_names_cover_the_known_policies() {
+        use crate::abi::sched_attr::*;
+        assert_eq!(get_sched_policy_name(SCHED_NORMAL), "normal");
+        assert_eq!(get_sched_policy_name(SCHED_FIFO), "fifo");
+        assert_eq!(get_sched_policy_name(SCHED_RR), "rr");
+        assert_eq!(get_sched_policy_name(SCHED_BATCH), "batch");
+        assert_eq!(get_sched_policy_name(SCHED_ISO), "iso");
+        assert_eq!(get_sched_policy_name(SCHED_IDLE), "idle");
+        assert_eq!(get_sched_policy_name(SCHED_DEADLINE), "deadline");
+        assert_eq!(get_sched_policy_name(0xdead_beef), "unknown");
+    }
+
+    #[test]
+    fn io_class_names_cover_the_known_classes() {
+        use crate::abi::ioprio::*;
+        assert_eq!(get_io_class_name(IOPRIO_CLASS_NONE), "none");
+        assert_eq!(get_io_class_name(IOPRIO_CLASS_RT), "realtime");
+        assert_eq!(get_io_class_name(IOPRIO_CLASS_BE), "best-effort");
+        assert_eq!(get_io_class_name(IOPRIO_CLASS_IDLE), "idle");
+        assert_eq!(get_io_class_name(99), "unknown");
+    }
+
+    /// System test: the reported info for the test process itself must be
+    /// self-consistent.
+    #[test]
+    fn process_info_of_the_test_process_is_readable() {
+        let pid = std::process::id() as i32;
+        let info = ProcessInfo::new(pid, pid, Some("a-rule".to_string()));
+
+        assert_eq!(info.pid, pid);
+        assert_eq!(info.tpid, pid);
+        assert_eq!(info.rule.as_deref(), Some("a-rule"));
+        assert!(
+            !info.comm.is_empty(),
+            "comm is always readable for a live process"
+        );
+        assert_eq!(
+            info.stat_name, info.comm,
+            "the name parsed out of stat must match /proc/<pid>/comm"
+        );
+        assert!(
+            (-20..=19).contains(&info.nice),
+            "nice is out of range: {}",
+            info.nice
+        );
+        assert_ne!(
+            info.sched, "unknown",
+            "the scheduling policy of a live process is readable"
+        );
+        assert!(
+            !info.cmdline.is_empty() || info.exe.is_some(),
+            "at least one source for the command line must be readable"
+        );
+    }
+}

@@ -19,12 +19,13 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[systemd Reference](docs/SYSTEMD.md)**: How systemd supervises a service, what it hands to a process, cgroup v2 delegation, and what the shipped unit's hardening does.
 - **[CPU Topology and Affinity](docs/TOPOLOGY.md)**: Details on CPU pinning, `big.LITTLE` detection, and AMD X3D support.
 - **[Differences from the Reference Implementation](docs/ANANICY_CPP_DIFFERENCES.md)**: Explicit behavioral and implementation differences between `ananicy-rs` and the C++ reference implementation.
+- **[Testing](docs/TESTING.md)**: What the test suite verifies, which tests need a live system, and how the tests relate to the C++ daemon.
 
 ## Status
 
 **Alpha / Experimental**
 
-The project is currently under active development. While it supports loading rules, cgroups v1/v2, CPU topology detection, and both Netlink and BPF event backends, it is continuously being stabilized to reach parity with the mature reference version.
+The project is currently under active development. While it supports loading rules, cgroups v1/v2, CPU topology detection, and both Netlink and BPF event backends, it is continuously being stabilized towards behavioral compatibility with the mature reference version. The remaining differences are listed in [docs/ANANICY_CPP_DIFFERENCES.md](docs/ANANICY_CPP_DIFFERENCES.md).
 
 ## Requirements
 

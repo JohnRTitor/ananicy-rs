@@ -4,6 +4,11 @@ version = "0.0.0"
 publish = false
 edition = "2021"
 
+# The fuzz targets are built with sanitizer instrumentation by `cargo fuzz`, so
+# they must not be part of the main workspace (whose `cargo test` runs without
+# those flags).
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 

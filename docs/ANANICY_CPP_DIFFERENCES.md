@@ -1,6 +1,8 @@
 # ananicy-rs vs ananicy-cpp: User-Facing Differences
 
-While `ananicy-rs` aims for high behavioral parity with the reference `ananicy-cpp` implementation, there are several intentional differences you should be aware of when installing, configuring, or running the daemon. This document highlights the changes that affect end users.
+While `ananicy-rs` aims for high behavioral compatibility with the reference `ananicy-cpp` implementation, there are several intentional differences you should be aware of when installing, configuring, or running the daemon. This document highlights the changes that affect end users.
+
+Where a difference here is a compatibility requirement — behaviour `ananicy-rs` keeps on purpose so that existing configuration and rule files keep working — it is pinned by a test in the component that owns the behaviour. See [TESTING.md](./TESTING.md) for the test layout; the test suite itself never runs `ananicy-cpp`.
 
 ## 1. Project Identity and Configuration
 
@@ -52,3 +54,26 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Strict Success Semantics:** When `log_applied_rule` is enabled, `ananicy-cpp` logs the rule application message *before* applying the rule attributes. If the application fails, a false positive success message remains in the log. `ananicy-rs` intentionally emits the message only after all enabled rule attributes complete successfully; partial, skipped, and failed applications are reported separately. Rust also keeps the opt-in applied-rule event independent of its separate debug rule-match event.
 - **Live Log-Level Reload:** `ananicy-rs` applies a reloaded `loglevel` to the active filter, while `ananicy-cpp` retains its original process-wide level. Because Rust uses `tracing`, its supported `critical` configuration value is an error-threshold alias rather than a distinct emitted severity; Rust also accepts case-insensitive names and the legacy `fatal` alias.
 - **Reload Scope:** Both daemons reload global configuration values, but neither reloads rule files. In `ananicy-rs`, `check_freq` is captured by the manual scanner thread, so changing it also requires a restart; the other per-event apply flags and `log_applied_rule` are read from the current snapshot.
+
+## 6. Compatibility Requirements Kept on Purpose
+
+The following behaviours are *not* differences — `ananicy-rs` reproduces them so
+that configuration files and rule sets written for the C++ daemon keep working.
+They are part of the contract, not accidents, and each is pinned by a test:
+
+| Behaviour | Test |
+| --- | --- |
+| A rule line may be followed by a `#` comment, and CRLF files are accepted. | `ananicy-core/tests/rules.rs` |
+| A rule is the text between the first `{` and the last `}` of the line. | `ananicy-core/tests/rules.rs` |
+| `name_regex` accepts PCRE2 syntax, including lookarounds. | `ananicy-core/tests/rules.rs`, `tests/worker_rules.rs` |
+| The configuration key for cgroup application is `apply_cgroup`. | `ananicy-core/tests/config.rs` |
+| `loglevel` accepts `critical` and the legacy `fatal` alias, case-insensitively. | `ananicy-core/src/config.rs` |
+| Rules are read from `*.rules`, `*.types` and `*.cgroups`; other extensions are ignored. | `ananicy-core/tests/rules.rs` |
+
+Two historical leniencies were deliberately *not* reproduced, because accepting
+malformed input silently is worse than rejecting it:
+
+- `0-a` is rejected instead of being read as the range `0-0`
+  (`ananicy-core/tests/cpuset.rs`).
+- Booleans must be spelled `true`; `1`, `yes` and `True` are false
+  (`ananicy-core/tests/config.rs`).

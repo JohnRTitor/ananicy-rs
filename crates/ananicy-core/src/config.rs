@@ -337,24 +337,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_defaults() {
+    fn default_snapshot_enables_the_whole_daemon() {
         let config = ConfigSnapshot::default();
         assert_eq!(config.check_freq, 60);
-        assert!(config.apply_nice);
         assert_eq!(config.x3d_mode, "auto");
+        assert!(config.apply_nice);
+        assert!(config.apply_latnice);
+        assert!(config.apply_sched);
+        assert!(config.apply_ioclass);
+        assert!(config.apply_ionice);
+        assert!(config.apply_oom_score_adj);
+        assert!(config.apply_cgroups);
+        assert!(config.apply_cpuset);
+        assert!(config.cgroup_load);
+        assert!(config.type_load);
+        assert!(config.rule_load);
+        assert!(config.cgroup_realtime_workaround);
+        assert!(!config.log_applied_rule);
+        assert_eq!(config.loglevel, LogLevel::Info);
     }
 
     #[test]
-    fn test_parse_boolean_true() {
-        let _config = ConfigSnapshot {
-            apply_nice: false,
-            ..Default::default()
-        };
-        // In this unit test we just test the logic, a file parsing test goes in differential test
-    }
-
-    #[test]
-    fn test_load_writes_defaults_if_missing() {
+    fn load_writes_defaults_if_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.conf");
         let _config = Config::load_file(&path, true).unwrap();
@@ -367,7 +371,43 @@ mod tests {
     }
 
     #[test]
-    fn test_reload_disables_latnice_if_unsupported() {
+    fn load_writes_defaults_into_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/deeper/ananicy.conf");
+
+        Config::load_file(&path, true).unwrap();
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn generated_defaults_honour_an_unsupported_latnice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.conf");
+
+        let (config, diagnostics) = Config::load_file_with_diagnostics(&path, false).unwrap();
+
+        assert!(!config.get().apply_latnice);
+        assert!(
+            config.get().apply_nice,
+            "the other flags keep their default"
+        );
+        assert!(
+            diagnostics.iter().any(|d| matches!(
+                d,
+                ConfigDiagnostic::Info(message) if message.contains("does not exist")
+            )),
+            "falling back to defaults is reported: {diagnostics:?}"
+        );
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("apply_latnice=false"),
+            "the generated file must not request an unsupported attribute: {written}"
+        );
+    }
+
+    #[test]
+    fn reload_disables_latnice_if_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("reload.conf");
         fs::write(&path, "apply_latnice=true\n").unwrap();
@@ -384,22 +424,48 @@ mod tests {
     }
 
     #[test]
-    fn test_loglevel_parsing() {
-        assert_eq!(LogLevel::parse_with_status("trace").0, LogLevel::Trace);
-        assert_eq!(LogLevel::parse_with_status("debug").0, LogLevel::Debug);
-        assert_eq!(LogLevel::parse_with_status("info").0, LogLevel::Info);
-        assert_eq!(LogLevel::parse_with_status("warn").0, LogLevel::Warn);
-        assert_eq!(LogLevel::parse_with_status("error").0, LogLevel::Error);
-        assert_eq!(
-            LogLevel::parse_with_status("critical").0,
-            LogLevel::Critical
-        );
-        assert_eq!(LogLevel::parse_with_status("fatal").0, LogLevel::Critical);
+    fn loglevel_parsing_is_case_insensitive_and_knows_legacy_aliases() {
+        for (input, expected) in [
+            ("trace", LogLevel::Trace),
+            ("DEBUG", LogLevel::Debug),
+            ("Info", LogLevel::Info),
+            ("warn", LogLevel::Warn),
+            ("error", LogLevel::Error),
+            ("critical", LogLevel::Critical),
+            ("CRITICAL", LogLevel::Critical),
+            ("fatal", LogLevel::Critical),
+            ("FATAL", LogLevel::Critical),
+        ] {
+            assert_eq!(LogLevel::parse_with_status(input), (expected, true));
+        }
+    }
 
-        // Fallback to Info on unknown level
+    #[test]
+    fn unknown_loglevel_falls_back_to_info_and_is_reported() {
         assert_eq!(
             LogLevel::parse_with_status("unknown_level"),
             (LogLevel::Info, false)
         );
+        assert_eq!(
+            LogLevel::parse_with_status(""),
+            (LogLevel::Info, false),
+            "an empty value is not a valid level"
+        );
+    }
+
+    #[test]
+    fn loglevel_display_round_trips_through_the_parser() {
+        for level in [
+            LogLevel::Trace,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+            LogLevel::Critical,
+        ] {
+            let (parsed, valid) = LogLevel::parse_with_status(&level.to_string());
+            assert!(valid, "{level} must be parseable");
+            assert_eq!(parsed, level);
+        }
     }
 }

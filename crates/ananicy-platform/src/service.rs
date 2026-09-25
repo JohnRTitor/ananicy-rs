@@ -1,3 +1,7 @@
+use std::fs::read_to_string;
+#[cfg(feature = "systemd")]
+use std::process::id;
+
 #[cfg(feature = "systemd")]
 use std::ffi::CStr;
 #[cfg(feature = "systemd")]
@@ -30,19 +34,29 @@ pub fn get_unit_name() -> String {
     "<not using systemd>".to_string()
 }
 
-#[allow(dead_code)]
-fn get_unit_name_heuristic() -> String {
-    let Some(cgroup_path) = read_own_cgroup_path() else {
-        return "<empty>".to_string();
-    };
-
+/// Derives the systemd unit name from a cgroup path.
+///
+/// The deepest segment that is neither a `.slice` nor a `.scope` is the unit
+/// itself: a desktop application usually lives in
+/// `…/app.slice/kitty-4280-0.scope`, but the unit that owns it is
+/// `user@1000.service`. Returns `None` when the path contains nothing but
+/// slices and scopes, i.e. when no unit owns this cgroup.
+fn unit_name_from_cgroup_path(cgroup_path: &str) -> Option<String> {
     cgroup_path
         .split('/')
         .filter(|s| !s.is_empty())
         .rev()
         .find(|segment| !segment.ends_with(".slice") && !segment.ends_with(".scope"))
         .map(str::to_string)
-        .unwrap_or_else(|| "<empty>".to_string())
+}
+
+#[allow(dead_code)]
+fn get_unit_name_heuristic() -> String {
+    let Some(cgroup_path) = read_own_cgroup_path() else {
+        return "<empty>".to_string();
+    };
+
+    unit_name_from_cgroup_path(&cgroup_path).unwrap_or_else(|| "<empty>".to_string())
 }
 
 /// Reads `/proc/self/cgroup`'s first line and returns the path portion
@@ -62,30 +76,63 @@ fn read_own_cgroup_path() -> Option<String> {
     }
 }
 
-use std::{fs::read_to_string, process::id};
-
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn unit_name_skips_trailing_slice_and_scope_segments() {
-        let path = "/user.slice/user-1000.slice/user@1000.service/app.slice/kitty-4280-0.scope";
-        let unit = path
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .rev()
-            .find(|segment| !segment.ends_with(".slice") && !segment.ends_with(".scope"));
-        assert_eq!(unit, Some("user@1000.service"));
+        assert_eq!(
+            unit_name_from_cgroup_path(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/kitty-4280-0.scope"
+            )
+            .as_deref(),
+            Some("user@1000.service")
+        );
+    }
+
+    #[test]
+    fn unit_name_is_the_deepest_non_slice_segment() {
+        assert_eq!(
+            unit_name_from_cgroup_path("/system.slice/systemd-journald.service").as_deref(),
+            Some("systemd-journald.service")
+        );
+        assert_eq!(
+            unit_name_from_cgroup_path("/user.slice/user-1000.slice/session-2.scope/app-runnable")
+                .as_deref(),
+            Some("app-runnable")
+        );
+        assert_eq!(
+            unit_name_from_cgroup_path("/user.slice/user-1000.slice/session-2.scope/work.scope"),
+            None,
+            "every segment is a slice or a scope, so no unit owns this cgroup"
+        );
     }
 
     #[test]
     fn unit_name_falls_back_to_empty_when_only_slices_and_scopes() {
-        let path = "/user.slice/user-1000.slice/session-2.scope";
-        let unit = path
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .rev()
-            .find(|segment| !segment.ends_with(".slice") && !segment.ends_with(".scope"));
-        assert_eq!(unit, None);
+        assert_eq!(
+            unit_name_from_cgroup_path("/user.slice/user-1000.slice/session-2.scope"),
+            None
+        );
+        assert_eq!(unit_name_from_cgroup_path(""), None);
+        assert_eq!(unit_name_from_cgroup_path("/"), None);
+    }
+
+    #[test]
+    fn a_cgroup_path_is_read_from_the_procfs_cgroup_file() {
+        // System test: whatever this process' cgroup is, it must be an absolute
+        // path (or absent, on a host without cgroups).
+        if let Some(path) = read_own_cgroup_path() {
+            assert!(path.starts_with('/'), "not a cgroup path: {path:?}");
+        }
+    }
+
+    /// System test: the reported unit name is either a real unit or the
+    /// documented placeholder, never empty.
+    #[test]
+    fn the_reported_unit_name_is_never_empty() {
+        let name = get_unit_name();
+        assert!(!name.is_empty());
     }
 }

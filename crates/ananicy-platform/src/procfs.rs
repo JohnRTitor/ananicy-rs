@@ -35,7 +35,9 @@ pub fn get_command_from_pid(pid: i32) -> String {
     if let Ok(cmdline_bytes) = fs::read(format!("{}/cmdline", proc_dir))
         && !cmdline_bytes.is_empty()
     {
-        // Find the first non-empty argument (C++ parity: find_first_not_of('\0'))
+        // Find the first non-empty argument. A process that rewrote its argv[0]
+        // to "" still has a name in `exe` or `comm`, so an empty first argument
+        // must not win over them.
         let argv0_bytes = cmdline_bytes
             .split(|&b| b == 0)
             .find(|arg| !arg.is_empty())
