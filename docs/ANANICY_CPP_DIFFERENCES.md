@@ -19,6 +19,10 @@ To allow both implementations to coexist on the same system without colliding, `
 `ananicy-rs` uses a more structured subcommand model for its CLI arguments rather than positional strings:
 - Use `ananicy-rs start` instead of `ananicy-cpp start`.
 - Use `ananicy-rs dump <rules|types|cgroups|proc|autogroup>` instead of `ananicy-cpp dump <target>`.
+- `ananicy-rs` decides by itself whether to integrate with a service manager
+  (journald logging plus `sd_notify`). `--systemd` forces that behaviour on and
+  `--no-systemd` forces it off, so unit files and packaging do not need to pass
+  anything. See [Systemd Auto-Detection Research](./SYSTEMD_AUTO_DETECTION_RESEARCH.md).
 
 
 ## 3. Reload Mechanism (`--reload`)

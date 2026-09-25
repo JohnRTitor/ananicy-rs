@@ -36,8 +36,12 @@ in
 
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "--systemd" ];
-      description = "Additional command-line arguments passed to the ananicy-rs daemon.";
+      default = [ ];
+      description = ''
+        Additional command-line arguments passed to the ananicy-rs daemon.
+        The daemon detects systemd supervision on its own, so no
+        `--systemd` is needed; use `--no-systemd` to force it off.
+      '';
     };
 
     settings = lib.mkOption {
@@ -150,7 +154,9 @@ in
         serviceConfig = {
           ExecStart = lib.mkForce [
             "" # Clear the existing default
-            "${cfg.package}/bin/ananicy-rs ${lib.escapeShellArgs cfg.extraArgs} start"
+            (lib.concatStringsSep " " (
+              [ "${cfg.package}/bin/ananicy-rs" ] ++ cfg.extraArgs ++ [ "start" ]
+            ))
           ];
         };
 

@@ -2,10 +2,12 @@ use std::{convert::Infallible, process::exit, str::FromStr};
 
 use bpaf::Bpaf;
 
+use crate::systemd::SystemdRequest;
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Args {
-    pub systemd: bool,
+    pub systemd: SystemdRequest,
     pub daemon: bool,
     pub config: Option<String>,
     pub config_dir: Option<String>,
@@ -98,8 +100,11 @@ pub enum BpafCommands {
 /// ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage
 struct Opts {
     #[bpaf(long)]
-    /// Run as systemd service
+    /// Run as systemd service (detected automatically when omitted)
     systemd: bool,
+    #[bpaf(long)]
+    /// Never use systemd integration, even when auto-detected
+    no_systemd: bool,
     #[bpaf(long)]
     /// Run as daemon
     daemon: bool,
@@ -155,6 +160,16 @@ impl Args {
 
         let mut final_command = None;
 
+        let systemd = match (parsed_opts.systemd, parsed_opts.no_systemd) {
+            (true, true) => {
+                eprintln!("error: --systemd and --no-systemd are mutually exclusive");
+                exit(2);
+            }
+            (true, false) => SystemdRequest::Enabled,
+            (false, true) => SystemdRequest::Disabled,
+            (false, false) => SystemdRequest::Auto,
+        };
+
         if let Some(cmd) = parsed_opts.command {
             match cmd {
                 BpafCommands::Dump { sub_action } => match sub_action.parse::<DumpTarget>() {
@@ -206,7 +221,7 @@ impl Args {
         }
 
         Args {
-            systemd: parsed_opts.systemd,
+            systemd,
             daemon: parsed_opts.daemon,
             config: parsed_opts.config,
             config_dir: parsed_opts.config_dir,
