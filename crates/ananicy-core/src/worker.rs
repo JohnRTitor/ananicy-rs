@@ -375,7 +375,6 @@ impl Worker {
         }
 
         if cfg.apply_ionice
-            && cfg.apply_ioclass
             && let Some(ioclass) = rule.get("ioclass").and_then(|v| v.as_str())
         {
             let ionice = rule.get("ionice").and_then(|v| v.as_i64()).unwrap_or(0) as i32;

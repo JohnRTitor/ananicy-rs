@@ -125,7 +125,7 @@ fn an_explicit_latency_nice_wins_over_nice() {
 
 #[test]
 fn each_apply_flag_suppresses_only_its_own_attribute() {
-    let cases: [(ConfigSnapshot, &str, &str); 8] = [
+    let cases: [(ConfigSnapshot, &str, &str); 7] = [
         (
             ConfigSnapshot {
                 apply_nice: false,
@@ -153,16 +153,6 @@ fn each_apply_flag_suppresses_only_its_own_attribute() {
         (
             ConfigSnapshot {
                 apply_ionice: false,
-                ..all_attributes_enabled()
-            },
-            "set_io_priority",
-            "set_priority",
-        ),
-        (
-            // `apply_ioclass` switches the class, `apply_ionice` the priority
-            // within it; both have to be on for the ioprio_set call.
-            ConfigSnapshot {
-                apply_ioclass: false,
                 ..all_attributes_enabled()
             },
             "set_io_priority",
@@ -603,4 +593,37 @@ fn an_unknown_ioclass_does_not_hide_the_rest_of_the_rule() {
     assert!(calls.contains(&Call::SetAffinity {
         cpuset: "0-1".to_string()
     }));
+}
+
+/// `apply_ioclass` is accepted and reported, and it does nothing.
+///
+/// It is a key of the original Ananicy configuration, where it silenced the
+/// message the daemon printed when it set an I/O class. The C++ rewrite has one
+/// `ioprio_set` call covering both the class and the priority, so it had nothing
+/// for the key to gate and left it inert — the state this daemon is in too.
+/// Turning it into a real gate here would change what an existing configuration
+/// does, which is the one thing a rewrite must not do.
+#[test]
+fn apply_ioclass_does_not_gate_anything() {
+    let rule = r#"{"name":"worker-test","ioclass":"idle","ionice":3}"#;
+
+    for apply_ioclass in [true, false] {
+        let run = run_worker(
+            ConfigSnapshot {
+                apply_ioclass,
+                ..all_attributes_enabled()
+            },
+            rule,
+            FakePlatform::new(),
+        );
+
+        assert!(
+            run.platform.calls().contains(&Call::SetIoPriority {
+                ioclass: "idle".to_string(),
+                ionice: 3,
+            }),
+            "the class is applied whether apply_ioclass is {apply_ioclass}: {:?}",
+            run.platform.calls()
+        );
+    }
 }
