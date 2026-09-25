@@ -13,19 +13,23 @@ use {
     tracing::{error, info, warn},
 };
 
+// `bpf_min_us` and `verbose` are only read by the eBPF backend, so they are
+// unused in a netlink build.
+#[cfg_attr(not(feature = "bpf"), allow(unused_variables))]
 pub(crate) fn run(
     tx: Sender<Process>,
     shutdown_flag: Arc<AtomicBool>,
     worker_handle: JoinHandle<(usize, Duration)>,
     saved_x3d_mode: Option<X3DMode>,
-    #[allow(unused_variables)] bpf_min_us: Option<u32>,
+    bpf_min_us: Option<u32>,
+    verbose: bool,
 ) {
     #[cfg(feature = "bpf")]
     {
         use {ananicy_bpf::BpfMonitor, std::sync::atomic::Ordering};
         info!("Attempting to start BPF monitor...");
         loop {
-            match BpfMonitor::new(bpf_min_us) {
+            match BpfMonitor::new(bpf_min_us, verbose) {
                 Ok(mut bpf) => {
                     info!("BPF monitor successfully started.");
                     let tx_clone = tx.clone();

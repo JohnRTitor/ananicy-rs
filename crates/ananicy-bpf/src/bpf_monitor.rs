@@ -12,7 +12,7 @@ use {
 
 use {
     libbpf_rs::{
-        PerfBufferBuilder,
+        PerfBufferBuilder, PrintLevel,
         skel::{OpenSkel, Skel, SkelBuilder},
     },
     std::{io, sync::mpsc::Sender, time::Duration},
@@ -38,8 +38,27 @@ pub struct BpfMonitor {
     skel: AnanicyCppSkel<'static>,
 }
 
+/// libbpf's own diagnostics, forwarded to stderr when `--verbose` is given.
+///
+/// These are the only place the reason for a refused load or attach is printed,
+/// and libbpf says nothing above debug on its own, so the daemon's log level
+/// does not reach them.
+fn print_libbpf_message(_level: PrintLevel, message: String) {
+    eprint!("{message}");
+}
+
 impl BpfMonitor {
-    pub fn new(min_us: Option<u32>) -> Result<Self, io::Error> {
+    /// Loads and attaches the tracepoint programs.
+    ///
+    /// `verbose` mirrors `--verbose` in the reference: it turns on libbpf's own
+    /// diagnostics, which are the only way to see why a load or an attach was
+    /// refused (a missing BTF, a tracepoint the kernel does not have, a missing
+    /// `CAP_BPF`).
+    pub fn new(min_us: Option<u32>, verbose: bool) -> Result<Self, io::Error> {
+        if verbose {
+            libbpf_rs::set_print(Some((PrintLevel::Debug, print_libbpf_message)));
+        }
+
         let skel_builder = AnanicyCppSkelBuilder::default();
         let open_object = Box::leak(Box::new(MaybeUninit::uninit()));
         let mut open_skel = skel_builder

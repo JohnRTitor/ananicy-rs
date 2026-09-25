@@ -93,7 +93,7 @@ behaviour of the service manager, the delegation model, and the shipped unit.
 - `--benchmark`: Run the daemon in benchmark mode for performance profiling.
 - `--benchmark-count <BENCHMARK_COUNT>`: Number of iterations to run in benchmark mode.
 - `--bpf-min-us <BPF_MIN_US>`: Minimum microseconds for BPF intervals.
-- `-v, --verbose`: Enable verbose output.
+- `-v, --verbose`: Enable verbose output. With the `bpf` event source this also turns on the eBPF loader's own diagnostics, which is the only place the reason for a refused load or attach is printed.
 
 The active `loglevel` and per-event application flags are reloaded live. `check_freq` is captured when the manual scanner starts, so changing it requires a daemon restart; rule, type, and cgroup files also require a restart.
 

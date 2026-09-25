@@ -171,7 +171,7 @@ Classification key: **EQ** Equivalent · **SUP** Superset · **MISS** Missing/Re
 | 62 | Process | BPF exec/fork tracepoints | same `.bpf.c` | EQ | `libananicycpp_bpf/src/ananicy_cpp.bpf.c` ≡ `crates/ananicy-bpf/bpf/ananicy_cpp.bpf.c` | n/a | none |
 | 63 | Process | BPF name resolution | C++ resolves in the callback; Rust defers to the worker | EQ (outcome) | `src/platform/linux/process.cpp:61-69` ↔ `bpf_monitor.rs:90-103`, `worker.rs:144-151` | no | note |
 | 64 | Process | BPF verbose → libbpf debug | absent | BEH (diag) | `bpf_program_utils.c:16-26` ↔ `bpf_monitor.rs:42` (no verbose param) | no | add `--verbose` plumbing or document |
-| 65 | Process | perf buffer size | 64 pages vs libbpf-rs default | BEH (perf) | `bpf_program_utils.c:76` ↔ `bpf_monitor.rs:73-108` | no | set page count explicitly |
+| 65 | Process | perf buffer size | 64 pages | 64 pages | EQ | `bpf_program_utils.c:76` vs `PerfBufferBuilder::new` (libbpf-rs 0.27 default is 64) | no | none — corrected, see §11 |
 | 66 | Process | realtime detection | `sched_getscheduler` vs `sched_attr.sched_priority>0` | BEH | `src/platform/linux/process_info.cpp:107-118` ↔ `lib.rs:46-51` | no | document / align |
 | 67 | Process | kernel-thread detection | computed but unused in both | EQ | `src/worker.cpp:85` (dead) ↔ absent | n/a | none |
 | 68 | Diagnostics | `dump proc` / `dump autogroup` | same fields + `rule` | SUP | `src/platform/linux/process_info.cpp:161-306` ↔ `src/dump.rs:53-176`, `process_info.rs:8-27` | no | add to diff doc |
@@ -569,9 +569,10 @@ each other.
 
 * `--verbose` no longer enables libbpf's debug printer (`bpf_program_utils.c:16-26` vs
   `bpf_monitor.rs:42`, which takes no `verbose`).
-* The perf buffer is created with the libbpf-rs default page count instead of C++'s 64 pages per CPU
-  (`bpf_program_utils.c:76` vs `bpf_monitor.rs:73`), so the BPF backend is somewhat more exposed to
-  `PERF_EVENT_ARRAY` overruns under load.
+* The perf buffer is created with the same 64 pages per CPU as the reference
+  (`bpf_program_utils.c:76`): `PerfBufferBuilder::new` in libbpf-rs 0.27 already
+  defaults to 64, so there is nothing to align. *(This corrects an earlier
+  reading of the audit, which took the crate's default for something smaller.)*
 * C++'s BPF callback resolves the process name in the callback (`process.cpp:61-69`); Rust defers it
   to the worker thread (`bpf_monitor.rs:90-103` → `worker.rs:144-151`). The *matched name* is the
   same, but the `exec` event's name is read slightly later, so a rapid `exec` chain can resolve a
@@ -782,7 +783,7 @@ Ignored/discarded results worth noting (all intentional, all logged or documente
 | 11 | **Low** | Replace the netlink `.expect("Worker thread died")` with a shutdown-flag set. | `crates/ananicy-platform/src/netlink.rs:183-186` |
 | 12 | **Low** | Implement the `apply_ioclass` gate or stop reporting it as an effective value. | `crates/ananicy-core/src/worker.rs:373-391`; `src/startup.rs:129`; `contrib/module.nix:141` |
 | 13 | **Low** | Align realtime detection (`sched_attr.sched_priority > 0`) or document the difference. | `crates/ananicy-platform/src/lib.rs:46-51` |
-| 14 | **Low** | Document (or align) `--verbose`, the `benchmark-count` exit timing, the unknown-action exit, the `dump` exit codes, the `cpuset` bound, the `CPUQuota` CPU count, the netlink buffer/timeout, the BPF perf-buffer size and the missing BPF verbose. | `src/startup.rs:17-33`; `crates/ananicy-core/src/worker.rs:133-137`; `src/main.rs:98-101`; `src/cli.rs:213-219`; `crates/ananicy-platform/src/abi/affinity.rs:10-17`; `crates/ananicy-platform/src/cgroup/manager.rs:278`; `netlink.rs:50-56`; `bpf_monitor.rs:42,73-108` |
+| 14 | **Low** | Document (or align) `--verbose`, the `benchmark-count` exit timing, the unknown-action exit, the `dump` exit codes, the `cpuset` bound, the `CPUQuota` CPU count, and the netlink buffer/timeout. *(Re-checked while fixing: the perf-buffer size was never a difference — libbpf-rs 0.27 already defaults to the reference's 64 pages — and the BPF `--verbose` plumbing is being added.)* | `src/startup.rs:17-33`; `crates/ananicy-core/src/worker.rs:133-137`; `src/main.rs:98-101`; `src/cli.rs:213-219`; `crates/ananicy-platform/src/abi/affinity.rs:10-17`; `crates/ananicy-platform/src/cgroup/manager.rs:278`; `netlink.rs:50-56` |
 | 15 | **Low** | Document the NixOS `.foo-wrapped` matching rewrite. | `crates/ananicy-core/src/worker.rs:155-171`; `docs/ANANICY_CPP_DIFFERENCES.md` §5 |
 | 16 | **Low** | Either finish or delete the dead `cgroup_rules` module (exact/glob/ancestor/`!` cgroup matching is unreachable from the rule engine). | `crates/ananicy-core/src/cgroup_rules.rs`; `crates/ananicy-core/src/lib.rs:2` |
 | 17 | **Low** | Add a terminate/backtrace panic hook. | new `src/panics.rs`; `Cargo.toml:75-80` |
