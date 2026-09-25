@@ -1,6 +1,5 @@
 #![allow(clippy::io_other_error)]
 use {
-    crate::abi::sched::{SCHED_FIFO, SCHED_RR},
     ananicy_core::worker::{PlatformError, PlatformError::Unsupported},
     std::time::Duration,
     tracing::debug,
@@ -44,10 +43,25 @@ impl LinuxPlatform {
 
 impl PlatformActions for LinuxPlatform {
     fn is_realtime(&self, pid: i32) -> bool {
-        // Read /proc/<pid>/stat and check the policy field (policy is field 41)
-        // Or simply check if sched_getscheduler returns SCHED_FIFO or SCHED_RR
-        crate::abi::sched::sched_getscheduler(pid)
-            .is_ok_and(|sched| sched == SCHED_FIFO || sched == SCHED_RR)
+        // A task counts as realtime when it holds a static priority above zero,
+        // which is what the policy and the priority together mean. Asking for
+        // the policy instead (`sched_getscheduler`) would call a priority-zero
+        // FIFO or RR task realtime, and miss a task that reports a priority
+        // under any other policy; the reference asks for the priority, so the
+        // two agree on the same machine.
+        let size = std::mem::size_of::<crate::abi::sched_attr::sched_attr>() as u32;
+        let mut attr = crate::abi::sched_attr::sched_attr {
+            size,
+            ..Default::default()
+        };
+
+        match crate::abi::sched_attr::sched_getattr(pid, &mut attr, size, 0) {
+            // `sched_getattr` can report a partial struct on a kernel that grew
+            // it, so a successful call may still leave the priority at zero —
+            // which is the answer, not a failure to read it.
+            Ok(()) => attr.sched_priority > 0,
+            Err(_) => false,
+        }
     }
 
     fn get_start_time(&self, pid: i32) -> Option<u64> {
