@@ -131,11 +131,54 @@ fn a_machine_with_no_differentiating_capacity_is_homogeneous() {
     std::fs::create_dir_all(cpu_dir.join("smt")).unwrap();
     std::fs::write(cpu_dir.join("smt").join("active"), "0\n").unwrap();
 
-    let topo = detect_topology_impl(&root.path());
+    let topo = detect_topology_impl(&root.path().join("sys"));
+    assert_eq!(topo.all_cores_str, "0-3", "the fixture is read");
     assert!(!topo.has_big_little);
     assert_eq!(topo.big_cores_str, topo.all_cores_str);
     assert_eq!(topo.little_cores_str, "");
     assert_eq!(topo.turbo_cores_str, "");
+}
+
+/// A machine whose CPUs report distinct capacities, but not distinct enough:
+/// 166 against 186 is a 1.12x spread, below the 1.3x the classifier requires.
+fn near_uniform_capacities() -> CpuTopology {
+    let root = tempfile::tempdir().unwrap();
+    let cpu_dir = root.path().join("sys/devices/system/cpu");
+    for (cpu, capacity) in [(0, 166), (1, 181), (2, 166), (3, 186)] {
+        let base = cpu_dir.join(format!("cpu{cpu}"));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("cpu_capacity"), format!("{capacity}\n")).unwrap();
+    }
+    std::fs::create_dir_all(cpu_dir.join("smt")).unwrap();
+    std::fs::write(cpu_dir.join("smt").join("active"), "0\n").unwrap();
+
+    detect_topology_impl(&root.path().join("sys"))
+}
+
+#[test]
+fn a_capacity_spread_below_the_threshold_is_homogeneous() {
+    // Capacities are read and they do differ, but not by the 1.3x the
+    // classifier needs. That still counts as homogeneous, and the two
+    // homogeneous paths have to agree: no little cores, no turbo subset.
+    let topo = near_uniform_capacities();
+
+    assert_eq!(topo.all_cores_str, "0-3", "the fixture is read");
+    assert!(!topo.has_big_little);
+    assert_eq!(topo.big_cores_str, topo.all_cores_str);
+    assert_eq!(
+        topo.little_cores_str, "",
+        "a machine without little cores must not answer for little-cores"
+    );
+    assert_eq!(topo.turbo_cores_str, "");
+
+    let aliases = topo.generate_cpuset_aliases();
+    assert_eq!(aliases["efficiency-cores"], "");
+    assert_eq!(aliases["turbo-cores"], "");
+    assert_eq!(
+        aliases["performance-cores"], topo.all_cores_str,
+        "with no turbo subset, performance cores are all the big cores"
+    );
+    assert_eq!(aliases["big-cores"], topo.all_cores_str);
 }
 
 #[test]

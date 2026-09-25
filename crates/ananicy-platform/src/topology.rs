@@ -246,6 +246,21 @@ fn pick_capacity_source(bases: &BTreeMap<u32, PathBuf>, cpus: &BTreeSet<u32>) ->
     chosen.unwrap_or(CAPACITY_SOURCES[CAPACITY_SOURCES.len() - 1])
 }
 
+/// Records a machine with no usable core-type split: every online CPU counts as
+/// a big core, and there is no little and no turbo subset.
+///
+/// `little-cores` and `turbo-cores` are left empty on purpose. An empty alias
+/// means "no CPUs of that class", and the worker then leaves the affinity of a
+/// rule that used it alone. Filling them with every CPU would instead pin
+/// whatever asked for efficiency cores to all of them, widening an existing
+/// restriction instead of honouring the alias.
+fn mark_homogeneous(top: &mut CpuTopology) {
+    top.has_big_little = false;
+    top.big_cores_str = top.all_cores_str.clone();
+    top.little_cores_str = String::new();
+    top.turbo_cores_str = String::new();
+}
+
 pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     let mut top = CpuTopology {
         smt_enabled: detect_smt(sys_root),
@@ -355,10 +370,7 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
         debug!(
             "detect_topology: All cores have the same metric or no info. Cannot determine big/little."
         );
-        top.has_big_little = false;
-        top.big_cores_str = top.all_cores_str.clone();
-        top.little_cores_str = String::new();
-        top.turbo_cores_str = String::new();
+        mark_homogeneous(&mut top);
         return top;
     }
 
@@ -376,9 +388,7 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
             "detect_topology: Max capacity ({}) is not >= 1.3x min capacity ({}). Assuming homogeneous.",
             highest_metric, lowest_metric
         );
-        top.big_cores_str = top.all_cores_str.clone();
-        top.little_cores_str = top.all_cores_str.clone();
-        top.turbo_cores_str = top.all_cores_str.clone();
+        mark_homogeneous(&mut top);
         return top;
     }
 

@@ -26,14 +26,15 @@ Instead of hardcoding CPU IDs, `ananicy-rs` provides named aliases that are reso
 | `llc-N` | CPUs sharing LLC domain N (e.g., `llc-0`, `llc-1`) |
 | `node-N` | CPUs on NUMA node N (e.g., `node-0`, `node-1`) |
 
-*On systems without heterogeneous cores, `big-cores` and `all-cores` resolve to the same set of CPUs.*
+*On systems without heterogeneous cores, `big-cores` and `all-cores` resolve to the same set of CPUs, and there are no little or turbo cores: `little-cores`, `efficiency-cores` and `turbo-cores` resolve to no CPUs at all. A rule that names one of those then leaves the process' affinity untouched, rather than pinning it to every CPU — which would widen an existing restriction, say a systemd `CPUAffinity=` or a container's `cpuset.cpus`, instead of honouring the alias.*
 
 ### Heterogeneous Topology Detection
 
 At startup, `ananicy-rs` probes `sysfs` to build a full CPU topology:
 - **NUMA nodes** and **LLC (last-level cache) domains** are identified and grouped.
 - **Core types** (BigTurbo, Big, Little) are classified using CPU capacity values from `sysfs`. Five capacity sources are probed in priority order: `amd_pstate_prefcore_ranking`, `amd_pstate_highest_perf`, `acpi_cppc/highest_perf`, `cpu_capacity`, `cpuinfo_max_freq`.
-- **big.LITTLE detection**: If the highest-capacity CPU exceeds 1.3x the lowest, the system is classified as heterogeneous and cores are split into Big/Little groups.
+- **big.LITTLE detection**: If the highest-capacity CPU exceeds 1.3x the lowest, the system is classified as heterogeneous and cores are split into Big/Little groups. Below that ratio the machine counts as homogeneous, even when the CPUs do report slightly different values.
+- One capacity source is chosen for the whole machine, the first one that both reports a value and is seen to tell two CPUs apart, so a kernel that exports a uniform higher-priority file cannot hide a heterogeneous machine.
 - **SMT** (simultaneous multithreading) status is detected.
 
 Example usage to restrict a background task to efficiency cores:
