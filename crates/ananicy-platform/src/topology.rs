@@ -279,39 +279,48 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
     let mut llc_l3_size: HashMap<i32, u64> = HashMap::new();
 
     if let Ok(entries) = fs::read_dir(sys_root.join("devices/system/cpu")) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("cpu")
-                && name.len() > 3
-                && let Ok(cpu_id) = name[3..].parse::<u32>()
-            {
-                let base = entry.path();
+        // The alias ids are handed out in the order the LLCs are first seen, so
+        // the order of this walk decides what `llc-0` names. `read_dir` yields
+        // whatever order the filesystem feels like — ascending on a plain sysfs,
+        // but nothing guarantees it, and an overlay, a bind-mounted subset or a
+        // different kernel can all change it. The reference walks CPU ids in
+        // ascending order, so sorting here is what makes `llc-N` name the same
+        // physical LLC under both daemons.
+        let mut cpus: Vec<(u32, PathBuf)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let id = name.strip_prefix("cpu")?.parse::<u32>().ok()?;
+                Some((id, entry.path()))
+            })
+            .collect();
+        cpus.sort_unstable_by_key(|(id, _)| *id);
 
-                let online = if cpu_id == 0 {
-                    true
-                } else {
-                    match fs::read_to_string(base.join("online")) {
-                        Ok(s) => s.trim() == "1",
-                        Err(_) => true,
-                    }
-                };
-
-                if !online {
-                    continue;
+        for (cpu_id, base) in cpus {
+            let online = if cpu_id == 0 {
+                true
+            } else {
+                match fs::read_to_string(base.join("online")) {
+                    Ok(s) => s.trim() == "1",
+                    Err(_) => true,
                 }
+            };
 
-                all_cores.insert(cpu_id);
-                bases.insert(cpu_id, base.clone());
+            if !online {
+                continue;
+            }
 
-                let node_id = get_node_id(&base);
-                let llc_id = get_llc_id(&base, &mut llc_map);
+            all_cores.insert(cpu_id);
+            bases.insert(cpu_id, base.clone());
 
-                node_groups.entry(node_id).or_default().insert(cpu_id);
-                llc_groups.entry(llc_id).or_default().insert(cpu_id);
+            let node_id = get_node_id(&base);
+            let llc_id = get_llc_id(&base, &mut llc_map);
 
-                if let Ok(l3_str) = fs::read_to_string(base.join("cache/index3/size")) {
-                    llc_l3_size.insert(llc_id, parse_size_string(&l3_str));
-                }
+            node_groups.entry(node_id).or_default().insert(cpu_id);
+            llc_groups.entry(llc_id).or_default().insert(cpu_id);
+
+            if let Ok(l3_str) = fs::read_to_string(base.join("cache/index3/size")) {
+                llc_l3_size.insert(llc_id, parse_size_string(&l3_str));
             }
         }
     }
