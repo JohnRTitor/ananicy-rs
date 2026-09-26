@@ -58,13 +58,16 @@ What these reported while the recipe was written, with `rpmlint` 2.10.0:
 config, and `rpmbuild -bs` consumed it. The `%prep` version check was exercised
 in both directions.
 
-**Not run:** `rpmbuild -ba`. There is no Fedora build environment here — no
-mock, no `pcre2-devel`, no `systemd-devel` — so the binary RPM has not been
-produced. The parts of it that could be checked without one were: the spec
-parses, the source package builds, and `cargo build --release --locked
---offline` plus `make install` were run against the same vendored tree the spec
-uses, producing the two files `%files` lists. A real submission needs
-`mock -r fedora-rawhide --rebuild`.
+**What the CI job found, and what is now verified.** `rpmbuild -ba` had not been
+run when this recipe was written — there is no Fedora build environment in the
+environment it was written in — so the sections above record what was checked
+without one. It is now built on every change in a `fedora:latest` container, and
+the package contains exactly the table above plus a build-id link, and rpm's
+automatic `ananicy-rs-debuginfo` subpackage, which also ships the sources under
+`/usr/src/debug/` as usual for a Rust package. `rpmlint` reports the two warnings
+in the table and nothing else. A real submission still wants
+`mock -r fedora-rawhide --rebuild`, which builds in a proper buildroot as an
+unprivileged user rather than as root in the job's own filesystem.
 
 ## `%check`, and why the CI job runs it separately
 

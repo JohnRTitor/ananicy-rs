@@ -1,9 +1,18 @@
+# The `|| true` calls are inside the `#DEBHELPER#` block that
+# dh_installsystemd generates, not hand-written here, and they are deliberate: a
+# unit that cannot be unmasked or enabled on a system not running systemd must
+# not make the install fail. This is the standard shape for any package using
+# dh_installsystemd.
+maintainer-script-ignores-errors
+
 # The project ships no man page, so this package has none. docs/CLI.md and
-# docs/CONFIGURATION.md are installed under /usr/share/doc/ananicy-rs/docs/
-# instead, and README.Debian says where they are. Writing a man page inside the
-# packaging would create a second copy of the command-line reference to keep in
-# step with the binary; it belongs upstream, next to the code it documents, and
-# that is a change to propose rather than one to smuggle in via a recipe.
+# docs/CONFIGURATION.md are installed under /usr/share/doc/ananicy-rs/ instead,
+# flattened rather than under a docs/ subdirectory, which is what dh_installdeb
+# does with `debian/ananicy-rs.docs`. README.Debian says where they are.
+# Writing a man page inside the packaging would create a second copy of the
+# command-line reference to keep in step with the binary; it belongs upstream,
+# next to the code it documents, and that is a change to propose rather than one
+# to smuggle in via a recipe.
 no-manual-page
 
 # Expected for a package that has never been uploaded: there is no bug to close
