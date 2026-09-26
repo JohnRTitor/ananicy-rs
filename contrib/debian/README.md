@@ -12,14 +12,17 @@ package.
 ## Build it
 
 ```bash
-# 1. Vendor the Cargo dependencies. Needs cargo, tar and xz. Needs network:
-#    this is the only step in the whole flow that does.
-./contrib/debian/make-vendor.sh          # -> contrib/debian/vendor.tar.xz
-
-# 2. Put the packaging where dpkg expects it, from a checkout whose directory is
-#    named <source>-<version>, and build. The test suite runs as part of this.
+# 1. Put the packaging where dpkg expects it, from a checkout whose directory is
+#    named <source>-<version>.
 version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
 cp -r contrib/debian debian
+
+# 2. Vendor the Cargo dependencies. Needs cargo, tar and xz. Needs network:
+#    this is the only step in the whole flow that does. It has to run after step
+#    1, because the archive belongs in debian/ -- see the note below.
+./debian/make-vendor.sh             # -> debian/vendor.tar.xz
+
+# 3. Build. The test suite runs as part of this.
 dpkg-buildpackage -us -uc -b
 ```
 
@@ -39,14 +42,21 @@ whenever `Cargo.lock` changes. It ships inside the source package; set
 `SOURCE_DATE_EPOCH` to the release date for byte-identical archives across
 regenerations.
 
-It lives in `debian/`, and `debian/source/include-binaries` lists it, because
-`dpkg-source` refuses a binary file in a source package that is not listed there
-— a 15 MB xz of third-party source is a binary file by that definition, even
-though it is source. The more usual home for bundled dependencies is the orig
-tarball, and that was rejected deliberately: the build would then depend on the
-orig tarball being present, and `dpkg-buildpackage -b` does not require one,
-because it builds in the working tree. As shipped, the build tree is
-self-contained and `-b` works from a checkout with no orig tarball at all.
+It lives in `debian/`, and `debian/source/include-binaries` lists it, for two
+reasons that `dpkg-source` states between them. A binary file in a source
+package has to be declared there, and a 15 MB xz of third-party source is a
+binary file by that definition even though it is source. And because
+`dpkg-source` builds the source package by diffing the working tree against the
+orig tarball, the archive must not be left in `contrib/debian/` — there it would
+be a modification to a file the orig tarball already has, which cannot be
+represented. That is why `make-vendor.sh` refuses to run until the packaging has
+been copied into place.
+
+The more usual home for bundled dependencies is the orig tarball, and that was
+rejected deliberately: the build would then depend on the orig tarball being
+present, and `dpkg-buildpackage -b` does not require one, because it builds in the
+working tree. As shipped, the build tree is self-contained and `-b` works from a
+checkout with no orig tarball at all.
 
 `dpkg-buildpackage` never reaches the network: `debian/rules` sets
 `CARGO_NET_OFFLINE`, points `CARGO_HOME` inside the build directory, and passes

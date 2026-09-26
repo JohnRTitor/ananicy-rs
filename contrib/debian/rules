@@ -37,7 +37,7 @@ VENDOR_DIR := $(CURDIR)/vendor
 # make-vendor.sh.
 override_dh_auto_configure:
 	if [ ! -f "$(VENDOR_ARCHIVE)" ]; then \
-		echo "$(VENDOR_ARCHIVE) is missing; run contrib/debian/make-vendor.sh first." >&2; \
+		echo "$(VENDOR_ARCHIVE) is missing; run debian/make-vendor.sh first." >&2; \
 		exit 1; \
 	fi
 	tar -xf "$(VENDOR_ARCHIVE)"

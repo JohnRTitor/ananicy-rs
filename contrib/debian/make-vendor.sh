@@ -10,11 +10,19 @@
 # inside the source package as debian/vendor.tar.xz.
 #
 # Usage:
-#   contrib/debian/make-vendor.sh [OUTPUT]
+#   cp -r contrib/debian debian      # the packaging has to be in place first
+#   debian/make-vendor.sh [OUTPUT]
 #
-# OUTPUT defaults to contrib/debian/vendor.tar.xz, the path debian/rules looks
-# for. It is generated, not committed; regenerate it whenever Cargo.lock changes
-# and ship the result with the source package.
+# OUTPUT defaults to debian/vendor.tar.xz, the path debian/rules looks for and
+# the path debian/source/include-binaries declares. It has to be inside the
+# installed debian/ directory and not inside contrib/debian/: dpkg-source builds
+# the source package by diffing the working tree against the orig tarball, so an
+# archive sitting in contrib/debian/ is a modification to a file the orig tarball
+# already has, which it cannot represent. Inside debian/ it is simply a new file
+# in the packaging directory, which is the ordinary case.
+#
+# The archive is generated, not committed; regenerate it whenever Cargo.lock
+# changes and ship the result with the source package.
 #
 # The archive contains two entries:
 #
@@ -31,7 +39,13 @@ set -eu
 srcdir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$srcdir"
 
-output=${1:-"$srcdir/contrib/debian/vendor.tar.xz"}
+if [ ! -d debian ]; then
+    echo "make-vendor.sh: $srcdir/debian does not exist." >&2
+    echo "Copy the packaging into place first: cp -r contrib/debian debian" >&2
+    exit 1
+fi
+
+output=${1:-"$srcdir/debian/vendor.tar.xz"}
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT INT HUP TERM

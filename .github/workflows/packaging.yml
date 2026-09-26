@@ -212,10 +212,15 @@ jobs:
         run: |
           set -euxo pipefail
           cd "/build/ananicy-rs-${{ steps.tree.outputs.version }}"
+          # The packaging has to be in place before the vendoring step runs,
+          # because that is where the archive has to land: dpkg-source diffs the
+          # working tree against the orig tarball, so an archive left in
+          # contrib/debian/ is a modification it cannot represent. See
+          # debian/source/include-binaries.
+          cp -r contrib/debian debian
           # The only step in the flow that uses the network: it fills
           # debian/vendor.tar.xz, after which dpkg-buildpackage stays offline.
-          ./contrib/debian/make-vendor.sh
-          cp -r contrib/debian debian
+          ./debian/make-vendor.sh
           # Source *and* binary, so dpkg-source is exercised too: the vendored
           # archive has to survive being packed into the source package.
           dpkg-buildpackage -us -uc --no-sign
