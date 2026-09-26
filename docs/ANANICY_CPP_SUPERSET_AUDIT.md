@@ -556,7 +556,7 @@ had worked.
 
 The reference keeps one **global, latching** counter (`static exe_fail_count`, threshold 5, reset
 only on success — `process.cpp:195-196, 224, 236, 243-244`); this tree keeps a per-PID LRU of 256
-entries (`crates/ananicy-platform/src/procfs.rs:15-17, 62-98`). Five `EACCES` on `/proc/*/exe` for
+entries (`crates/ananicy-platform/src/procfs.rs:15-17, 83-108`). Five `EACCES` on `/proc/*/exe` for
 **any** PIDs permanently disables exe-based naming for the whole reference daemon; this tree needs
 five failures for the *same* PID. The per-PID version is the correct fix and the reference is
 affected by a real bug — but the two can still resolve different names for the same process, and
