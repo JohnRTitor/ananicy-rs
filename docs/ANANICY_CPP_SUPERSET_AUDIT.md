@@ -647,13 +647,36 @@ silently ignored there. The previous audit documented the stricter rejections (`
 not this.
 
 
-### 5.17 BPF backend — Severity: Informational
+### 5.17 BPF backend — Severity: Informational — **no difference; the entry was wrong**
 
-The two `ananicy_cpp.bpf.c` files are byte-identical (`diff` confirms). `min_us` is inert in both
-because the rate-limit check is commented out (`ananicy_cpp.bpf.c:60-61`). The perf buffer is 64
-pages per CPU in both — the previous audit's claim that this side used a smaller buffer was wrong
-(§10). The lost-event callback writes to stderr in both. The Rust side additionally wires libbpf's
-print callback to `--verbose`, which is the only genuine difference.
+An earlier draft of this entry ended "the Rust side additionally wires libbpf's print callback to
+`--verbose`, which is the only genuine difference". The reference does exactly that
+(`bpf_program_utils.c:14-26`): a `libbpf_print_fn` that returns early unless a `g_verbose` flag is
+set, installed with `libbpf_set_print` in the same `initialize_bpf_program` that takes `verbose`.
+So that was not a difference, and with it gone there is no BPF-specific difference at all.
+
+Checked, since the crate now builds under `nix develop`:
+
+| | `ananicy-cpp` | `ananicy-rs` |
+|---|---|---|
+| `ananicy_cpp.bpf.c` | — | **byte-identical** (`diff`, against `libananicycpp_bpf/src/`) |
+| `min_us` rate limit | inert, check commented out | same file, so the same |
+| perf buffer | `perf_buffer__new(…, 64, …)` | `PerfBufferBuilder::new` — inherits 64 as libbpf-rs' default |
+| lost-event callback | `fmt::print(stderr, …)` | `error!`, which tracing sends to stderr |
+| libbpf print callback | `g_verbose`-gated, stderr | `--verbose`-gated, stderr |
+
+Two things worth stating precisely rather than as agreement. The perf buffer is 64 pages in both
+because libbpf-rs' `PerfBufferBuilder::new` defaults to 64 — this daemon does not *ask* for 64, it
+inherits it, and a future libbpf-rs that changed its default would silently change the buffer. The
+previous audit claimed this side used a *smaller* buffer and was wrong about that (§10); the
+accurate statement is that it does not choose one. And `bpf-min-us` is a dead option in **both**:
+the program accepts the constant and the rate-limit check is commented out at
+`ananicy_cpp.bpf.c:60`, so neither daemon's `--bpf-min-us` does anything.
+
+The one real ordering difference — the initial `/proc` scan running before the subscription in the
+reference and concurrently with it here — belongs to neither backend and is not BPF-specific. It is
+matrix row 6, and until this pass it was in the matrix but in no document; it is now recorded in
+`ANANICY_CPP_DIFFERENCES.md` §5.2.
 
 
 ### 5.18 Netlink receive window — Severity: Informational — **no difference; the entry was wrong**

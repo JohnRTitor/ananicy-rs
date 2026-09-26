@@ -193,3 +193,11 @@ divergence goes.
   failure logs at `error`, a partial one at `warn`. `sched_setscheduler(SCHED_FIFO, 0)` and
   `(SCHED_FIFO, 200)` both return `EINVAL`, so this was reachable with an ordinary rule — one
   that also named an `ionice` the kernel would have accepted.
+- **The initial full `/proc` scan runs at a different point.** `ananicy-cpp` scans and *then*
+  subscribes, in both event backends (`process.cpp:30-35` for BPF, `:163-168` for netlink).
+  `ananicy-rs` subscribes first and scans concurrently (`monitor.rs:67-78`). The windows are
+  inverses of each other, so each daemon misses something the other catches: a process that execs
+  between the reference's scan and its subscription is missed there and seen here, possibly twice.
+  Scanning first is the more conventional order, but subscribing first is the one that cannot drop
+  an event, and a duplicate report is cheaper than a lost one — the worker re-resolves the process
+  and applies the same rule again.
