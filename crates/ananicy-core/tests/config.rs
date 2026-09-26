@@ -188,7 +188,7 @@ fn invalid_check_freq_is_rejected_and_keeps_the_default() {
 
 #[test]
 fn check_freq_accepts_the_full_unsigned_range() {
-    assert_eq!(parse("check_freq=0\n").check_freq, 0);
+    assert_eq!(parse("check_freq=1\n").check_freq, 1);
     assert_eq!(parse("check_freq=4294967295\n").check_freq, u32::MAX);
     assert_eq!(
         parse("check_freq=-1\n").check_freq,
@@ -196,6 +196,25 @@ fn check_freq_accepts_the_full_unsigned_range() {
         "negative is invalid"
     );
     assert_eq!(parse("check_freq=1.5\n").check_freq, 60, "not an integer");
+}
+
+/// A zero interval would mean scanning `/proc` in a tight loop.
+///
+/// The reference accepts it and then waits zero seconds, so `--manual-scanning`
+/// busy-scans and burns a core while looking like a working daemon. It is
+/// refused here, with an error the operator sees at start-up, rather than stored
+/// and quietly replaced at the point of use.
+#[test]
+fn a_zero_check_freq_is_refused_with_a_reason() {
+    let (config, diagnostics) = parse_with_diagnostics("check_freq=0\n");
+
+    assert_eq!(config.check_freq, 60, "the default is kept");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| matches!(d, ConfigDiagnostic::Error(message) if message.contains("at least 1 second"))),
+        "the error should say what is wrong: {diagnostics:?}"
+    );
 }
 
 #[test]

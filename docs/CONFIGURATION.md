@@ -14,7 +14,7 @@ The format is `key=value`, one per line.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `check_freq` | `60` | Full process scan interval in seconds (used during manual scanning) |
+| `check_freq` | `60` | Full process scan interval in seconds (used during manual scanning); must be at least 1 |
 | `check_disks_schedulers` | `true` | Report the block devices whose I/O scheduler will not honour `ioclass` and `ionice` |
 | `apply_nice` | `true` | Apply nice values from rules |
 | `apply_sched` | `true` | Apply scheduling policy from rules |
