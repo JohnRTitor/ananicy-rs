@@ -132,6 +132,11 @@ allows and the one that keeps the build offline.
 | `/usr/share/zsh/site-functions/_ananicy-rs` | `ananicy-rs completions zsh` |
 | `/usr/share/doc/ananicy-rs/` | `README.md`, `CONTRIBUTING.md`, `docs/*.md`, `README.Debian` |
 | `/usr/share/doc/ananicy-rs/copyright` | `debian/copyright` |
+| `/usr/share/lintian/overrides/ananicy-rs` | `debian/ananicy-rs.lintian-overrides` |
+
+The last row is `dh_lintian` copying the override file into the package on
+purpose, so that lintian run against the *installed* package reaches the same
+conclusions as the build. It is not a packaging accident.
 
 The `docs/*.md` are **flattened** into `/usr/share/doc/ananicy-rs/`, not into a
 `docs/` subdirectory: `dh_installdeb` drops the leading directories of a path
