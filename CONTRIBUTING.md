@@ -7,7 +7,7 @@ First of all, thank you for considering contributing to `ananicy-rs`! This proje
 `docs/BUILD.md` is the canonical description of what to install and how to build:
 the native dependencies and their per-distribution package names, the feature
 flags, the `ananicy-bpf` workspace trap, the release profile, and what each
-build error means. In short: Linux, Rust 1.85 or newer via
+build error means. In short: Linux, Rust 1.88 or newer via
 [rustup](https://rustup.rs/), and — if you want the `bpf` feature or intend to
 run `--workspace` — `clang`, `libbpf`, PCRE2 and `rustfmt`.
 

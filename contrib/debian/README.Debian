@@ -10,10 +10,17 @@ building it. This file is the end user's and the reviewer's.
 Building
 --------
 
+This package needs rustc 1.88 or newer. That is higher than edition 2024
+requires: the daemon uses let chains, which stabilised in 1.88, and an older
+compiler will fail with `error[E0658]: let expressions in this position are
+unstable` rather than telling you the version is too old. So this package cannot
+be built against Debian stable, whose rustc is 1.85.1; it targets
+trixie-backports or sid.
+
 The source package is the git tree of the release tag plus a vendored copy of
 every crate in `Cargo.lock`, in `debian/vendor.tar.xz`. That is what makes the
 build reproducible: nothing is fetched from crates.io while the `.deb` is built.
-Regenerate the archive with `contrib/debian/make-vendor.sh` whenever `Cargo.lock`
+Regenerate the archive with `debian/make-vendor.sh` whenever `Cargo.lock`
 changes.
 
 The build needs no network and no root. `Rules-Requires-Root: no` in

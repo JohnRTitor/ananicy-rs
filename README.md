@@ -36,7 +36,7 @@ The project is currently under active development. While it supports loading rul
 - **systemd**: Optional, but recommended for service management.
 - **cgroup v2** (or v1): Required for the cgroup functionalities.
 
-Building needs Linux and Rust 1.85 or newer, plus the development files for
+Building needs Linux and Rust 1.88 or newer, plus the development files for
 libsystemd and PCRE2 — the default feature set links both. The `bpf` feature
 additionally needs clang, libbpf and rustfmt. See
 **[Building](docs/BUILD.md)** for the full dependency list and

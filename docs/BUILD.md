@@ -18,13 +18,33 @@ syscalls, and nothing in the tree compiles on another operating system.
 
 | | |
 | --- | --- |
-| Minimum | **Rust 1.85** |
+| Minimum | **Rust 1.88** |
 | Edition | 2024 (all crates) |
 | Install | [rustup](https://rustup.rs/) |
 
-1.85 is the first release that supports edition 2024, which every crate here
-uses; there is no `rust-version` field in any manifest, so cargo will not warn
-you if you are too old — the error is a parse failure on `edition = "2024"`.
+Two separate floors, and the higher one is what actually bites.
+
+**1.85** is the first release that supports edition 2024, which every crate here
+uses. On anything older, cargo fails to parse the manifests at all.
+
+**1.88** is the first release in which let chains are stable in the 2024
+edition, and this workspace uses them — 30 `&& let` expressions across
+`ananicy-core` and `ananicy-platform`, in `worker.rs`, `mounts.rs`, `x3d.rs` and
+`procfs.rs`. A 1.85 toolchain therefore gets *past* the manifests and then stops
+with
+
+```
+error[E0658]: `let` expressions in this position are unstable
+```
+
+which reads like a nightly feature rather than a version floor, and there is no
+`rust-version` field in any manifest for cargo to check, so nothing warns you
+first. If a build fails on E0658, upgrade the toolchain; it is not a language
+feature to be enabled.
+
+This has a distribution consequence, recorded in the packaging recipes: Debian
+stable ships rustc 1.85.1, so the `.deb` cannot be built there and
+`contrib/debian/control` requires `rustc (>= 1.88)`.
 
 ### Native libraries
 
@@ -422,7 +442,8 @@ run. `packaging.yml`, `nixos.yml` and `release.yml` list themselves.
 | `No match for argument: libpcre2-devel` | Fedora's package is `pcre2-devel`. Debian's is `libpcre2-dev`. |
 | `failed to run custom build command for 'ananicy-bpf'` | clang missing, or it cannot target BPF. |
 | `the crate 'ananicy-bpf' … requires libbpf` | `--workspace` or `--all-features` on a host without the eBPF toolchain. Build the default members instead. |
-| `error: '…' requires rustc 1.85 or newer` | Edition 2024. Upgrade the toolchain. |
+| `error: E0658: `let` expressions in this position are unstable` | rustc older than 1.88. Let chains are stable, not a nightly feature; upgrade the toolchain. |
+| `error: failed to parse manifest … edition = "2024"` | rustc older than 1.85. Upgrade the toolchain. |
 | `At least one event source feature ('bpf' or 'netlink') must be enabled.` | `--no-default-features` with no replacement. Add `--features netlink` or `--features bpf`. |
 
 ### Why `rustfmt` is a build requirement

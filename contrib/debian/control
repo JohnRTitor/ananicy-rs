@@ -5,16 +5,19 @@ Maintainer: ananicy-rs packagers <ananicy-rs-packaging@example.invalid>
 # Why each build dependency is here is in README.md, under "Build
 # dependencies". In short: ananicy-rs is a cargo workspace whose four crates are
 # all unpublished, so `dh-cargo` and `debcargo` do not apply and this uses
-# Debian's own cargo wrapper instead; rustc 1.85 is the first release that
-# understands edition 2024, which every crate in the workspace uses and which no
-# manifest declares; `make install` places the binary and the systemd unit; and
-# both pcre2-sys and ananicy-platform link a system library that the default
-# feature set needs. clang, libbpf-dev and rustfmt are absent because the `bpf`
-# feature is not enabled.
+# Debian's own cargo wrapper instead; `make install` places the binary and the
+# systemd unit; and both pcre2-sys and ananicy-platform link a system library
+# that the default feature set needs. clang, libbpf-dev and rustfmt are absent
+# because the `bpf` feature is not enabled.
 Build-Depends:
  debhelper-compat (= 13),
  cargo,
- rustc (>= 1.85),
+ # rustc 1.88, not 1.85. Edition 2024 needs 1.85, but the workspace uses let
+ # chains (`&& let`, 30 of them) and those stabilised in 1.88, so 1.85 parses
+ # every manifest and then fails on the code with E0658. No manifest carries a
+ # `rust-version`, so cargo cannot report this itself. Debian stable ships
+ # rustc 1.85.1, which is too old; see the note on the target suite in README.md.
+ rustc (>= 1.88),
  make,
  pkg-config,
  libpcre2-dev,
