@@ -852,3 +852,119 @@ fn test_cli_dump_proc_cmd_is_the_matched_name_and_cmdline_is_an_array() {
         entry["rule"]
     );
 }
+
+/// The `dump proc` / `dump autogroup` field contract, as documented in
+/// `CLI.md`.
+///
+/// Three things there are easy to get wrong and none of them is visible from the
+/// type: `rule` is absent rather than `null` when nothing matched, `cmd` is the
+/// name the rule engine matched on rather than the kernel's `comm`, and
+/// `oom_score_adj` is signed — `ananicy-cpp` reports a `-900` process as
+/// `4294966396`, so a parser handling both has to cope. The first is asserted
+/// here because it is the only one that changes the shape of the object; the
+/// second and third need a renamed process and a negative score respectively to
+/// observe, and are covered by the documentation.
+#[test]
+fn test_cli_dump_proc_field_contract() {
+    let output = ananicy()
+        .arg("dump")
+        .arg("proc")
+        .output()
+        .expect("dump proc runs");
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("dump proc prints JSON on stdout");
+    let processes = dump.as_object().expect("dump proc prints an object");
+
+    const ALWAYS: [&str; 15] = [
+        "pid",
+        "tpid",
+        "exe",
+        "comm",
+        "cmd",
+        "cmdline",
+        "stat",
+        "stat_name",
+        "autogroup",
+        "sched",
+        "rtprio",
+        "nice",
+        "latency_nice",
+        "ionice",
+        "oom_score_adj",
+    ];
+
+    let mut matched = 0;
+    for (key, entry) in processes {
+        let entry = entry.as_object().expect("an entry is an object");
+        for field in ALWAYS {
+            assert!(
+                entry.contains_key(field),
+                "field {field} went missing from entry {key}: {:?}",
+                entry.keys().collect::<Vec<_>>()
+            );
+        }
+        // `rule` is `skip_serializing_if = "Option::is_none"`, so it is absent,
+        // not null. Asserting it is *never* null is what a parser gets wrong.
+        if let Some(rule) = entry.get("rule") {
+            assert!(
+                rule.is_string(),
+                "entry {key} has a rule that is not a string: {rule:?}"
+            );
+            matched += 1;
+        }
+    }
+
+    assert!(matched > 0, "no entry on this host matched a rule");
+    assert!(
+        matched < processes.len(),
+        "not every process matched a rule, so the absent case was not exercised"
+    );
+}
+
+/// `dump autogroup` groups by autogroup number and keeps the group shape.
+///
+/// Processes with no autogroup are absent from this dump entirely, which is what
+/// the reference does: its `get_autogroup_map` only files a process under a group
+/// when `autogroup` is non-null (`process_info.cpp:44-58`). The per-process
+/// `autogroup` key is removed from the entry, because the grouping is the outer
+/// level.
+#[test]
+fn test_cli_dump_autogroup_groups_by_number() {
+    let output = ananicy()
+        .arg("dump")
+        .arg("autogroup")
+        .output()
+        .expect("dump autogroup runs");
+    let groups: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("dump autogroup prints JSON on stdout");
+    let groups = groups.as_object().expect("dump autogroup prints an object");
+
+    assert!(!groups.is_empty(), "the test host has autogroups");
+
+    for (number, group) in groups {
+        assert!(
+            number.parse::<u32>().is_ok(),
+            "a group is keyed by its autogroup number, got {number:?}"
+        );
+        let group = group.as_object().expect("a group is an object");
+        for field in ["nice", "proc"] {
+            assert!(group.contains_key(field), "group {number} has no {field}");
+        }
+
+        let procs = group["proc"].as_object().expect("proc is an object");
+        for (tid, entry) in procs {
+            assert_eq!(
+                tid.parse::<i32>().ok(),
+                entry["tpid"].as_i64().map(|t| t as i32),
+                "group {number} keys its processes by tpid"
+            );
+            assert!(
+                !entry
+                    .as_object()
+                    .expect("an entry")
+                    .contains_key("autogroup"),
+                "the per-process autogroup is removed; it is the outer level"
+            );
+        }
+    }
+}

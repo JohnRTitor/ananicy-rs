@@ -121,7 +121,9 @@ divergence goes.
   `unsigned` (`process_info.cpp:239-241`), so a process at `-900` is reported as
   `4294966396` in `dump proc` and `dump autogroup`. This daemon reports `-900`. The value is
   diagnostic output that nothing computes on; reproducing the wrap would mean emitting a
-  number that is not the process' score.
+  number that is not the process' score. Anyone parsing both daemons' output has to cope with
+  the difference — see [`CLI.md`](./CLI.md) § `dump proc` and `dump autogroup` output, which
+  documents the shape of both dumps.
 - **A type is merged into a rule once, not twice.** The reference merges in both directions
   (`rules.cpp:198-206`), so an explicit `null` in a rule is deleted by the first merge and
   resurrected by the second, after which its `const int&` conversion throws and the worker's
