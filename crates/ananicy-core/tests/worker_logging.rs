@@ -71,6 +71,11 @@ fn configured_warn_level_suppresses_applied_rule_event() {
 fn configured_error_level_allows_failure_diagnostics() {
     let mut config = snapshot(true);
     config.loglevel = LogLevel::Error;
+    // `latency_nice` falls back to the rule's `nice` value, so a rule carrying
+    // only `nice` would still apply something after it failed, and be reported
+    // as a partial success. Turning the fallback off makes this a total failure,
+    // which is what "an error must be visible at the error threshold" is about.
+    config.apply_latnice = false;
     let run = run_worker(
         config,
         r#"{"name":"worker-test","nice":5}"#,
@@ -143,8 +148,13 @@ fn config_reload_changes_applied_rule_logging_for_next_event() {
 
 #[test]
 fn failed_application_does_not_log_success() {
+    // A total failure, so that "did not log success" is tested against the
+    // reported outcome and not a partial one: with the `latency_nice` fallback
+    // on, a failed `nice` still leaves `set_latency_nice` to apply.
+    let mut config = snapshot(true);
+    config.apply_latnice = false;
     let run = run_worker(
-        snapshot(true),
+        config,
         r#"{"name":"worker-test","nice":5}"#,
         FakePlatform::new().failing("set_priority", PlatformError::Unsupported),
     );
@@ -238,6 +248,10 @@ fn level_filter_suppresses_info_but_allows_warn() {
 fn the_configured_level_drives_the_subscriber() {
     let mut config: ConfigSnapshot = snapshot(true);
     config.loglevel = LogLevel::Error;
+    // A total failure, for the reason given in
+    // `failed_application_does_not_log_success`: a partial one is a warning, and
+    // a warning is correctly below the error threshold.
+    config.apply_latnice = false;
 
     let run = run_worker(
         config,

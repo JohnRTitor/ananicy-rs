@@ -307,7 +307,13 @@ impl Worker {
                 Err(e) if e.is_skippable() => {
                     partial_failure.get_or_insert(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // A failure on one attribute must not cost the rule the rest of
+                    // them: the reference applies what it can and carries on, and a
+                    // perfectly valid `ionice` is not worth losing because `sched`
+                    // named a policy this kernel would not take.
+                    partial_failure.get_or_insert(e);
+                }
             }
 
             // On cgroup v2 a nice value is also mirrored into `cpu.weight`. The
@@ -352,7 +358,13 @@ impl Worker {
                     Err(e) if e.is_skippable() => {
                         partial_failure.get_or_insert(e);
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        // A failure on one attribute must not cost the rule the rest of
+                        // them: the reference applies what it can and carries on, and a
+                        // perfectly valid `ionice` is not worth losing because `sched`
+                        // named a policy this kernel would not take.
+                        partial_failure.get_or_insert(e);
+                    }
                 }
             }
         }
@@ -370,7 +382,13 @@ impl Worker {
                 Err(e) if e.is_skippable() => {
                     partial_failure.get_or_insert(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // A failure on one attribute must not cost the rule the rest of
+                    // them: the reference applies what it can and carries on, and a
+                    // perfectly valid `ionice` is not worth losing because `sched`
+                    // named a policy this kernel would not take.
+                    partial_failure.get_or_insert(e);
+                }
             }
         }
 
@@ -390,7 +408,13 @@ impl Worker {
                 Err(e) if e.is_skippable() => {
                     partial_failure.get_or_insert(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // A failure on one attribute must not cost the rule the rest of
+                    // them: the reference applies what it can and carries on, and a
+                    // perfectly valid `ionice` is not worth losing because `sched`
+                    // named a policy this kernel would not take.
+                    partial_failure.get_or_insert(e);
+                }
             }
         }
 
@@ -409,7 +433,13 @@ impl Worker {
                 Err(e) if e.is_skippable() => {
                     partial_failure.get_or_insert(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // A failure on one attribute must not cost the rule the rest of
+                    // them: the reference applies what it can and carries on, and a
+                    // perfectly valid `ionice` is not worth losing because `sched`
+                    // named a policy this kernel would not take.
+                    partial_failure.get_or_insert(e);
+                }
             }
         }
 
@@ -432,7 +462,13 @@ impl Worker {
                 Err(e) if e.is_skippable() => {
                     partial_failure.get_or_insert(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // A failure on one attribute must not cost the rule the rest of
+                    // them: the reference applies what it can and carries on, and a
+                    // perfectly valid `ionice` is not worth losing because `sched`
+                    // named a policy this kernel would not take.
+                    partial_failure.get_or_insert(e);
+                }
             }
         }
 
@@ -470,7 +506,13 @@ impl Worker {
                             Err(e) if e.is_skippable() => {
                                 partial_failure.get_or_insert(e);
                             }
-                            Err(e) => return Err(e),
+                            Err(e) => {
+                                // A failure on one attribute must not cost the rule the rest of
+                                // them: the reference applies what it can and carries on, and a
+                                // perfectly valid `ionice` is not worth losing because `sched`
+                                // named a policy this kernel would not take.
+                                partial_failure.get_or_insert(e);
+                            }
                         }
                     }
                     None => {
@@ -481,12 +523,15 @@ impl Worker {
             }
         }
 
-        if let Some(e) = partial_failure {
-            Ok(RuleApplication::Partial(e))
-        } else if applied_any {
-            Ok(RuleApplication::Applied)
-        } else {
-            Ok(RuleApplication::NoApplicable)
+        match (applied_any, partial_failure) {
+            // Nothing was applied and something failed: the rule did not take
+            // effect at all, which is a failure rather than a partial one. A rule
+            // whose only attribute was refused is the common case, and reporting
+            // it as "partially failed" would understate it.
+            (false, Some(e)) => Err(e),
+            (_, Some(e)) => Ok(RuleApplication::Partial(e)),
+            (true, None) => Ok(RuleApplication::Applied),
+            (false, None) => Ok(RuleApplication::NoApplicable),
         }
     }
 }

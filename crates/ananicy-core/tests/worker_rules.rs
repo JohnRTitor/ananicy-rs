@@ -240,7 +240,7 @@ fn an_alias_resolving_to_no_cpus_skips_the_affinity_call() {
 }
 
 #[test]
-fn an_unparseable_cpuset_is_reported_as_a_partial_failure() {
+fn an_unparseable_cpuset_is_reported_as_a_failure() {
     let run = run_worker(
         all_attributes_enabled(),
         r#"{"name":"worker-test","cpuset":"not-a-cpuset"}"#,
@@ -253,9 +253,12 @@ fn an_unparseable_cpuset_is_reported_as_a_partial_failure() {
             .iter()
             .any(|call| matches!(call, Call::SetAffinity { .. }))
     );
+    // The rule's only attribute was refused and nothing was applied, so this is
+    // a failure rather than a partial one — a cpuset that cannot be parsed is
+    // the whole of what the rule asked for.
     assert!(
         run.events
-            .contains(tracing::Level::WARN, "partially failed")
+            .contains(tracing::Level::ERROR, "Failed to apply")
     );
 }
 
@@ -624,6 +627,65 @@ fn apply_ioclass_does_not_gate_anything() {
             }),
             "the class is applied whether apply_ioclass is {apply_ioclass}: {:?}",
             run.platform.calls()
+        );
+    }
+}
+
+/// One attribute failing must not cost the rule the rest of them.
+///
+/// The reference applies whatever it can and carries on: `test_errno` returns
+/// -1 on failure, and every caller tests `if (!set_X(…))`, which is false for
+/// -1, so a rejected `sched_setscheduler` is treated as success. This daemon
+/// returned `Err`, which aborted the rule — so a rule naming an `ionice` that
+/// was perfectly valid lost it because `sched` asked for a policy the kernel
+/// would not take. `sched_setscheduler(SCHED_FIFO, 0)` and `(…, 200)` both
+/// return EINVAL, so this was reachable with a plausible rule file.
+///
+/// Not every failure is the same kind of event, and the log line is honest
+/// either way: the outcome is `Partial`, carrying the first error, rather than
+/// `Applied` or a wholesale failure.
+#[test]
+fn a_failing_attribute_does_not_abandon_the_rest_of_the_rule() {
+    let rule = r#"{
+        "name": "worker-test",
+        "sched": "fifo",
+        "rtprio": 1,
+        "ioclass": "idle",
+        "ionice": 3,
+        "oom_score_adj": 100,
+        "cpuset": "0-1"
+    }"#;
+
+    let run = run_worker(
+        all_attributes_enabled(),
+        rule,
+        FakePlatform::new().failing(
+            "set_sched",
+            PlatformError::Io(std::io::Error::from_raw_os_error(22)),
+        ),
+    );
+
+    let calls = run.platform.calls();
+    assert!(
+        calls.contains(&Call::SetSched {
+            sched: "fifo".to_string(),
+            rtprio: 1
+        }),
+        "the failing attribute was still attempted: {calls:?}"
+    );
+    for expected in [
+        Call::SetIoPriority {
+            ioclass: "idle".to_string(),
+            ionice: 3,
+        },
+        Call::SetOomScoreAdj { value: 100 },
+        Call::SetAffinity {
+            cpuset: "0-1".to_string(),
+        },
+    ] {
+        assert!(
+            calls.contains(&expected),
+            "{expected:?} was never applied, because an earlier attribute failed: {calls:?}"
         );
     }
 }
