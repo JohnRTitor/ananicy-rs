@@ -69,9 +69,8 @@ systemd
 The unit is `/usr/lib/systemd/system/ananicy-rs.service`, generated from the
 project's own `data/ananicy-rs.service.in`. Its hardening, `Nice=-5`,
 `OOMScoreAdjust=-999`, `Delegate=yes` and `CapabilityBoundingSet` are upstream's
-and are unchanged by the packaging. See
-`/usr/share/doc/ananicy-rs/docs/SYSTEMD.md` for what each directive does and why
-the daemon needs it.
+and are unchanged by the packaging. See `/usr/share/doc/ananicy-rs/SYSTEMD.md`
+for what each directive does and why the daemon needs it.
 
 Installing this package registers the unit; it does not enable or start it
 (`dh_installsystemd --no-enable --no-start`), which matches the Fedora recipe
@@ -86,11 +85,12 @@ No man page
 -----------
 
 The project has no man page, so this package has none, and `docs/CLI.md` plus
-`docs/CONFIGURATION.md` are installed under `/usr/share/doc/ananicy-rs/docs/`
-instead. `lintian` will report `no-manual-page-for-binary` for
-`/usr/bin/ananicy-rs`; that tag is expected here. Writing a man page inside the
-packaging would create a second copy of the command-line reference to keep in
-step with the binary, and it belongs upstream, next to the code it documents.
+`docs/CONFIGURATION.md` are installed under `/usr/share/doc/ananicy-rs/`
+instead. `lintian` will report `no-manual-page` for `/usr/bin/ananicy-rs`; that
+tag is expected here and is declared, with the rest of the reasoning, in
+`debian/ananicy-rs.lintian-overrides`. Writing a man page inside the packaging
+would create a second copy of the command-line reference to keep in step with
+the binary, and it belongs upstream, next to the code it documents.
 
 Before any upload
 -----------------

@@ -39,17 +39,19 @@ problems while this recipe was written, and both are fixed:
   `systemd-libs` — `makepkg` installs `depends` before `build()` runs, so
   repeating them in `makedepends` is noise. They are only in `depends`.
 
-Every function in the recipe was also run against a real checkout of this tree:
-`pkgver()` (returning `0.1.0` both on the tag and one commit past it),
-`cargo fetch --locked`, `cargo build --release --frozen`, `cargo test --frozen`
-(20 test binaries, 0 failures), and `package()`, whose output was diffed against
-the table above file by file.
-
-namcap's checks on an installed package tarball need `libalpm`, which was not
-available where this was written, so only the `PKGBUILD` checks were run. The
-recipe is also built end to end by
+Every function in the recipe was run against a real checkout of this tree, and
+the recipe is also built end to end on every change by
 [`.github/workflows/packaging.yml`](../../.github/workflows/packaging.yml) in an
-`archlinux` container, with `namcap` re-run there.
+`archlinux:latest` container, with `namcap` re-run there. `pkgver()` returns
+`0.1.0` both on the tag and one commit past it; `cargo fetch --locked`,
+`cargo build --release --frozen` and `cargo test --frozen` (20 test binaries, 0
+failures) all pass as the unprivileged build user; and `package()` produces
+exactly the file list above, plus the automatic `ananicy-rs-debug` package that
+Arch's default `makepkg.conf` asks for.
+
+`namcap`'s checks on an installed package tarball need `libalpm`, which nixpkgs
+does not package, so only its `PKGBUILD` checks were run locally. In the Arch
+container both are available.
 
 ## What goes in the package
 

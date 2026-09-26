@@ -236,11 +236,14 @@ jobs:
           dpkg-deb --contents /build/ananicy-rs_*.deb
       # Advisory: lintian exits 1 when it finds any tag at all, and a new recipe
       # always has something to discuss. Only an error fails the job, so the
-      # report is always printed for a human to read rather than swallowed.
+      # report is always printed for a human to read rather than swallowed. Run
+      # unprivileged, which lintian asks for itself, and which works because the
+      # .changes file is builder-owned.
       - name: lintian
         run: |
           status=0
-          lintian --tag-display-limit 0 /build/ananicy-rs_*.changes || status=$?
+          su builder -s /bin/bash -c \
+            'lintian --tag-display-limit 0 /build/ananicy-rs_*.changes' || status=$?
           if [ "$status" -ge 2 ]; then
             echo "::error::lintian exited with $status"
             exit 1
