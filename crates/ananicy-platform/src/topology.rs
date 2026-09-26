@@ -403,9 +403,25 @@ pub fn detect_topology_impl(sys_root: &Path) -> CpuTopology {
         return top;
     }
 
-    // Cores within 10% of the average capacity form the middle tier, the rest
-    // are grouped by capacity. The average-based split matches the reference
-    // daemon's, so a three-tier machine gets the same core groups.
+    // Cores below the mean capacity form the little tier, the rest the big one,
+    // and the highest-capacity tier is the turbo one.
+    //
+    // The mean is an `f64` here and an integer in the reference
+    // (`topology.cpp:95` — `sum_rcap / nr_cpus` into a `std::size_t`, compared
+    // with `>=` at `:117`). The two agree everywhere except where a capacity tier
+    // lands exactly on the truncated mean, and there the truncation is what makes
+    // the reference wrong: for two CPUs of capacity {1, 2} its `avg` is 1, so
+    // `1 >= 1` classifies the capacity-1 core as *big* and leaves `little-cores`
+    // empty, when it is plainly the little one. The f64 threshold is 1.5 and puts
+    // it where it belongs.
+    //
+    // The 1.3x heterogeneity test above is unaffected: it was brute-forced over
+    // the integer range and the two do not diverge there.
+    //
+    // The turbo tier matches the reference's `BigTurbo` — the highest-capacity
+    // cores, but only when the machine is heterogeneous and the mean is below the
+    // maximum (`topology.cpp:110-112`). A homogeneous machine leaves
+    // `turbo-cores` empty for the same reason it leaves `little-cores` empty.
     let mut sum = 0.0;
     let mut count = 0;
     for (&metric, cores) in &metric_to_cores {
