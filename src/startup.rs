@@ -14,11 +14,34 @@ pub(crate) type LogReloadHandle = tracing_subscriber::reload::Handle<
     tracing_subscriber::Registry,
 >;
 
-pub(crate) fn log_level_override(verbose: bool, force_trace: bool) -> Option<Level> {
+/// The level `--verbose` selects: one step more verbose than the configuration
+/// asked for, and never past `trace`.
+///
+/// The reference computes `max(0, level - 1)` over the spdlog enum
+/// (`main.cpp:145-147`), so `loglevel=warn` becomes `info`, `info` becomes
+/// `debug`, `debug` becomes `trace`, and `trace` stays there. Forcing `DEBUG`
+/// instead — which is what this used to do — made the flag useless on a
+/// configuration that had already asked for `debug` or `trace`, and turned a
+/// quiet `error` configuration into a wall of `info` on the way past it.
+fn more_verbose_than(level: Level) -> Level {
+    match level {
+        Level::ERROR => Level::WARN,
+        Level::WARN => Level::INFO,
+        Level::INFO => Level::DEBUG,
+        // Already as verbose as tracing goes.
+        Level::DEBUG | Level::TRACE => Level::TRACE,
+    }
+}
+
+pub(crate) fn log_level_override(
+    config_level: &LogLevel,
+    verbose: bool,
+    force_trace: bool,
+) -> Option<Level> {
     if force_trace {
         Some(Level::TRACE)
     } else if verbose {
-        Some(Level::DEBUG)
+        Some(more_verbose_than(Level::from(config_level)))
     } else {
         None
     }
@@ -29,7 +52,8 @@ pub(crate) fn effective_log_level(
     verbose: bool,
     force_trace: bool,
 ) -> Level {
-    log_level_override(verbose, force_trace).unwrap_or_else(|| tracing::Level::from(config_level))
+    log_level_override(config_level, verbose, force_trace)
+        .unwrap_or_else(|| tracing::Level::from(config_level))
 }
 
 pub(crate) fn init_logging(
@@ -276,10 +300,51 @@ mod tests {
         );
         assert_eq!(
             effective_log_level(&LogLevel::Error, true, false),
-            Level::DEBUG
+            Level::WARN,
+            "--verbose moves one step, it does not jump to debug"
         );
         assert_eq!(
             effective_log_level(&LogLevel::Error, false, true),
+            Level::TRACE
+        );
+    }
+
+    /// `--verbose` is one step more verbose than the configuration asked for,
+    /// clamped at `trace` — `max(0, level - 1)` over the reference's enum, at
+    /// `main.cpp:145-147`.
+    #[test]
+    fn verbose_adds_exactly_one_level() {
+        for (configured, expected) in [
+            // `critical` has no tracing equivalent and arrives as `error`, so
+            // one step more verbose than it is `warn` — which is also the
+            // reference's answer, since spdlog's enum has both.
+            (LogLevel::Critical, Level::WARN),
+            (LogLevel::Error, Level::WARN),
+            (LogLevel::Warn, Level::INFO),
+            (LogLevel::Info, Level::DEBUG),
+            (LogLevel::Debug, Level::TRACE),
+            // Already as verbose as it goes.
+            (LogLevel::Trace, Level::TRACE),
+        ] {
+            assert_eq!(
+                effective_log_level(&configured, true, false),
+                expected,
+                "--verbose on loglevel={configured:?}"
+            );
+        }
+    }
+
+    /// A configuration already at `debug` used to get nothing from the flag,
+    /// which is the case that made forcing `DEBUG` useless rather than merely
+    /// crude.
+    #[test]
+    fn verbose_on_an_already_verbose_configuration_still_reaches_trace() {
+        assert_eq!(
+            effective_log_level(&LogLevel::Debug, true, false),
+            Level::TRACE
+        );
+        assert_eq!(
+            effective_log_level(&LogLevel::Trace, true, false),
             Level::TRACE
         );
     }
