@@ -39,6 +39,15 @@ whenever `Cargo.lock` changes. It ships inside the source package; set
 `SOURCE_DATE_EPOCH` to the release date for byte-identical archives across
 regenerations.
 
+It lives in `debian/`, and `debian/source/include-binaries` lists it, because
+`dpkg-source` refuses a binary file in a source package that is not listed there
+— a 15 MB xz of third-party source is a binary file by that definition, even
+though it is source. The more usual home for bundled dependencies is the orig
+tarball, and that was rejected deliberately: the build would then depend on the
+orig tarball being present, and `dpkg-buildpackage -b` does not require one,
+because it builds in the working tree. As shipped, the build tree is
+self-contained and `-b` works from a checkout with no orig tarball at all.
+
 `dpkg-buildpackage` never reaches the network: `debian/rules` sets
 `CARGO_NET_OFFLINE`, points `CARGO_HOME` inside the build directory, and passes
 `--locked --offline` to every cargo invocation.
