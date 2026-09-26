@@ -398,6 +398,15 @@ exit 128 — so every step that uses git re-checks with `git rev-parse --git-dir
 and names the cause in a `::error::` annotation, with git's own message left on
 stderr.
 
+All three jobs run the test suite unprivileged, which is what their build systems
+do by construction — `makepkg` refuses to run as root, and the Debian package
+declares `Rules-Requires-Root: no`. The Fedora job has to arrange it, because a
+bare `rpmbuild -ba` runs as root, and the cgroup tests in `ananicy-platform` are
+unreliable as root: three of them share one cgroup name and each removes it on the
+way out, so they race each other. It builds with `--nocheck` and then runs the
+same `cargo test --locked --offline` against the same source and vendor tree as
+an unprivileged user.
+
 Note that the path filters of `ci.yml` and `lint.yml` do not include
 `.github/**`, so a change to one of those two workflows alone will not trigger a
 run. `packaging.yml`, `nixos.yml` and `release.yml` list themselves.

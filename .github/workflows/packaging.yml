@@ -104,7 +104,25 @@ jobs:
           cp "contrib/fedora/ananicy-rs-$version-vendor.tar.xz" ~/rpmbuild/SOURCES/
           rpmspec --parse contrib/fedora/ananicy-rs.spec
           rpmbuild -bs contrib/fedora/ananicy-rs.spec
-          rpmbuild -ba contrib/fedora/ananicy-rs.spec
+          # --nocheck because rpmbuild runs the build as root here, and the
+          # cgroup tests in ananicy-platform are unreliable as root: three of
+          # them share one cgroup name and race each other, and a container's
+          # /sys/fs/cgroup may be read-only. The step below runs the same suite,
+          # unprivileged, which is how mock and Koji run it. See %check in the
+          # spec and contrib/fedora/README.md.
+          rpmbuild -ba --nocheck contrib/fedora/ananicy-rs.spec
+      - name: Run the test suite, unprivileged
+        run: |
+          set -euxo pipefail
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          builddir="$HOME/rpmbuild/BUILD/ananicy-rs-$version-build"
+          # The same source, vendor tree and CARGO_HOME %check would have used,
+          # now owned by an unprivileged user so the cgroup tests skip themselves
+          # with a message instead of racing each other as root.
+          useradd --create-home --shell /bin/bash builder
+          chown -R builder:builder "$HOME/rpmbuild/BUILD"
+          su builder -s /bin/bash -c "cd '$builddir/ananicy-rs-$version' && \
+            CARGO_HOME='$builddir/cargo-home' cargo test --locked --offline"
       # rpmlint's exit status is its badness count, so warnings alone do not fail
       # the job. Two are expected and explained in contrib/fedora/README.md:
       # `no-buildroot-tag`, which is obsolete, and `invalid-url Source1`, because
@@ -125,14 +143,13 @@ jobs:
       image: debian:trixie
     steps:
       # git before the checkout, and both halves of this step are load-bearing.
-      # See the note on the same step in the fedora-rpm job: without git at
-      # checkout time actions/checkout extracts a tree with no .git, and the
-      # /__w bind mount is owned by the runner user while this container is root,
-      # so git then refuses the workspace as dubious ownership.
+      # See the note on the same step in the fedora-rpm job. ca-certificates is
+      # not optional here: with only git installed, git cannot verify GitHub's
+      # certificate and the checkout fails with "Problem with the SSL CA cert".
       - name: Install git and trust the workspace
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git
+          apt-get install -y --no-install-recommends git ca-certificates
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache the cargo registry
@@ -218,13 +235,14 @@ jobs:
           pacman -Syu --noconfirm --needed git
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # base-devel is the group every PKGBUILD `makedepends` entry comes from;
-      # `git` came with the step above, because the recipe's source is a git tag.
-      # cargo and the native libraries come with `base-devel` plus pcre2 and
-      # systemd-libs, which are named below rather than left to base-devel.
+      # base-devel is the group most PKGBUILD makedepends entries come from --
+      # `make` and `pkgconf` are in it, `git` came with the step above, and
+      # `cargo` is not in it at all, so it is named here. pcre2 and systemd-libs
+      # are named rather than left to base-devel because they are the two
+      # shared libraries the binary links.
       - name: Install build dependencies
         run: |
-          pacman -S --noconfirm --needed base-devel pcre2 systemd-libs namcap
+          pacman -S --noconfirm --needed base-devel cargo pcre2 systemd-libs namcap
       - name: Cache the cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
