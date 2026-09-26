@@ -171,13 +171,16 @@ jobs:
           key: cargo-debian-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-debian-${{ runner.os }}-
       # One Build-Depends of contrib/debian/control per package, plus lintian.
-      # No clang, no libbpf-dev, no rustfmt: the `bpf` feature is not enabled.
+      # build-essential is dpkg's implicit build-dep and is not in control, so it
+      # has to be named here: dpkg-checkbuilddeps aborts without it, and linking
+      # needs a C compiler and libc headers. No clang, no libbpf-dev, no rustfmt:
+      # the `bpf` feature is not enabled.
       - name: Install build dependencies
         run: |
           apt-get install -y --no-install-recommends \
-            debhelper dpkg-dev \
+            build-essential debhelper dpkg-dev \
             cargo rustc \
-            make pkg-config libpcre2-dev libsystemd-dev \
+            pkg-config libpcre2-dev libsystemd-dev \
             lintian
       # debian/control declares `Rules-Requires-Root: no`, so build as a plain
       # user rather than merely claiming it. dpkg-source also wants the tree in a

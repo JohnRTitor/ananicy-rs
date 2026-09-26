@@ -143,6 +143,11 @@ get packaged, the right relationship is a `Recommends` or a separate
 `cargo`, `rustc (>= 1.85)`, `make`, `pkg-config`, `libpcre2-dev`,
 `libsystemd-dev`, plus `debhelper-compat (= 13)`.
 
+`build-essential` is dpkg's implicit build dependency, so Policy says not to list
+it in `debian/control` — but it is still required, because linking needs a C
+compiler and libc headers, and `dpkg-checkbuilddeps` aborts the build without it.
+The CI job installs it explicitly for that reason.
+
 `rustc (>= 1.85)` is explicit because no manifest in the tree carries a
 `rust-version`: 1.85 is the first release that understands edition 2024, which
 every crate uses, and a too-old compiler fails with a parse error rather than a
@@ -155,8 +160,6 @@ useful message.
 `libpcre2-8` with pkg-config and only falls back to building its own vendored
 copy when the probe fails, and that copy is a different build (`SUPPORT_JIT=1`
 forced, linked statically).
-
-`gcc` is not listed: `libpcre2-dev` and `libsystemd-dev` both pull it in.
 
 ## Configuration and upgrades
 
