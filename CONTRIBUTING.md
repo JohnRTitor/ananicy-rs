@@ -4,30 +4,36 @@ First of all, thank you for considering contributing to `ananicy-rs`! This proje
 
 ## Development Environment
 
-To start developing `ananicy-rs`, you'll need the following installed on your Linux system:
+`docs/BUILD.md` is the canonical description of what to install and how to build:
+the native dependencies and their per-distribution package names, the feature
+flags, the `ananicy-bpf` workspace trap, the release profile, and what each
+build error means. In short: Linux, Rust 1.85 or newer via
+[rustup](https://rustup.rs/), and — if you want the `bpf` feature or intend to
+run `--workspace` — `clang`, `libbpf`, PCRE2 and `rustfmt`.
 
-- **Rust toolchain**: 1.70 or newer (Edition 2024 is used). Install via [rustup](https://rustup.rs/).
-- **Linux**: This project heavily relies on Linux-specific APIs (cgroups, netlink, procfs, bpf) and will not build on other operating systems.
-- **Optional (for BPF features)**: `clang`, `libbpf`, `elfutils`, `zlib`.
+The short version, which is enough for most changes:
+
+```bash
+cargo build            # default features, no eBPF toolchain needed
+cargo test             # see "Running Tests" below
+```
 
 ## Building the Project
 
-The project is structured as a Cargo workspace with several crates (`ananicy-core`, `ananicy-platform`, `ananicy-bpf`, and the main `ananicy-rs` bin).
+The project is a Cargo workspace of `ananicy-core`, `ananicy-platform`,
+`ananicy-bpf` and the `ananicy-rs` binary. `ananicy-bpf` is a member but not a
+default member, so a default build never compiles it and never needs the eBPF
+toolchain; `cargo build --workspace` and `--features bpf` do.
 
-To build the project with the default features (Netlink monitor):
 ```bash
-cargo build
+cargo build                        # netlink + systemd
+cargo build --features bpf         # eBPF backend
+cargo build --release              # optimised, see docs/BUILD.md
 ```
 
-To build with BPF support enabled:
-```bash
-cargo build --features bpf
-```
-
-To create a production-ready release build:
-```bash
-cargo build --release
-```
+`cargo build --workspace` builds `ananicy-bpf` and therefore requires `clang`,
+libbpf, PCRE2 and `rustfmt` even with no features enabled. See
+[docs/BUILD.md](docs/BUILD.md).
 
 ## Running Tests
 

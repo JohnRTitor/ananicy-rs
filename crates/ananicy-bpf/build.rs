@@ -43,5 +43,8 @@ fn main() {
         .source(bpf_src)
         .clang_args(clang_args.iter().map(String::as_str))
         .build_and_generate(&out)
-        .expect("Failed to build BPF skeleton. Do you have clang installed?");
+        .expect(
+            "Failed to build BPF skeleton. Needs clang, a pkg-config that can find \
+             libbpf, and rustfmt, all on PATH; the cause above says which step failed.",
+        );
 }

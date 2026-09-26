@@ -18,6 +18,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[CLI and Usage](docs/CLI.md)**: How to run the daemon, command-line arguments, and systemd integration.
 - **[systemd Reference](docs/SYSTEMD.md)**: How systemd supervises a service, what it hands to a process, cgroup v2 delegation, and what the shipped unit's hardening does.
 - **[CPU Topology and Affinity](docs/TOPOLOGY.md)**: Details on CPU pinning, `big.LITTLE` detection, and AMD X3D support.
+- **[Building](docs/BUILD.md)**: Build requirements and native dependencies, features, the release profile, installing, Nix, and what each build error means.
 - **[Differences from the Reference Implementation](docs/ANANICY_CPP_DIFFERENCES.md)**: Explicit behavioral and implementation differences between `ananicy-rs` and the C++ reference implementation.
 - **[Testing](docs/TESTING.md)**: What the test suite verifies, which tests need a live system, and how the tests relate to the C++ daemon.
 
@@ -29,23 +30,19 @@ The project is currently under active development. While it supports loading rul
 
 ## Requirements
 
-### Build-time Requirements
-
-- **Linux** (The daemon heavily relies on Linux-specific APIs).
-- **Rust Toolchain**: 1.70 or newer (Edition 2024).
-- _Optional (for BPF)_: `clang`, `libbpf`, `elfutils`, `zlib`.
-
 ### Runtime Requirements
 
 - **Root privileges**: Required for modifying process attributes, cgroups, and mounting BPF programs.
 - **systemd**: Optional, but recommended for service management.
 - **cgroup v2** (or v1): Required for the cgroup functionalities.
 
+Building needs Linux and Rust 1.85 or newer; the `bpf` feature additionally
+needs clang, libbpf, PCRE2 and rustfmt. See **[Building](docs/BUILD.md)** for the
+full dependency list and per-distribution package names.
+
 ## Installation
 
 ### 1. Build from Source
-
-Clone the repository and build the project using Cargo:
 
 ```bash
 git clone https://github.com/JohnRTitor/ananicy-rs.git
@@ -81,6 +78,9 @@ services.ananicy-rs = {
   enable = true;
 };
 ```
+
+See **[Building](docs/BUILD.md)** for the Nix build, the module's options, and
+how to install elsewhere with `PREFIX`/`DESTDIR`.
 
 ## License
 
