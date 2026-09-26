@@ -704,8 +704,26 @@ The `prev_pid` reset difference in the same path is real and documented there.
 
 ### 5.19 `get_cgroup_for_pid` ignores `sd_pid_get_cgroup` — Severity: Informational
 
-The reference calls `sd_pid_get_cgroup` under `ENABLE_SYSTEMD`; this tree does not. Unchanged from the
-previous audit's finding.
+The reference calls `sd_pid_get_cgroup` under `ENABLE_SYSTEMD` (`cgroups.cpp:336-346`); this daemon
+always reads `/proc/<pid>/cgroup` (`debug.rs:84`). Unchanged from the previous audit's finding.
+
+Narrower than it looks, which the earlier entry did not say: **`get_cgroup_for_pid` is not on the
+rule-application path in either daemon.** Every caller in the reference is a test
+(`unit-core.cpp:104,111,115`) or the `debug cgroups` diagnostic (`debug.cpp:52`). Nothing that
+matches a rule, moves a process, or writes a cgroup setting goes through it, so the divergence
+affects one diagnostic line and no behaviour.
+
+Where the two answers differ is inside a cgroup namespace: `sd_pid_get_cgroup` resolves the path as
+the *systemd* manager sees it, while `/proc/<pid>/cgroup` is namespace-relative, so in a container
+they can name different directories. That is a genuine reason for the reference to prefer it, and
+not one this daemon can act on without a systemd dependency it does not otherwise have — the answer
+it reads is the one that is correct *from inside* the namespace the daemon is running in, which is
+the one that matters for deciding where to move a process. Recorded in
+`ANANICY_CPP_DIFFERENCES.md` §5.
+
+The reference also has a latent bug here: `sd_pid_get_cgroup`'s return value is ignored, so on
+failure `cgroup` is uninitialised and `std::string cgroup_name(cgroup)` reads it anyway. Not a
+concern for a rewrite that does not make the call.
 
 ---
 
