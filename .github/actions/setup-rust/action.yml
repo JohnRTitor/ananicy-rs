@@ -23,15 +23,14 @@ runs:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
     # Keep this list in sync with `contrib/nixos/package.nix`; see that file for
-    # why `libpcre2-dev` is required rather than optional. The same list appears
-    # again, under two different package managers, in `.github/workflows/ci.yml`.
+    # why each entry is here. The same list appears again, under two different
+    # package managers, in `.github/workflows/ci.yml`.
     - name: Install native dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
           libsystemd-dev \
           libbpf-dev \
-          libpcre2-dev \
           pkg-config \
           clang
       shell: bash

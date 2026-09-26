@@ -35,9 +35,9 @@ problems while this recipe was written, and both are fixed:
 
 - `VCS source PKGBUILD needs additional makedepends 'git'` — a VCS checkout
   needs `git` in `makedepends`, so it is there now.
-- `Make dependency (pcre2) already included as dependency`, likewise for
-  `systemd-libs` — `makepkg` installs `depends` before `build()` runs, so
-  repeating them in `makedepends` is noise. They are only in `depends`.
+- `Make dependency (systemd-libs) already included as dependency` —
+  `makepkg` installs `depends` before `build()` runs, so repeating it in
+  `makedepends` is noise. It is only in `depends`.
 
 Every function in the recipe was run against a real checkout of this tree, and
 the recipe is also built end to end on every change by
@@ -80,7 +80,6 @@ mode and the unit are byte-for-byte the same as every other recipe under
 | --- | --- |
 | `glibc` | `libc.so.6` and `libm.so.6` |
 | `libgcc` | `libgcc_s.so.1` |
-| `pcre2` | `libpcre2-8.so.0`, recorded by the linker |
 | `systemd-libs` | `libsystemd.so.0`, recorded by the linker |
 
 `makedepends`:
@@ -90,14 +89,13 @@ mode and the unit are byte-for-byte the same as every other recipe under
 | `cargo` | the build |
 | `git` | the source is a repository checkout, not an archive |
 | `make` | `make install` |
-| `pkgconf` | `pcre2-sys` probes for `libpcre2-8` with `pkg-config` |
+| `pkgconf` | `libbpf-sys` probes for `libbpf` with `pkg-config` |
 
-`pcre2` and `systemd-libs` are only in `depends`, which is enough: `makepkg`
-installs a package's `depends` before `build()` runs, so both are already
-present at link time. Neither needs a `-dev` package — `ananicy-rs` declares
-`#[link(name = "systemd")]` by hand and only ever links PCRE2 by soname — so
-`systemd-libs`, not `systemd`, is the right one: it is the package that carries
-`/usr/lib/libsystemd.so.0`, and it is a fraction of the size.
+`systemd-libs` is only in `depends`, which is enough: `makepkg` installs a
+package's `depends` before `build()` runs, so it is already present at link time.
+It needs no `-dev` package — `ananicy-rs` declares `#[link(name = "systemd")]`
+by hand — so `systemd-libs`, not `systemd`, is the right one: it is the package
+that carries `/usr/lib/libsystemd.so.0`, and it is a fraction of the size.
 
 The daemon's `#[link(name = "systemd")]` needs the link-time `.so` and nothing
 else, which is why no distribution's `libsystemd-dev`/`systemd-devel` headers
@@ -105,12 +103,6 @@ are involved either.
 
 `clang`, `libbpf` and `rustfmt` are **not** makedepends, because the `bpf`
 feature is not enabled. See the features section below.
-
-`pkgconf` and `pcre2` together are required, not optional: `pcre2-sys` probes
-for `libpcre2-8` and only builds its own vendored copy when the probe fails, and
-that copy is a different build (`SUPPORT_JIT=1` forced, linked statically).
-Without them the package would silently ship a differently configured regex
-engine from the one every other build of this daemon uses.
 
 Nothing depends on `systemd` as the init system. The daemon detects whether it
 is supervised and also runs under OpenRC, runit, s6 or no init at all.

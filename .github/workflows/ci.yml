@@ -70,19 +70,17 @@ jobs:
     # No sccache env here on purpose, see the note on the `test` job above.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # `pcre2-devel` is Fedora's name for what Debian calls `libpcre2-dev`, and
-      # without it pcre2-sys vendors its own copy and the build stops matching
-      # what `nix build` ships. `rustfmt` is a separate package on Fedora, for
-      # the reason given on the `test` job; Arch has no such split, its `rust`
-      # package carries the whole toolchain.
+      # `rustfmt` is a separate package on Fedora, for the reason given on the
+      # `test` job; Arch has no such split, its `rust` package carries the whole
+      # toolchain.
       - name: Install dependencies (Fedora)
         if: contains(matrix.distro, 'fedora')
         run: |
-          dnf install -y gcc gcc-c++ git rust rustfmt cargo systemd-devel libbpf-devel pcre2-devel pkgconf-pkg-config clang make
+          dnf install -y gcc gcc-c++ git rust rustfmt cargo systemd-devel libbpf-devel pkgconf-pkg-config clang make
       - name: Install dependencies (Arch Linux)
         if: contains(matrix.distro, 'archlinux')
         run: |
-          pacman -Syu --noconfirm base-devel git rust cargo systemd libbpf pcre2 clang
+          pacman -Syu --noconfirm base-devel git rust cargo systemd libbpf clang
       - name: Build
         run: cargo build --locked --all-targets --all-features
       - name: Test

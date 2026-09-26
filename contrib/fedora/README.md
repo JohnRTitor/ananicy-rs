@@ -118,23 +118,15 @@ mode and the unit are byte-for-byte the same as every other recipe under
 | --- | --- |
 | `cargo`, `rust >= 1.85` | the build itself; 1.85 is the first release that understands edition 2024 |
 | `make` | `make install` |
-| `pkgconf-pkg-config`, `pcre2-devel` | `pcre2-sys` links `libpcre2-8`; see below |
+| `pkgconf-pkg-config` | `libbpf-sys` probes for `libbpf` |
 | `systemd-devel` | the default `systemd` feature declares `#[link(name = "systemd")]` |
 | `systemd-rpm-macros` | `%systemd_post`, `%systemd_preun`, `%systemd_postun_with_restart` |
 
-There is no manual `Requires:`. rpm derives `pcre2` and `systemd-libs` from the
-SONAMEs the linker records, and nothing more is needed: `ananicy-rs start` also
+There is no manual `Requires:`. rpm derives `systemd-libs` from the
+SONAME the linker records, and nothing more is needed: `ananicy-rs start` also
 runs without systemd, so requiring systemd-as-init would be wrong.
 
-`gcc` is not listed because `pcre2-devel` and `systemd-devel` both require it.
-
-### Why `pcre2-devel` is required and not optional
-
-`pcre2-sys` first asks `pkg-config` for `libpcre2-8` and only builds its own
-vendored copy when the probe fails. Both paths compile, but they are not the
-same build: the vendored copy is compiled with `SUPPORT_JIT=1` forced and linked
-statically. Without `pcre2-devel` the package would silently ship a differently
-configured regex engine from the one every other build of this daemon uses.
+`gcc` is not listed because `systemd-devel` requires it.
 
 ## Why Cargo dependencies are vendored
 

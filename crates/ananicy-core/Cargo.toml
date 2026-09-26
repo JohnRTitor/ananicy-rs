@@ -12,7 +12,22 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 arc-swap = "1.9.2"
 walkdir = "2.5.0"
-pcre2 = "0.2.11"
+# Default features only, which means `simd` and not `jit`.
+#
+# `simd` is what drives the literal prefilter, and the prefilter is the whole
+# reason matching is cheap here: a process name is 3-15 bytes for nearly every
+# process (the kernel truncates `/proc/<pid>/comm` to 15), and a rule anchored on
+# a literal rejects most names without the automaton running at all.
+#
+# `jit` is deliberately not enabled. It measured at +0.8% on the rule-evaluation
+# path, which is one `is_match` per process event, because most rule patterns
+# are not the shape a JIT takes (a pattern with an alternation goes to an
+# ordered-NFA engine so that PCRE's leftmost-first branch priority is
+# reproduced, and one with a lookahead goes to the tagged-NFA engine, and
+# neither has a JIT on this target). It also costs 5-10x more to compile, adds
+# ~123 `unsafe` blocks, and is compiled out on loongarch64 and riscv64 — so it
+# would be an arch-dependent difference in behaviour bought for nothing.
+regexr = "0.5.0"
 lru.workspace = true
 rustix = { workspace = true, features = ["process"] }
 

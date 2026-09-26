@@ -240,8 +240,14 @@ fn name_regex_rules_match_by_pattern() {
 
 #[test]
 fn name_regex_supports_lookaround() {
-    // PCRE2 is used instead of the standard `regex` crate precisely so that
-    // lookarounds in existing community rules keep working.
+    // The engine is `regexr` rather than the standard `regex` crate precisely
+    // so that lookarounds in existing community rules keep working. A negative
+    // lookahead is the one advanced construct any ananicy rule has ever used,
+    // and it is the reason this daemon cannot use `regex`: that crate omits
+    // lookaround on purpose, to guarantee linear-time matching, so
+    // `^bash(?!_script)` is a compile error there rather than a rule. The same
+    // applies to `regex-automata`, whose HIR has no lookaround at all, so its
+    // meta, hybrid and DFA engines each reject it.
     let mut rules = rules();
 
     assert!(rules.load_rule_from_string(
@@ -250,6 +256,31 @@ fn name_regex_supports_lookaround() {
 
     assert!(rules.get_rule("bash").is_some());
     assert!(rules.get_rule("bash_script").is_none());
+}
+
+#[test]
+fn a_name_regex_anchor_dollar_matches_before_a_trailing_newline() {
+    // `$` means "end of the name, or just before a final newline", which is what
+    // PCRE2 does and therefore what a rule written for `ananicy-cpp` means. The
+    // standard `regex` crate and `regex-automata` read `$` as absolute
+    // end-of-input instead, so under either of them a rule written as `^foo$`
+    // would silently stop matching a process whose `argv[0]` is `foo\n…` — which
+    // is reachable, and which `docs/COMPATIBILITY.md` §5.2 already has to
+    // reason about. Mimicking PCRE2 here is the whole point.
+    let mut rules = rules();
+
+    assert!(rules.load_rule_from_string(r#"{ "name": "foo", "name_regex": "^foo$", "nice": 3 }"#));
+
+    assert_eq!(rule_of(&rules, "foo")["nice"], 3);
+    assert_eq!(
+        rule_of(&rules, "foo\n")["nice"],
+        3,
+        "a newline at the end of the name does not defeat the anchor"
+    );
+    assert!(
+        rules.get_rule("foo\nbar").is_none(),
+        "the anchor is still an anchor, not a prefix"
+    );
 }
 
 #[test]
@@ -280,6 +311,278 @@ fn an_invalid_name_regex_keeps_the_rule_usable() {
         r#"{ "name": "broken-regex", "name_regex": "^(unclosed", "nice": 1 }"#
     ));
     assert_eq!(rule_of(&rules, "broken-regex")["nice"], 1);
+}
+
+/// Every `name_regex` that has ever appeared in an ananicy rule file, in this
+/// repository's tests, or in the `ananicy-cpp` unit tests, with the answers the
+/// C++ daemon gives. These are the answers a rule author may rely on, so the
+/// expectations here are the contract rather than a description of whatever the
+/// current engine happens to answer.
+#[test]
+fn the_whole_ananicy_name_regex_corpus_still_matches() {
+    // (pattern, names that match, names that must not)
+    let corpus: &[(&str, &[&str], &[&str])] = &[
+        (
+            r"^(java|javaw)[0-9.]*$",
+            &["java", "java17", "javaw", "java.1.0", "javaw17"],
+            &["notjava", "xjava", "java17x", "", "Java"],
+        ),
+        (
+            r"^java[0-9.]*$",
+            &["java", "java17", "java17.0.1"],
+            &["jav", "javaw", "xjava17"],
+        ),
+        (
+            r"^bash(?!_script)",
+            &["bash", "bashx", "bashrc", "bash-script", "bash_"],
+            &["bash_script", "ba.sh", ""],
+        ),
+        (
+            r"^app.*$",
+            &["app", "app-helper", "appother", "app\n"],
+            &["xapp", "App", ""],
+        ),
+        // Unanchored, so this is a search for `gcc-` anywhere in the name —
+        // which is what makes it usable at all against a full path or a
+        // truncated `comm`.
+        (
+            r"gcc-.*",
+            &["gcc-aarch64", "gcc-", "gcc-1", "/usr/bin/gcc-aarch64"],
+            &["gfc-aarch64", "gcc"],
+        ),
+        (r"^Steam.*$", &["Steam", "Steam.exe"], &["steam", "xSteam"]),
+        (
+            r"^.*-wrapped$",
+            &[".foo-wrapped", "foo-wrapped", "-wrapped"],
+            &["wrapped", "foo-wrapped-"],
+        ),
+        (
+            r"^kworker/[0-9]+-[0-9]+$",
+            &["kworker/0-1", "kworker/12-345"],
+            &["kworker/a-b", "kworker/0-", "kworker"],
+        ),
+        (
+            r"^(?:gimp|inkscape|blender)$",
+            &["gimp", "inkscape", "blender"],
+            &["gimp2", "Gimp", "gimp "],
+        ),
+        (
+            r"^firefox(-bin|-esr)?$",
+            &["firefox", "firefox-bin", "firefox-esr"],
+            &["firefox2", "firefox-esr2", "firefox-"],
+        ),
+        (
+            r"^.*\.exe$",
+            &["setup.exe", "game.exe", ".exe"],
+            &["setup.ex", "setup.exe2", "exe"],
+        ),
+        (
+            r"^m?\w+ode$",
+            &["mode", "node", "mnode"],
+            &["mod", "m ode", "node2"],
+        ),
+    ];
+
+    for (pattern, matches, misses) in corpus {
+        let mut rules = rules();
+        // One rule carrying the pattern; the `name` is arbitrary because every
+        // lookup here is expected to go through the regex path.
+        assert!(
+            rules.load_rule_from_string(&format!(
+                r#"{{ "name": "carrier", "name_regex": {pattern:?}, "nice": 7 }}"#
+            )),
+            "rule for {pattern} was rejected"
+        );
+
+        for name in *matches {
+            assert_eq!(
+                rule_of(&rules, name)["nice"],
+                7,
+                "{pattern:?} should match {name:?}"
+            );
+        }
+        for name in *misses {
+            assert!(
+                rules.get_rule(name).is_none(),
+                "{pattern:?} should not match {name:?}"
+            );
+        }
+    }
+}
+
+/// Constructs a rule file may legally contain and the engine declines. All of
+/// these are valid PCRE2, which is the dialect the `name_regex` key was
+/// introduced for and the one existing rule files are written against, and none
+/// of them appears in any ananicy ruleset — the shipped set has no `name_regex`
+/// at all. A community ruleset could still carry one, so the contract is that it
+/// degrades to a log line plus an exact-name rule rather than to a rule that
+/// quietly stopped matching.
+#[test]
+fn a_name_regex_the_engine_refuses_keeps_the_rule_usable() {
+    // `regexr` declines most of these deliberately: its engines are linear-time
+    // and never backtrack, so there is nothing for an atomic group or a
+    // possessive quantifier to bound, and refusing is the honest answer instead
+    // of quietly ignoring a quantifier that asks for a different match.
+    for pattern in [
+        r"(?>a+)b", // atomic group
+        r"a++b",    // possessive quantifiers
+        r"a*+b",
+        r"a?+b",
+        r"foo\Kbar",     // \K
+        r"(?|(a)b)",     // branch reset
+        r"(a)(?(1)b|c)", // conditional
+        r"(*UTF)abc",    // PCRE verbs
+        r"\V",           // vertical whitespace
+    ] {
+        let mut rules = rules();
+        let name = format!("refused-{}", pattern.escape_default());
+        assert!(
+            rules.load_rule_from_string(&format!(
+                r#"{{ "name": {name:?}, "name_regex": {pattern:?}, "nice": 4 }}"#
+            )),
+            "the rule for {pattern:?} was dropped entirely"
+        );
+        assert_eq!(
+            rule_of(&rules, &name)["nice"],
+            4,
+            "{pattern:?} must still register as an exact-name rule"
+        );
+    }
+}
+
+/// The two limits that keep a third-party rule from taking the daemon down. The
+/// release profile sets `panic = "abort"`, so an unbounded compile here is not
+/// a failed rule load — it is a dead daemon.
+#[test]
+fn an_unreasonable_name_regex_is_refused_rather_than_exhausting_the_daemon() {
+    // Past the nesting limit. Unbounded, this overflows the stack, which Rust
+    // reports as an uncatchable abort rather than an error a caller can handle.
+    let deep = format!("{}a{}", "(?:".repeat(300), ")".repeat(300));
+    let mut nested = rules();
+    assert!(nested.load_rule_from_string(&format!(
+        r#"{{ "name": "deep", "name_regex": {deep:?}, "nice": 1 }}"#
+    )));
+    assert_eq!(
+        rule_of(&nested, "deep")["nice"],
+        1,
+        "a pattern too deep to compile must not take the load with it"
+    );
+
+    // Past the expansion limit: eleven characters of pattern, unbounded work.
+    // A backslash has to be doubled to survive the JSON string, which is the
+    // only way a rule author can reach `\w` at all — see
+    // `a_name_regex_backslash_must_be_escaped_for_the_json`.
+    let mut wide = rules();
+    assert!(
+        wide.load_rule_from_string(
+            r#"{ "name": "wide", "name_regex": "\\w{200000,}", "nice": 2 }"#
+        )
+    );
+    assert_eq!(rule_of(&wide, "wide")["nice"], 2);
+
+    // Both of those were refused, so neither reached the match path; an
+    // ordinary rule is unaffected by a neighbour that was too large.
+    let mut ordinary = rules();
+    assert!(
+        ordinary.load_rule_from_string(
+            r#"{ "name": "java", "name_regex": "^java[0-9.]*$", "nice": 3 }"#
+        )
+    );
+    assert_eq!(rule_of(&ordinary, "java17")["nice"], 3);
+}
+
+/// `ananicy-cpp` walks its regex list in load order and takes the first hit. A
+/// set-based matcher would answer "did anything match" without saying which,
+/// and picking a different rule would change what a process is reniced to.
+#[test]
+fn the_first_matching_regex_in_load_order_wins() {
+    let mut rules = rules();
+    assert!(
+        rules.load_rule_from_string(r#"{ "name": "first", "name_regex": "^app.*$", "nice": 1 }"#)
+    );
+    assert!(
+        rules.load_rule_from_string(
+            r#"{ "name": "second", "name_regex": "^app-helper$", "nice": 2 }"#
+        )
+    );
+
+    assert_eq!(rule_of(&rules, "app-helper")["nice"], 1);
+    assert_eq!(rule_of(&rules, "app-other")["nice"], 1);
+    // Both patterns are reachable; only the first is ever consulted for a name
+    // both match.
+    assert_eq!(rules.size(), 2);
+}
+
+/// `\d` and `\w` mean ASCII here. PCRE2 built with `PCRE2_UCP` — how
+/// `ananicy-cpp` matches, and so what a rule written for it means — makes them
+/// Unicode-aware, and this does not: `\d` matches `١٧` there and not here. That
+/// is the one place the mimicry is incomplete. No rule in any ananicy ruleset
+/// uses either escape, the shipped rule set has no `name_regex` at all, and a
+/// Unicode property class is Unicode-aware under both dialects, so `\p{Nd}` is
+/// the spelling to port such a rule to. The difference is pinned here and
+/// written down in `docs/COMPATIBILITY.md` rather than left to be discovered by
+/// a user whose process name happens to contain a non-ASCII digit.
+#[test]
+fn a_ucp_sensitive_class_is_ascii_and_the_alternative_spelling_is_ported() {
+    let mut ascii = rules();
+    assert!(
+        ascii.load_rule_from_string(r#"{ "name": "digit", "name_regex": "^\\d+$", "nice": 1 }"#)
+    );
+    assert!(ascii.get_rule("17").is_some());
+    assert!(
+        ascii.get_rule("١٧").is_none(),
+        r"\d is ASCII here; PCRE2 under PCRE2_UCP, which ananicy-cpp uses, would match it"
+    );
+
+    let mut unicode = rules();
+    assert!(
+        unicode.load_rule_from_string(
+            r#"{ "name": "letter", "name_regex": "^\\p{Nd}+$", "nice": 1 }"#
+        )
+    );
+    assert!(unicode.get_rule("17").is_some());
+    assert!(
+        unicode.get_rule("١٧").is_some(),
+        "a Unicode property class is Unicode-aware, and is the spelling to port a UCP rule to"
+    );
+}
+
+/// A `\d` in a rule file is two characters in the file and one in the pattern,
+/// because the rule is a JSON string and JSON has no `\d`. A rule author who
+/// forgets is not writing a rule that fails to match — they are writing a line
+/// this parser rejects outright, which is a much quieter mistake.
+#[test]
+fn a_name_regex_backslash_must_be_escaped_for_the_json() {
+    let mut rules = rules();
+    assert!(
+        !rules.load_rule_from_string(r#"{ "name": "x", "name_regex": "^\d+$" }"#),
+        "an unescaped \\d is not valid JSON, so the line is not a rule at all"
+    );
+    assert_eq!(rules.size(), 0);
+
+    assert!(rules.load_rule_from_string(r#"{ "name": "x", "name_regex": "^\\d+$", "nice": 1 }"#));
+    assert_eq!(rule_of(&rules, "42")["nice"], 1);
+    assert!(
+        rules.get_rule("x42").is_none(),
+        "the pattern is anchored, so this is about the escape and not the class"
+    );
+}
+
+/// A backreference is the only construct that can make a search exceed its step
+/// budget, and no ananicy rule uses one. If a rule did, the engine reports the
+/// budget rather than hanging the worker thread, and a bounded "no match" is
+/// what the process gets.
+#[test]
+fn a_pattern_with_a_backreference_is_usable() {
+    let mut rules = rules();
+    // Compiles and runs, on the backtracking engine, under a step budget.
+    assert!(
+        rules
+            .load_rule_from_string(r#"{ "name": "repeat", "name_regex": "^(a+)\\1$", "nice": 5 }"#)
+    );
+    assert!(rules.get_rule("aaaa").is_some());
+    assert!(rules.get_rule("aaa").is_none());
+    assert_eq!(rule_of(&rules, "aaaa")["nice"], 5);
 }
 
 #[test]

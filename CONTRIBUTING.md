@@ -9,7 +9,7 @@ the native dependencies and their per-distribution package names, the feature
 flags, the `ananicy-bpf` workspace trap, the release profile, and what each
 build error means. In short: Linux, Rust 1.88 or newer via
 [rustup](https://rustup.rs/), and — if you want the `bpf` feature or intend to
-run `--workspace` — `clang`, `libbpf`, PCRE2 and `rustfmt`.
+run `--workspace` — `clang`, `libbpf` and `rustfmt`.
 
 The short version, which is enough for most changes:
 
@@ -32,7 +32,7 @@ cargo build --release              # optimised, see docs/BUILD.md
 ```
 
 `cargo build --workspace` builds `ananicy-bpf` and therefore requires `clang`,
-libbpf, PCRE2 and `rustfmt` even with no features enabled. See
+libbpf and `rustfmt` even with no features enabled. See
 [docs/BUILD.md](docs/BUILD.md).
 
 ## Running Tests

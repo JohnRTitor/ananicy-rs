@@ -11,21 +11,21 @@ pkgdesc='Auto-nice daemon that applies per-application process priorities'
 arch=('x86_64')
 url='https://github.com/JohnRTitor/ananicy-rs'
 license=('GPL-3.0-only')
-# glibc and libgcc come from the ELF interpreter and libgcc_s.so.1; pcre2 and
-# systemd-libs are the two shared libraries the linker records, libpcre2-8.so.0
-# and libsystemd.so.0. Listed explicitly rather than relied on transitively.
+# glibc and libgcc come from the ELF interpreter and libgcc_s.so.1; systemd-libs
+# is the one shared library the linker records, libsystemd.so.0. Listed
+# explicitly rather than relied on transitively. The regex engine is pure Rust
+# and links nothing, so there is no second entry.
 depends=(
   glibc
   libgcc
-  pcre2
   systemd-libs
 )
 # cargo, git and pkgconf build; make runs the project's own install rule.
 # `git` is here because the source is a repository checkout, not an archive.
-# pcre2 and systemd-libs are deliberately not repeated as makedepends: makepkg
-# installs `depends` before build() runs, and those two are needed at link time
-# as well as at run time. Neither needs a -dev package -- ananicy-rs declares
-# #[link(name = "systemd")] by hand and only ever links pcre2 by soname.
+# systemd-libs is deliberately not repeated as a makedepend: makepkg
+# installs `depends` before build() runs, and it is needed at link time as well
+# as at run time. It needs no -dev package -- ananicy-rs declares
+# #[link(name = "systemd")] by hand.
 makedepends=(
   cargo
   git
