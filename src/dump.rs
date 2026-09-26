@@ -71,15 +71,25 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
         let exe = read_link(format!("/proc/{}/exe", pid))
             .map(|p| p.to_string_lossy().into_owned())
             .ok();
-        let cmd = read_to_string(format!("/proc/{}/comm", pid))
-            .unwrap_or_default()
-            .trim()
-            .to_string();
+        // The name the rule engine matched on, not `/proc/<pid>/comm`. The
+        // reference's `cmd` is `get_command_from_pid(pid)`
+        // (`process_info.cpp:188`) — the same function it matches rules with
+        // (`process.cpp:61`, `:155`), so its `cmd` and its `rule` always agree.
+        // Reading `comm` here instead meant the two fields disagreed for any
+        // process that rewrote `argv[0]`, or whose `comm` is truncated to 15
+        // characters: `rule` would name a process `cmd` did not.
+        let cmd = p.name.clone();
+        // A JSON array of the arguments, as the reference emits
+        // (`process_info.cpp:243`, splitting on the NULs in the file). Joining
+        // them with spaces loses the boundaries, so an argument containing a
+        // space is indistinguishable from two arguments.
         let cmdline = read_to_string(format!("/proc/{}/cmdline", pid))
             .unwrap_or_default()
-            .replace('\0', " ")
-            .trim()
-            .to_string();
+            .split('\0')
+            .map(str::trim)
+            .filter(|arg| !arg.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let oom_score_adj = read_to_string(format!("/proc/{}/oom_score_adj", pid))
             .unwrap_or_default()
             .trim()

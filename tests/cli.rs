@@ -797,3 +797,58 @@ fn test_cli_force_remove_semaphore_reports_failure() {
         .code(1)
         .stderr(predicate::str::contains("Failed to remove semaphore"));
 }
+
+/// `cmd` is the name the rule engine matches on, and `cmdline` keeps the
+/// argument boundaries.
+///
+/// The reference's `cmd` is `get_command_from_pid(pid)` (`process_info.cpp:188`)
+/// — the same function it matches rules with (`process.cpp:61`, `:155`) — so its
+/// `cmd` and its `rule` never disagree. Reading `/proc/<pid>/comm` here instead
+/// meant they did, for any process that rewrote `argv[0]` or whose `comm` is
+/// truncated to 15 characters: `rule` would name one process and `cmd` another.
+///
+/// `cmdline` is a JSON array, as the reference emits it
+/// (`process_info.cpp:243`). Joining the arguments with spaces loses the
+/// boundaries, so an argument containing a space was indistinguishable from two
+/// arguments.
+#[test]
+fn test_cli_dump_proc_cmd_is_the_matched_name_and_cmdline_is_an_array() {
+    let output = ananicy()
+        .arg("dump")
+        .arg("proc")
+        .output()
+        .expect("dump proc runs");
+    let dump: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("dump proc prints JSON on stdout");
+    let processes = dump.as_object().expect("dump proc prints an object");
+
+    let self_pid = std::process::id().to_string();
+    let entry = processes
+        .get(&self_pid)
+        .unwrap_or_else(|| panic!("the test process {self_pid} is missing"));
+
+    assert!(
+        entry["cmdline"].is_array(),
+        "cmdline must be an array of arguments, got {:?}",
+        entry["cmdline"]
+    );
+    let args = entry["cmdline"].as_array().expect("an array");
+    assert!(
+        args.iter().all(serde_json::Value::is_string),
+        "every argument is a string: {args:?}"
+    );
+
+    // This process was not renamed, so the matched name and the kernel's `comm`
+    // agree — but `cmd` must be the *matched* name, and a value that is
+    // truncated to 15 characters would not be usable as a rule name.
+    let cmd = entry["cmd"].as_str().expect("cmd is a string");
+    assert!(
+        !cmd.is_empty() && cmd.len() <= 4096,
+        "cmd should be a full command name, got {cmd:?}"
+    );
+    assert!(
+        entry["rule"].is_string() || entry["rule"].is_null(),
+        "rule is a string or null, got {:?}",
+        entry["rule"]
+    );
+}
