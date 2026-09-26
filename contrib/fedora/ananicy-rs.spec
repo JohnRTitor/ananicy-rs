@@ -87,11 +87,15 @@ if ! grep -qx 'version = "%{version}"' Cargo.toml; then
     exit 1
 fi
 
-# Source1 has been unpacked at the top of the build directory. Point cargo's
-# source replacement at it, and keep CARGO_HOME inside the build directory so
-# nothing is read from or written to the build user's home directory. The
-# directory is substituted as an absolute path, which is what a cargo
-# `directory` source requires.
+# The setup macro unpacks Source0 and nothing else, so the vendored crates are
+# unpacked here rather than assumed to be there. Doing it explicitly also keeps
+# the paths below independent of which sources rpm chooses to unpack by itself.
+%{__xz} -dc %{SOURCE1} | %{__tar} -x -C %{_builddir}
+
+# Point cargo's source replacement at it, and keep CARGO_HOME inside the build
+# directory so nothing is read from or written to the build user's home
+# directory. The directory is substituted as an absolute path, which is what a
+# cargo `directory` source requires.
 install -d %{_builddir}/cargo-home
 sed -e 's|@VENDOR_DIR@|%{_builddir}/vendor|' \
     %{_builddir}/vendor-config.toml > %{_builddir}/cargo-home/config.toml
@@ -132,11 +136,17 @@ install -d -m 0755 %{buildroot}%{_datadir}/zsh/site-functions
 # already stripped the binary, and there are no debug symbols left to remove.
 
 %check
-# The check step runs as the build user in mock, so the cgroup tests in
-# ananicy-platform detect that they are unprivileged and skip themselves, with a
-# message, rather than failing. The dev profile is used on purpose: the release
-# profile is fat-LTO with a single codegen unit, which would multiply the runtime
-# of a suite that exercises the same code.
+# Runs as the build user, which under mock and Koji is not root. That matters for
+# the cgroup tests in ananicy-platform: they skip themselves, with a message,
+# when the suite is unprivileged, and as root they are not merely privileged but
+# unreliable -- three of them share one cgroup name and each removes it when it
+# finishes, so they race each other, and on a runner whose /sys/fs/cgroup is
+# read-only they fail outright. Neither says anything about this package, which
+# is why the CI job runs the suite unprivileged as its own step.
+#
+# The dev profile is used on purpose: the release profile is fat-LTO with a single
+# codegen unit, which would multiply the runtime of a suite that exercises the
+# same code.
 CARGO_HOME=%{_builddir}/cargo-home \
     cargo test --locked --offline
 

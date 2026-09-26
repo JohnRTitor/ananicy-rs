@@ -64,9 +64,28 @@ produced. The parts of it that could be checked without one were: the spec
 parses, the source package builds, and `cargo build --release --locked
 --offline` plus `make install` were run against the same vendored tree the spec
 uses, producing the two files `%files` lists. A real submission needs
-`mock -r fedora-rawhide --rebuild`, which
-[`.github/workflows/packaging.yml`](../../.github/workflows/packaging.yml)
-approximates with `rpmbuild -ba` in a `fedora:latest` container.
+`mock -r fedora-rawhide --rebuild`.
+
+## `%check`, and why the CI job runs it separately
+
+`%check` is `cargo test --locked --offline` in the dev profile, and it is correct
+as written: under mock and Koji it runs as the build user, which is not root, and
+the cgroup tests in `ananicy-platform` skip themselves with a message when the
+suite is unprivileged.
+
+The CI job does not use mock, and a bare `rpmbuild -ba` runs the build as root,
+where those tests are not merely privileged but unreliable. Three of them share
+the name `UNIT_TEST_ANANICY` and each removes it on the way out, so as root they
+race each other — the project's own `ci.yml` has been failing this way on
+`ubuntu-latest`, at `cgroups.rs:132` with "the cgroup directory must exist" — and
+on a runner whose `/sys/fs/cgroup` is read-only the two that assert a successful
+`create_cgroup` fail outright. None of that says anything about this package.
+
+So the job runs `rpmbuild -ba --nocheck` and then runs the same suite, against the
+same source, vendor tree and `CARGO_HOME` that `%check` would have used, as an
+unprivileged user. Same coverage, same commands, no test skipped, and it matches
+what the Debian and Arch jobs do — `Rules-Requires-Root: no` and `makepkg` are
+both unprivileged by construction.
 
 ## What goes in the package
 
