@@ -1,0 +1,36 @@
+name: "Setup Rust and Dependencies"
+description: "Sets up sccache, Rust, and the native libraries ananicy-rs links against"
+inputs:
+  toolchain:
+    description: "Rust toolchain to install"
+    required: false
+    default: "stable"
+  components:
+    description: "Rust components to install"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    # sccache goes first so that every later step in the job resolves it through
+    # PATH. `sccache-action` without a `version` input installs the current
+    # release; pin `version` if you need a reproducible compiler cache key.
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # stable/v1
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+    # Keep this list in sync with `contrib/package.nix`; see that file for why
+    # `libpcre2-dev` is required rather than optional.
+    - name: Install native dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libsystemd-dev \
+          libbpf-dev \
+          libpcre2-dev \
+          pkg-config \
+          clang
+      shell: bash
