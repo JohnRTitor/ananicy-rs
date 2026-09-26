@@ -361,8 +361,11 @@ fn no_cpu_weight_is_mirrored_on_a_cgroup_v1_host() {
 #[test]
 fn a_realtime_process_is_not_moved_into_a_rule_cgroup() {
     // The cgroup v2 kernel limitation: a realtime task's cgroup must not be
-    // changed, so the rule's cgroup is reported as unusable instead. The
-    // separate workaround still moves the process to the hierarchy root.
+    // changed. The rule's cgroup is therefore skipped, which is the workaround
+    // working rather than a failure — the reference logs at debug and still
+    // reports the rule as applied, and this daemon no longer warns on every
+    // realtime process on every cgroup-v2 host. The separate workaround still
+    // moves the process to the hierarchy root.
     let run = run_worker(
         all_attributes_enabled(),
         r#"{"name":"worker-test","nice":1,"cgroup":"lowlatency"}"#,
@@ -380,7 +383,7 @@ fn a_realtime_process_is_not_moved_into_a_rule_cgroup() {
         cgroup: "/".to_string()
     }));
     assert!(
-        run.events
+        !run.events
             .contains(tracing::Level::WARN, "partially failed")
     );
 }
@@ -688,4 +691,38 @@ fn a_failing_attribute_does_not_abandon_the_rest_of_the_rule() {
             "{expected:?} was never applied, because an earlier attribute failed: {calls:?}"
         );
     }
+}
+
+/// A `cpuset` alias that resolves to nothing is the documented way of saying
+/// "do not touch this process' affinity" — `little-cores` on a host with no
+/// little cores. It is a decision, so it is not reported as a failure.
+#[test]
+fn an_empty_cpuset_alias_is_a_skip_and_not_a_partial_failure() {
+    let run = run_worker_with(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","nice":1,"cpuset":"little-cores"}"#,
+        FakePlatform::new(),
+        aliases(&[("little-cores", "")]),
+        ananicy_core::types::Pid(1),
+        "worker-test",
+    );
+
+    assert!(
+        !run.platform
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::SetAffinity { .. })),
+        "an empty alias must not widen or narrow affinity"
+    );
+    assert!(
+        run.platform
+            .calls()
+            .contains(&Call::SetPriority { nice: 1 }),
+        "the rest of the rule still applied: {:?}",
+        run.platform.calls()
+    );
+    assert!(
+        !run.events
+            .contains(tracing::Level::WARN, "partially failed")
+    );
 }
