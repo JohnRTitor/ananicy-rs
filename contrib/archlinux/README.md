@@ -113,6 +113,11 @@ engine from the one every other build of this daemon uses.
 Nothing depends on `systemd` as the init system. The daemon detects whether it
 is supervised and also runs under OpenRC, runit, s6 or no init at all.
 
+`rust` is not in `makedepends` because Arch ships one rolling toolchain and
+`cargo` pulls it in. Nothing needs pinning here, but the floor is real: the
+workspace uses let chains, so **rustc 1.88 or newer** is required. Arch has been
+well past that for some time, which is why there is no version constraint.
+
 ## Source, version and integrity
 
 The source is the release tag,

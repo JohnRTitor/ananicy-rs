@@ -159,7 +159,7 @@ get packaged, the right relationship is a `Recommends` or a separate
 
 ## Build dependencies
 
-`cargo`, `rustc (>= 1.85)`, `make`, `pkg-config`, `libpcre2-dev`,
+`cargo`, `rustc (>= 1.88)`, `make`, `pkg-config`, `libpcre2-dev`,
 `libsystemd-dev`, plus `debhelper-compat (= 13)`.
 
 `build-essential` is dpkg's implicit build dependency, so Policy says not to list
@@ -167,10 +167,17 @@ it in `debian/control` — but it is still required, because linking needs a C
 compiler and libc headers, and `dpkg-checkbuilddeps` aborts the build without it.
 The CI job installs it explicitly for that reason.
 
-`rustc (>= 1.85)` is explicit because no manifest in the tree carries a
-`rust-version`: 1.85 is the first release that understands edition 2024, which
-every crate uses, and a too-old compiler fails with a parse error rather than a
-useful message.
+`rustc (>= 1.88)` is the floor, and it is higher than the edition requires.
+Edition 2024 needs 1.85, but the workspace uses let chains — 30 `&& let`
+expressions — and those stabilised in 1.88, so a 1.85 toolchain parses every
+manifest and then fails with `error[E0658]: let expressions in this position are
+unstable`. No manifest carries a `rust-version`, so cargo cannot warn you first.
+
+**Which means this cannot be built against Debian stable.** trixie (13) ships
+rustc 1.85.1, one minor release short. A submission would therefore target
+trixie-backports, which carries 1.88.0, or sid. The CI job uses `debian:sid` for
+the same reason, and that is the one claim in this README that is *not* verified
+by a local build — see "Static validation" above.
 
 `clang`, `libbpf-dev` and `rustfmt` are **not** build dependencies, because the
 `bpf` feature is not enabled. See the feature section below.

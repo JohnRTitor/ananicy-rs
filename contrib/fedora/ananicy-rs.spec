@@ -31,9 +31,11 @@ Source1:        %{name}-%{version}-vendor.tar.xz
 # feature set. Nothing here needs the eBPF toolchain, because the `bpf` feature
 # is not part of that default and is not enabled below.
 BuildRequires:  cargo
-# Edition 2024, which every crate in the workspace uses, needs 1.85. There is no
-# `rust-version` in any manifest, so cargo cannot report this itself.
-BuildRequires:  rust >= 1.85
+# 1.88, not 1.85. Edition 2024 needs 1.85, but the workspace uses let chains
+# (`&& let`, 30 of them) and those stabilised in 1.88, so an older toolchain parses
+# every manifest and then fails on the code with E0658. There is no `rust-version`
+# in any manifest, so cargo cannot report this itself.
+BuildRequires:  rust >= 1.88
 # `make install` is what places the binary and the unit.
 BuildRequires:  make
 # pcre2-sys asks pkg-config for libpcre2-8 and only falls back to building its

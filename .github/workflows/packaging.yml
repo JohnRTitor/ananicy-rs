@@ -151,7 +151,13 @@ jobs:
     name: Debian .deb
     runs-on: ubuntu-latest
     container:
-      image: debian:trixie
+      # sid, not trixie, and not because sid is the default choice for a Debian
+      # job: the workspace uses let chains, which need rustc 1.88, and trixie ships
+      # 1.85.1. There is no suite this can be built in with the distro toolchain
+      # until trixie-backports carries 1.88, so this job proves the recipe builds
+      # against a current toolchain and the target suite is recorded in
+      # contrib/debian/README.md.
+      image: debian:sid
     steps:
       # git before the checkout, and both halves of this step are load-bearing.
       # See the note on the same step in the fedora-rpm job. ca-certificates is
