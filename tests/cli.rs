@@ -772,3 +772,28 @@ fn test_cli_daemon_still_runs_without_a_cgroup_hierarchy() {
         "the daemon gave up before spawning its worker, so no rule can be applied:\n{log}"
     );
 }
+
+// ---------------------------------------------------------
+// --force-remove-semaphore
+// ---------------------------------------------------------
+
+/// The exit status answers "is a stale singleton object still there?", so a
+/// failure to remove one has to be a failure.
+///
+/// The reference prints the errno and returns `EXIT_FAILURE` when `shm_unlink`
+/// does not succeed (`main.cpp:115-119`). Returning 0 regardless meant a
+/// wrapper script using the status to confirm cleanup was told it had worked
+/// when it had not. Verified by execution before the change: a second
+/// `--force-remove-semaphore` with no daemon running returned 0.
+#[test]
+fn test_cli_force_remove_semaphore_reports_failure() {
+    let mut cmd = ananicy();
+    cmd.arg("--force-remove-semaphore");
+    // There is no shared memory object for this name, so the unlink fails. The
+    // name is unique to the test binary's namespace on a shared host only if the
+    // daemon is not running, which is the case the reference also treats as an
+    // error.
+    cmd.assert()
+        .code(1)
+        .stderr(predicate::str::contains("Failed to remove semaphore"));
+}

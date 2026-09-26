@@ -7,7 +7,7 @@ use {
         fs::File,
         process::{exit, id},
     },
-    tracing::info,
+    tracing::{error, info},
 };
 
 use std::io::{Read, Write};
@@ -22,9 +22,19 @@ impl Drop for IpcSingletonGuard {
     }
 }
 
+/// Removes a stale singleton object and exits.
+///
+/// The exit status is the answer to "is there still a stale object?", so a
+/// failure to remove one is a failure, not a shrug: the reference prints the
+/// errno and returns `EXIT_FAILURE` (`main.cpp:115-119`), and a wrapper script
+/// that uses the status to confirm cleanup would otherwise be told the cleanup
+/// worked.
 pub(crate) fn force_remove_semaphore() -> ! {
-    let _ = rustix::shm::unlink(IPC_NAME);
-    info!("Force removed IPC semaphore. Exiting.");
+    if let Err(errno) = rustix::shm::unlink(IPC_NAME) {
+        error!("Failed to remove semaphore: {errno}");
+        exit(1);
+    }
+    info!("Semaphore was successfully removed!");
     exit(0);
 }
 
