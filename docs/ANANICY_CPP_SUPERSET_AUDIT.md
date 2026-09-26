@@ -545,12 +545,40 @@ therefore match different rules.
 
 ### 5.11 A deleted binary resolves to a different name — Severity: Low
 
-For `"/usr/bin/foo (deleted)"`, `find(" (deleted)") == 14` and the reference's
-`substr(0, exe_name_end + 1)` keeps one byte too many, yielding `"foo "` where this tree yields
-`"foo"` (`process.cpp:230-233`; `crates/ananicy-platform/src/procfs.rs:84-86`). A rule
-`{"name":"foo"}` matches here and not in the reference for any process whose binary was replaced —
-after a package upgrade, or on NixOS after a store GC of a still-running path. The reference has the
-bug; the difference is that a rule matching differently is observable.
+The kernel appends ` (deleted)` to an `exe` readlink whose target has been
+unlinked. Both daemons strip it; the reference keeps one byte too many.
+`process.cpp:230-233` takes the *filename* first, so the string is `foo (deleted)`,
+and then:
+
+```
+find(" (deleted)")  = 3           # the index of the space
+substr(0, n + 1)    = "foo "      # 4 characters — one too many   ← ananicy-cpp
+substr(0, n)        = "foo"       # 3 characters — correct          ← ananicy-rs
+```
+
+(Checked by compiling the reference's expression, not by reading it. An earlier
+draft of this finding put the index at 14, which is the offset into the full
+`/proc/<pid>/exe` path rather than into the filename the code actually searches.)
+
+A rule `{"name":"foo"}` therefore matches here and not in the reference, for any
+process whose binary was replaced — which on an ordinary distribution is what a
+package upgrade does, since the new file is unlinked and recreated underneath the
+running process. The reference has the bug; the difference is that a rule
+matching differently is observable.
+
+**This does not happen on NixOS after a store GC**, which an earlier draft of this
+finding claimed. Nix's collector treats `/proc/<pid>/exe` as a garbage-collection
+root — 178 of them on the audit host, `/proc/1/exe` among them — so a routine GC
+cannot delete the binary a process is executing and cannot produce this state at
+all:
+
+```
+$ nix-store --gc --print-roots | grep '"/proc/1/exe'
+"/proc/1/exe" -> /nix/store/…-systemd-261.2
+```
+
+Reaching it on NixOS takes deleting a store path out from under a live process
+explicitly. The divergence is real; that way of arriving at it was not.
 
 
 ### 5.12 Offline CPUs change which capacity source is chosen — Severity: Medium

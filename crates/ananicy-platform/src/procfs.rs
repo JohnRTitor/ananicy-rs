@@ -24,6 +24,24 @@ fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, u8>> {
     })
 }
 
+/// Strips the kernel's ` (deleted)` marker from an `exe` readlink target.
+///
+/// The kernel appends a space and `(deleted)` to `/proc/<pid>/exe` when the
+/// binary has been unlinked — which an ordinary package upgrade does, since the
+/// new file is created underneath the running process. The marker includes its
+/// leading space, so the name is truncated *at* the index of that space.
+///
+/// `ananicy-cpp` truncates one byte later, keeping the space, so `/usr/bin/foo
+/// (deleted)` resolves to `"foo "` there and to `"foo"` here — and a rule written
+/// as `{"name": "foo"}` therefore matches here and not there. This daemon's
+/// answer is the correct one; see `docs/ANANICY_CPP_DIFFERENCES.md` §5.1.
+fn strip_deleted_suffix(name: &str) -> String {
+    match name.find(" (deleted)") {
+        Some(index) => name[..index].to_string(),
+        None => name.to_string(),
+    }
+}
+
 /// Tries to determine the effective process name exactly as C++ ananicy did:
 /// 1. `/proc/<pid>/cmdline` (argv[0] basename)
 /// 2. `/proc/<pid>/exe` (readlink basename, trimming ` (deleted)`)
@@ -80,11 +98,7 @@ pub fn get_command_from_pid(pid: i32) -> String {
                     cache.pop(&pid);
                 }
                 if let Some(file_name) = exe_target.file_name() {
-                    let mut name = file_name.to_string_lossy().to_string();
-                    if let Some(deleted_idx) = name.find(" (deleted)") {
-                        name.truncate(deleted_idx);
-                    }
-                    return name;
+                    return strip_deleted_suffix(&file_name.to_string_lossy());
                 }
             }
             Err(e) => {
@@ -186,5 +200,50 @@ pub fn get_tids(pid: i32) -> Result<Vec<i32>, ananicy_core::worker::PlatformErro
             Err(ananicy_core::worker::PlatformError::PermissionDenied)
         }
         Err(e) => Err(ananicy_core::worker::PlatformError::Io(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The kernel's ` (deleted)` marker includes its leading space, so the name
+    /// is truncated at the index of that space.
+    ///
+    /// `ananicy-cpp` truncates one byte later and keeps the space, so
+    /// `/usr/bin/foo (deleted)` resolves to `"foo "` there. A rule written as
+    /// `{"name": "foo"}` then matches here and not there, for any process whose
+    /// binary was replaced — an ordinary package upgrade does exactly that. This
+    /// daemon's answer is the correct one, and the reference's is the bug, so
+    /// this test exists to stop the space coming back: it is a one-character
+    /// change away, and nothing else in the suite would notice.
+    #[test]
+    fn the_deleted_marker_is_stripped_without_its_leading_space() {
+        assert_eq!(strip_deleted_suffix("foo (deleted)"), "foo");
+        assert_eq!(
+            strip_deleted_suffix(" (deleted)"),
+            "",
+            "a binary whose whole name is the marker leaves nothing, not a space"
+        );
+    }
+
+    #[test]
+    fn a_name_without_the_marker_is_untouched() {
+        for name in ["foo", "foo.bar", "libsystemd.so.1", "deleted", "(deleted)"] {
+            assert_eq!(
+                strip_deleted_suffix(name),
+                name,
+                "{name:?} should pass through unchanged"
+            );
+        }
+    }
+
+    /// The marker is located by its leading space, so a name that merely contains
+    /// the word — without the space in front of it — is left alone.
+    #[test]
+    fn the_space_is_what_makes_it_a_marker() {
+        assert_eq!(strip_deleted_suffix("foo(deleted)"), "foo(deleted)");
+        assert_eq!(strip_deleted_suffix("foo x(deleted)"), "foo x(deleted)");
+        assert_eq!(strip_deleted_suffix("foo (deleted)"), "foo");
     }
 }
