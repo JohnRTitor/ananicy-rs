@@ -41,6 +41,12 @@ impl LinuxPlatform {
     }
 }
 
+impl Default for LinuxPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlatformActions for LinuxPlatform {
     fn is_realtime(&self, pid: i32) -> bool {
         // A task counts as realtime when it holds a static priority above zero,

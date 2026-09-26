@@ -33,8 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # `--all-features` builds the `bpf` crate, whose build script needs rustfmt
+      # to generate the skeleton. See the note in `.github/workflows/ci.yml`.
       - uses: ./.github/actions/setup-rust
         with:
           toolchain: stable
-          components: clippy
+          components: clippy rustfmt
       - run: cargo clippy --locked --workspace --all-features --tests -- -D warnings
