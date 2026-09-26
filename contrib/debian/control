@@ -2,13 +2,20 @@ Source: ananicy-rs
 Section: admin
 Priority: optional
 Maintainer: ananicy-rs packagers <ananicy-rs-packaging@example.invalid>
-# Why each build dependency is here is in README.md, under "Build
-# dependencies". In short: ananicy-rs is a cargo workspace whose four crates are
-# all unpublished, so `dh-cargo` and `debcargo` do not apply and this uses
-# Debian's own cargo wrapper instead; `make install` places the binary and the
-# systemd unit; and both pcre2-sys and ananicy-platform link a system library
-# that the default feature set needs. clang, libbpf-dev and rustfmt are absent
-# because the `bpf` feature is not enabled.
+# ananicy-rs is a cargo workspace whose four crates are all unpublished, so
+# `dh-cargo` and `debcargo` do not apply and this uses Debian's own cargo
+# wrapper instead; both pcre2-sys and ananicy-platform link a system library that
+# the default feature set needs. clang, libbpf-dev and rustfmt are absent because
+# the `bpf` feature is not enabled.
+#
+# `make` is absent too: `make install` is what places the binary and the unit,
+# but `make` is part of `build-essential`, which dpkg treats as an implicit build
+# dependency and checks all the same. lintian says so too
+# (build-depends-on-build-essential-package-without-using-version).
+#
+# `pkgconf` rather than `pkg-config`: the latter has been a transitional package
+# since bookworm. It provides the same `pkg-config` binary, which is what
+# pcre2-sys invokes.
 #
 # rustc is 1.88, not 1.85, and that is not a guess: edition 2024 needs 1.85, but
 # the workspace uses let chains (`&& let`, 30 of them) and those stabilised in
@@ -24,8 +31,7 @@ Build-Depends:
  debhelper-compat (= 13),
  cargo,
  rustc (>= 1.88),
- make,
- pkg-config,
+ pkgconf,
  libpcre2-dev,
  libsystemd-dev,
 Standards-Version: 4.7.0
