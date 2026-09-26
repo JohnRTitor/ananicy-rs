@@ -376,6 +376,18 @@ checkout as a local git remote carrying the release tag and points makepkg at
 that, so it builds the tree under test rather than whatever is published; only
 the source URL differs from the `PKGBUILD` on disk.
 
+Each of those three jobs installs `git` **before** `actions/checkout`, and the
+order is load-bearing. `actions/checkout` looks for git 2.18 or newer on `PATH`
+and, not finding it, logs "The repository will be downloaded using the GitHub
+REST API" and extracts a plain working tree with no `.git` at all — silently,
+because the checkout itself succeeds. The Fedora and Debian jobs then fail on
+`git archive` and the Arch job on `git tag`, all with the same unhelpful "not a
+git repository" and exit 128. The dependency step has to come second because
+the jobs install `git` in the image they are already running; putting it in the
+`BuildRequires` list is not enough. The step that uses git re-checks with
+`git rev-parse --git-dir` and names the cause, so a regression says what is
+wrong instead of leaving a 128 to interpret.
+
 Note that the path filters of `ci.yml` and `lint.yml` do not include
 `.github/**`, so a change to one of those two workflows alone will not trigger a
 run. `packaging.yml`, `nixos.yml` and `release.yml` list themselves.

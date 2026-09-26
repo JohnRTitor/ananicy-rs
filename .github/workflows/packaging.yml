@@ -43,6 +43,16 @@ jobs:
     container:
       image: fedora:latest
     steps:
+      # git, before the checkout, and that ordering is load-bearing.
+      # actions/checkout checks for git 2.18+ on PATH and, finding none, says
+      # "The repository will be downloaded using the GitHub REST API" -- which
+      # extracts a bare working tree with no .git at all. The build below then
+      # reproduces the release tarball with `git archive`, and every later git
+      # command fails with "not a git repository" and exit 128. fedora:latest
+      # ships no git, and the dependency step below runs after the checkout, so
+      # the checkout has to be preceded by this one.
+      - name: Install git for the checkout
+        run: dnf install -y git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Downloading the crate registry is most of what the vendoring step costs.
       # The key changes whenever Cargo.lock does.
@@ -62,7 +72,7 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf install -y \
-            rpm-build make git cargo rust \
+            rpm-build make cargo rust \
             pkgconf-pkg-config pcre2-devel \
             systemd-devel systemd-rpm-macros \
             rpmlint
@@ -70,6 +80,13 @@ jobs:
         run: |
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          # Name the cause rather than letting `git archive` fail with a bare
+          # exit 128. See the git step above for what a checkout without git on
+          # PATH leaves behind.
+          git rev-parse --git-dir >/dev/null 2>&1 || {
+            echo "::error::the checkout is not a git repository; the 'Install git for the checkout' step must come first" >&2
+            exit 1
+          }
           # Reproduce the Source0 the spec expects: `git archive` of the release
           # tag, which is what .github/workflows/release.yml attaches.
           mkdir -p ~/rpmbuild/SOURCES
@@ -99,6 +116,13 @@ jobs:
     container:
       image: debian:trixie
     steps:
+      # git, before the checkout, and that ordering is load-bearing. See the note
+      # on the same step in the fedora-rpm job: a checkout that ran without git on
+      # PATH leaves no .git at all, and the .orig tarball below needs one.
+      - name: Install git for the checkout
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache the cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -111,12 +135,11 @@ jobs:
       # No clang, no libbpf-dev, no rustfmt: the `bpf` feature is not enabled.
       - name: Install build dependencies
         run: |
-          apt-get update
           apt-get install -y --no-install-recommends \
             debhelper dpkg-dev \
             cargo rustc \
             make pkg-config libpcre2-dev libsystemd-dev \
-            git lintian
+            lintian
       # debian/control declares `Rules-Requires-Root: no`, so build as a plain
       # user rather than merely claiming it. dpkg-source also wants the tree in a
       # directory named <source>-<upstream version>.
@@ -124,6 +147,12 @@ jobs:
         run: |
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          # Name the cause rather than letting `git archive` fail with a bare
+          # exit 128. See the git step above.
+          git rev-parse --git-dir >/dev/null 2>&1 || {
+            echo "::error::the checkout is not a git repository; the 'Install git for the checkout' step must come first" >&2
+            exit 1
+          }
           useradd --create-home --shell /bin/bash builder
           install -d -o builder -g builder /build
           cp -a . "/build/ananicy-rs-$version"
@@ -166,14 +195,23 @@ jobs:
     container:
       image: archlinux:latest
     steps:
+      # git, and the base system, before the checkout. See the note on the same
+      # step in the fedora-rpm job: a checkout that ran without git on PATH
+      # leaves no .git, and the tag below cannot be created without one. The
+      # full `-Syu` has to happen here rather than after, because installing a
+      # single package against a stale sync database is a partial upgrade, and
+      # Arch does not support those; after this, the step below only adds
+      # packages that are already at their latest version.
+      - name: Install git for the checkout
+        run: pacman -Syu --noconfirm --needed git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # base-devel is the group every PKGBUILD `makedepends` entry comes from;
-      # `git` is not in it, and the recipe's source is a git tag. cargo and the
-      # native libraries all come with `base-devel` plus pcre2 and systemd-libs,
-      # which are pulled in by the packages named below.
+      # `git` came with the step above, because the recipe's source is a git tag.
+      # cargo and the native libraries come with `base-devel` plus pcre2 and
+      # systemd-libs, which are named below rather than left to base-devel.
       - name: Install build dependencies
         run: |
-          pacman -Syu --noconfirm --needed base-devel git pcre2 systemd-libs namcap
+          pacman -S --noconfirm --needed base-devel pcre2 systemd-libs namcap
       - name: Cache the cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -187,6 +225,12 @@ jobs:
         run: |
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          # Name the cause rather than letting `git tag` fail with a bare
+          # exit 128. See the git step above.
+          git rev-parse --git-dir >/dev/null 2>&1 || {
+            echo "::error::the checkout is not a git repository; the 'Install git for the checkout' step must come first" >&2
+            exit 1
+          }
           useradd --create-home --shell /bin/bash builder
           # The recipe's source is the released tag, so makepkg needs a remote
           # that has one. Publish this checkout as a local repository carrying
