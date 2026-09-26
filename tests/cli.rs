@@ -692,3 +692,83 @@ fn test_cli_systemd_flags_are_mutually_exclusive() {
             "error: --systemd and --no-systemd are mutually exclusive",
         ));
 }
+
+// ---------------------------------------------------------
+// Starting without a cgroup hierarchy
+// ---------------------------------------------------------
+
+/// A host with no usable cgroup hierarchy is still a host the daemon can do
+/// most of its work on: only a rule's `cgroup` attribute needs one.
+///
+/// The regression this covers made the daemon give up entirely. It waited for
+/// the hierarchy, warned, and returned from `main` with status 0 before spawning
+/// the worker, so no rule was applied, no event source was subscribed, and an
+/// `x3d_mode` change made at start-up was never restored. A `Type=simple` unit
+/// reported that as success.
+///
+/// A private mount namespace with an empty tmpfs over `/sys/fs/cgroup` is the
+/// closest reproducible stand-in for such a host, and is the only way to observe
+/// the path at all. It needs user namespaces, so it is skipped where they are
+/// unavailable rather than failing the suite on a host that cannot run it.
+#[test]
+fn test_cli_daemon_still_runs_without_a_cgroup_hierarchy() {
+    use std::{fs, process::Command as StdCommand};
+
+    let dir = tempfile::tempdir().expect("a temporary config directory");
+    let config = dir.path().join("ananicy.conf");
+    fs::write(&config, "check_freq=5\n").expect("a configuration");
+    // An empty rules directory, so the daemon is not reading whatever the host
+    // happens to have installed in /etc/ananicy.d.
+    fs::create_dir(dir.path().join("rules")).expect("a rules directory");
+
+    let script = format!(
+        "mount -t tmpfs none /sys/fs/cgroup && \
+         mount -t tmpfs none /dev/shm 2>/dev/null; \
+         exec {binary} --config {config} start",
+        binary = assert_cmd::cargo::cargo_bin("ananicy-rs").display(),
+        config = config.display(),
+    );
+
+    let mut child = match StdCommand::new("unshare")
+        .args(["--user", "--map-root-user", "--mount", "sh", "-c", &script])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("skipping: cannot run unshare ({e})");
+            return;
+        }
+    };
+
+    // The wait for a hierarchy is 10 seconds by design, so the daemon is given
+    // longer than that before it is stopped.
+    std::thread::sleep(std::time::Duration::from_secs(13));
+    let still_running = child.try_wait().expect("to poll the daemon").is_none();
+    let _ = child.kill();
+    let output = child.wait_with_output().expect("to reap the daemon");
+    let log = String::from_utf8_lossy(&output.stderr);
+
+    if log.contains("Operation not permitted") && !log.contains("Spawning worker thread") {
+        eprintln!("skipping: user namespaces are not permitted here");
+        return;
+    }
+
+    assert!(
+        log.contains("Still no cgroup hierarchy"),
+        "the test did not reach the no-hierarchy path, so it proves nothing:\n{log}"
+    );
+    assert!(
+        log.contains("cgroup rules will not be applied"),
+        "the daemon did not report that it cannot apply cgroup rules:\n{log}"
+    );
+    assert!(
+        still_running,
+        "the daemon exited instead of carrying on without cgroups:\n{log}"
+    );
+    assert!(
+        log.contains("Spawning worker thread"),
+        "the daemon gave up before spawning its worker, so no rule can be applied:\n{log}"
+    );
+}
