@@ -447,8 +447,14 @@ impl Worker {
             debug!(
                 "Cgroups are not compatible with realtime scheduling for now (linux limitation)"
             );
+            // The rule's `cgroup` is deliberately not applied here, and that is
+            // the workaround working rather than something going wrong. The
+            // reference logs the same line at debug and moves on; recording a
+            // failure would warn on every realtime process on every cgroup-v2
+            // host, and would suppress the applied-rule line that the reference
+            // still prints.
             if cfg.apply_cgroups && rule.get("cgroup").and_then(|v| v.as_str()).is_some() {
-                partial_failure.get_or_insert(PlatformError::Unsupported);
+                debug!("Skipping cgroup for realtime process {}", p.name);
             }
         } else if cfg.apply_cgroups
             && let Some(cgroup) = rule.get("cgroup").and_then(|v| v.as_str())
@@ -480,11 +486,16 @@ impl Worker {
 
             if let Some(resolved) = self.cpuset_aliases.get(raw_cpuset) {
                 if resolved.is_empty() {
+                    // An alias that resolves to nothing is the documented way of
+                    // saying "do not touch this process' affinity" on a machine
+                    // where the tier does not exist — `little-cores` on a
+                    // homogeneous host, say. It is a decision, not a failure, so
+                    // it is not recorded as one; the reference treats it as a
+                    // plain skip and still logs the applied rule.
                     debug!(
                         "cpuset alias '{}' resolved to empty set, skipping for {}",
                         raw_cpuset, p.name
                     );
-                    partial_failure.get_or_insert(PlatformError::Unsupported);
                     skip_cpuset = true;
                 } else {
                     cpuset_str = resolved.as_str();
