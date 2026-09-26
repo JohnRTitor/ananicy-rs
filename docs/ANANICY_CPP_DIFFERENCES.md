@@ -137,11 +137,14 @@ divergence goes.
   naming it do nothing. This daemon's threshold is 1.5 and puts that core in `little-cores`,
   which is the point of the split. The 1.3× heterogeneity test is unaffected and was
   brute-forced over the integer range to confirm it.
-- **A deleted binary's name has no trailing space.** The reference's `substr(0,
-  exe_name_end + 1)` keeps one byte too many (`process.cpp:230-233`), so `/usr/bin/foo
-  (deleted)` resolves to `"foo "` and no rule matches it. This daemon truncates to `"foo"`.
-  The reference is the one that fails to match; reproducing the space would break rules that
-  work here after a package upgrade or a NixOS store GC.
+- **A deleted binary's name has no trailing space.** The kernel appends ` (deleted)` to an `exe`
+  readlink whose target has been unlinked. The reference strips the filename with
+  `substr(0, exe_name_end + 1)` (`process.cpp:230-233`), and the `+ 1` keeps the space that belongs
+  to the marker, so `/usr/bin/foo (deleted)` resolves to `"foo "` and no rule matches it. This daemon
+  truncates at the index and gets `"foo"`. The reference is the one that fails to match; reproducing
+  the space would break rules that work here. The state is reached by an ordinary package upgrade,
+  where the new file is unlinked and recreated under a running process — **not** by a NixOS store
+  GC, which roots `/proc/<pid>/exe` and so cannot delete a binary that is executing.
 - **The `exe` readlink failure heuristic is per-PID.** The reference keeps one global counter
   that latches (`process.cpp:195-196, 224, 236, 243-244`), so five `EACCES` on `/proc/*/exe`
   for *any* processes disables exe-based naming for the whole daemon, permanently. This daemon
