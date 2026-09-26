@@ -36,7 +36,19 @@
 
 set -eu
 
-srcdir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+# The source root is the nearest ancestor holding Cargo.toml, found by walking up
+# rather than by counting `..` levels: this script is committed in contrib/debian/
+# and is run as debian/make-vendor.sh from the copy dpkg-buildpackage needs, and
+# the two are one level apart.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+while [ ! -f "$dir/Cargo.toml" ]; do
+    dir=$(dirname -- "$dir")
+    if [ "$dir" = / ]; then
+        echo "make-vendor.sh: no Cargo.toml above $0" >&2
+        exit 1
+    fi
+done
+srcdir=$dir
 cd "$srcdir"
 
 if [ ! -d debian ]; then
