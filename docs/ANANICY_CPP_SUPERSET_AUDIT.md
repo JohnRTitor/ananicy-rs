@@ -37,8 +37,8 @@ suite backing that claim is large, hermetic and green: **340 tests across 20 tar
 
 It is nevertheless not a superset yet, and the reason is now a category rather than a list. Both
 High findings of §7 are fixed (`cd77276`, `de694d4`), as are nine of the nineteen entries in §5 —
-one commit each, each with a test that fails without it. Two more (§5.17, §5.18) turned out on
-verification to describe no difference at all and were corrected, and one (§5.19) was real but
+one commit each, each with a test that fails without it. One more (§5.18) turned out on
+verification to be wrong about which socket option is set, and one (§5.19) was real but
 narrower than stated. What is left are **seven differences where matching `ananicy-cpp` would mean
 reproducing a defect in it**, documented in `ANANICY_CPP_DIFFERENCES.md` §5.1 and §5.2:
 
@@ -71,22 +71,23 @@ the reason in each case.
 
 * **High** for every finding backed by a citation *and* executed against this host: §7.2 (verified
   live, 2223/2223 `null` before the fix) and §7.1 (reproduced in a mount namespace with no hierarchy),
-  §5.2, §5.4, §5.7, §5.8, §5.9, §5.10, §5.11 (all executed).
+  §5.10 and §5.11 (both executed).
 * **High** for the C++ side of every finding, by source reading. **The C++ daemon could not be
   built in this environment** — `cmake` is absent and the project fetches its dependencies over the
   network (`CPMAddPackage`) — so no C++ claim rests on execution. The control-flow arguments were
   read end to end rather than sampled.
-* **Medium** for §5.5, §5.6, §5.12, §5.13, §5.14, §5.15: the divergence is proven from source
+* **Medium** for §5.5 and §5.12: the divergence is proven from source
   on both sides but the triggering host (a container with an undelegated `cpu` controller, a hybrid
   v1+v2 host, a multi-LLC machine) is not available here to demonstrate it.
 * **Medium** for the topology findings in general — they need a big.LITTLE machine, and the audit
   host is homogeneous (12 CPUs, 1 LLC, 1 NUMA node, no big.LITTLE). The counter-examples in §5.8 and
   §5.12 were found by exhaustive search over the two formulas rather than on real hardware.
 * **Assessed by build:** `nix develop` provides libbpf, so the BPF backend compiles and
-  `nix develop --command cargo test --workspace` passes with it. §5.17 still rests on source
-  comparison rather than execution, because the crate has no tests of its own and running the path
-  needs root and a BPF-capable kernel. The two `ananicy_cpp.bpf.c` files are byte-identical, which
-  is checked by `diff`.
+  `nix develop --command cargo test --workspace` passes with it. The `--verbose` plumbing into libbpf
+  is therefore at least compile-checked, which the first version of this document could not claim.
+  §8.1 records the comparison, and it stays at source level: the crate has no tests of its own and
+  exercising the path needs root and a BPF-capable kernel. The two `ananicy_cpp.bpf.c` files are
+  byte-identical, which is checked by `diff`.
 * **Not assessed:** `ananicy-cpp` has no VCS history, so "intentional vs accidental" judgements rely
   on comments, tests and the differences document rather than commit messages.
 
@@ -205,7 +206,8 @@ Four, beyond the citation errors above. Three are now settled and one is new:
 * **Matrix row 38 — "type inheritance (merge-patch): same result, precomputed — EQ"** is wrong for a
   rule containing an explicit `null`. See §5.3, verified by execution.
 * **Matrix row 68 — "`dump proc` / `dump autogroup`: same fields + `rule`"** describes the field
-  *names*. Three *values* differ. `autogroup` was always `null` too — `cd77276` fixed that one; see §5.1, §5.5, §7.2.
+  *names*. Three *values* differ — see §5.2. `autogroup` was always `null` too, and `cd77276` fixed
+  that; see §7.2.
 * **Previous audit §12.6 — "Autogroup is not missing… Both rewrites match the original, which reads and never
   writes"** is true of writing and false of the dump the property exists to provide. See §7.2.
 * **Matrix row 4 — `--force-remove-semaphore`: EQ.** The success path agrees; the error path does
@@ -237,10 +239,10 @@ C++ citations are corrected per §3.1.
 
 | # | Capability | ananicy-cpp | ananicy-rs | |
 |---|---|---|---|---|
-| 1 | `--verbose` | one level more verbose | forces DEBUG | DIFF |
+| 1 | `--verbose` | one step more verbose, clamped at `trace` | same | EQ — the debug-verbosity log line still differs, **see §5.1** |
 | 2 | Rule cache | none | 5000-entry LRU | SUP |
 | 3 | LRU rule cache sizing | — | `NonZeroUsize::new(5000)` | SUP |
-| 4 | `--force-remove-semaphore` error path | exit 1 + message | exit 0 always | DIFF |
+| 4 | `--force-remove-semaphore` error path | exit 1 + message | exit 1 + message | EQ |
 | 5 | IPC object permissions | 0600 | 0600 | EQ |
 | 6 | Full `/proc` scan | before subscription | concurrent with it | DIFF |
 | 7 | `--benchmark-count` | read in the main loop | read once | DIFF |
@@ -258,7 +260,7 @@ C++ citations are corrected per §3.1.
 | 19 | Log destination | stdout | stderr | DIFF |
 | 20 | Log level reload | no | yes | SUP |
 | 21 | `loglevel` case sensitivity | case-sensitive | case-insensitive | DIFF |
-| 22 | `check_freq` parse | `std::stoul` | `str::parse::<u32>` | DIFF |
+| 22 | `check_freq` parse | `std::stoul` | `str::parse::<u32>`; `0` refused | DIFF — **see §5.6** |
 | 23 | `check_freq` default | 60 | 60 | EQ |
 | 24 | `apply_cgroup` key name | `apply_cgroup` | `apply_cgroup` | EQ |
 | 25 | Config key whitespace trim | spaces only | all whitespace | DIFF |
@@ -290,7 +292,7 @@ C++ citations are corrected per §3.1.
 | 51 | `ioclass: "none"` | no write | no write | EQ |
 | 52 | `latency_nice` fallback | falls back to `nice` | same | EQ |
 | 53 | `latnice` support probe | on load | on load and reload | SUP |
-| 54 | Non-sandboxable errno | `test_errno` → −1 → treated as success | `Err` → rule aborted | DIFF |
+| 54 | Non-sandboxable errno | `test_errno` → −1 → treated as success | partial failure, rest of the rule applied | EQ — **see §5.4** |
 | 55 | `set_oom_score_adjust` result | unchecked | checked | SUP |
 | 56 | `set_latnice` EINVAL | errno cleared, reported as applied | error | DIFF |
 | 57 | `nice` → `cpu.weight` | absent | gated by `apply_cpu_weight` | SUP |
@@ -304,20 +306,20 @@ C++ citations are corrected per §3.1.
 | 65 | Lost-event callback | stderr | stderr | EQ |
 | 66 | `move_pid` start-time guard | absent | present | SUP |
 | 67 | `move_pid` TGID resolution | absent | present | SUP |
-| 68 | `dump proc` fields | same fields | same + `rule` | DIFF — **see §5.1, §5.5, §7.2**; `autogroup` now works |
+| 68 | `dump proc` fields | same fields | same + `rule` | DIFF — **see §5.2, §7.2**; `autogroup` now works |
 | 69 | `dump` JSON ordering | `unordered_map` | sorted | SUP |
 | 70 | `dump rules/types/cgroups` payload | raw / merged | same | EQ |
 | 71 | Event-source debug tools | opt-in samples only | not provided | EQ |
 | 72 | `libbpf` print callback | n/a | wired to `--verbose` | SUP |
 | 73 | `sched_getscheduler` | not used | removed | EQ |
-| 74 | 1.3× big.LITTLE threshold | integer compare | `f64` compare | DIFF — **see §5.8** |
+| 74 | 1.3× big.LITTLE threshold | `f64` compare | `f64` compare | EQ — brute-forced over 400 000 pairs |
 | 75 | Homogeneous → `little-cores` | `""` | `""` | EQ |
-| 76 | Capacity source selection | stops at first v1 mount | prefers cgroup2 always | DIFF — **see §5.6** |
+| 76 | Capacity source selection | stops at first v1 mount | prefers cgroup2 always | DIFF — **see §5.5** |
 | 77 | Offline CPU in capacity scan | counts as differentiating | absent | DIFF |
-| 78 | `llc-N` id order | ascending CPU | `readdir` order | DIFF — **see §5.12** |
+| 78 | `llc-N` id order | ascending CPU | ascending CPU | EQ — **see §5.7** |
 | 79 | `parse_size_string` | K/M/G | K/M/G, shared | EQ |
 | 80 | `get_node_id` on bad input | `std::terminate` | 0 | SUP |
-| 81 | X3D single-CCD alias | `0-(N-1)` always | `None` if no L3 size | DIFF — **see §5.13** |
+| 81 | X3D single-CCD alias | `0-(N-1)` always | all enumerated cores | EQ — the `die_id`→`cluster_id` fallback still differs, **see §5.13** |
 | 82 | X3D write timing | before dispatch | after root + singleton | DIFF |
 | 83 | X3D restore on exit | on listener failure | on every exit path | SUP |
 | 84 | `init_cgroups()` | called | called, and retried | SUP |
@@ -326,7 +328,7 @@ C++ citations are corrected per §3.1.
 | 87 | `sd_pid_get_cgroup` | used under systemd | not used | DIFF |
 | 88 | `create_cgroup` idempotence | yes | yes | EQ |
 | 89 | `cgroup.subtree_control` | `+cpu` | `+cpu` | EQ |
-| 90 | v1 vs v2 detection | first match wins | prefers cgroup2 | DIFF — **see §5.6** |
+| 90 | v1 vs v2 detection | first match wins | prefers cgroup2 | DIFF — **see §5.5** |
 | 91 | `cgroup.procs` vs `tasks` | correct per version | same | EQ |
 | 92 | Realtime cgroup target | hierarchy root | hierarchy root | EQ |
 | 93 | `exe` failure heuristic | global counter, latching | per-PID LRU | DIFF — **see §5.10** |
@@ -358,397 +360,207 @@ C++ citations are corrected per §3.1.
 | 119 | Netlink ENOBUFS recovery | n/a | untested | EQ |
 | 120 | `panic = "abort"` profile | — | release only | EQ |
 | 121 | `deadline` scheduler availability | n/a | falls back with a warning | SUP |
-| 122 | `-nice` overflow | no counterpart | debug panic / release wrap | DIFF — **see §5.14** |
+| 122 | `-nice` overflow | no counterpart | saturates at the clamp | EQ — **see §5.14** |
 | 123 | `dump autogroup` | populated | populated | EQ — **see §7.2** |
 
 ---
 
 ## 5. Behavioural difference register
 
-Current state. Severity is what an operator observes, not how much code differs.
+What differs between the two daemons **now**. Severity is what an operator observes, not how much
+code differs.
 
-> **Half of this register has since been fixed**, one commit per finding: 5.1, 5.2 (two of three
-> sub-items), 5.4, 5.6, 5.7, 5.9, 5.13, 5.14 and 5.15. Each heading says so. The findings are kept
-> as written, with the fix appended, for the reason 5.3 gives — a rewrite that trades a working
-> rule for parity with a reference bug is not a superset of anything, so those are documented in
-> `ANANICY_CPP_DIFFERENCES.md` §5.1 and §5.2 instead.
+Every finding this register was built from has been dealt with: six are fixed, twelve are
+deliberate and documented, and one (5.17) turned out on verification to describe no difference at
+all and has moved to §8. The entries below state the current divergence rather than narrating how it
+was found, and the reasoning for each fix lives in the commit it names and in §10.
 
+Two things bound the whole register. `ananicy-cpp` has never been executed here (§9), so every claim
+about its behaviour is source reading — though the control flow behind each entry was read end to
+end rather than sampled. And where this daemon's answer is the better one, the entry says so and
+points at `ANANICY_CPP_DIFFERENCES.md` instead of describing a bug: parity is not the goal, and
+reproducing a defect in the reference to achieve it would cost a working rule.
 
-### 5.1 `--verbose` and log output — Severity: Informational — **partly fixed in `febceac`**
+### Closed
 
-`ananicy-cpp --verbose` adds one level; `ananicy-rs --verbose` forces DEBUG. The C++ build forces
-`log_applied_rule` on in Debug builds (`worker.cpp:89-91`), which has no Rust equivalent. At debug
-verbosity with `log_applied_rule = true` the C++ worker prints the rule dump *instead of* the
-applied-rule line (`worker.cpp:92-96`); the Rust worker prints both (`worker.rs:181`, `203-214`).
-Logs go to stderr and stdout carries only the answer — `dump … | jq` works
-(`src/startup.rs:56-64`).
+| § | What it was | Now | Commit |
+|---|---|---|---|
+| 5.4 | One attribute's failure aborted the rule, so a rejected `sched` cost a valid `ionice` | The rest of the rule applies; a total failure logs at `error`, a partial one at `warn` | `c0086f7` |
+| 5.7 | `llc-N` was numbered in `read_dir` order, so a rule could pin to a different LLC than under the reference | Numbered by ascending CPU id, as the reference's own walk numbers them | `d0860d9` |
+| 5.9 | `--force-remove-semaphore` exited 0 whether or not anything was removed | A failed unlink logs the errno and exits 1, so a cleanup script can trust the status | `c835fc5` |
+| 5.13 | An X3D single-CCD part needed a readable L3, so one whose cache size is hidden got no alias at all | Decided on the die count, as the reference does; both aliases exist regardless | `8f36ec9` |
+| 5.14 | A `nice` at the edge of `i64` overflowed the `cpu.weight` mirror's exponent | `powf` on an `f64`, which saturates where the clamp already does | `697e0b4` |
+| 5.15 | Skipping a realtime process' cgroup, or a `cpuset` alias that resolved empty, was recorded as a partial failure and warned on every affected process | Both are decisions, not failures; neither warns, and the applied-rule line is no longer suppressed | `4981a3b` |
 
-**Resolution.** The `--verbose` half is fixed in `febceac`: the flag is now one step more verbose than the
-configured `loglevel`, clamped at `trace`, instead of forcing `DEBUG`. Forcing it made the flag
-inert on a configuration already at `debug` or `trace`, and turned a quiet `error` configuration
-into a wall of `info` — the opposite of "increase verbosity level". The log-line half stands: the
-reference prints the rule dump *instead of* the applied-rule line at debug verbosity
-(`worker.cpp:92-96`), so with `log_applied_rule = true` the two emit a different number of lines.
-Documented in `ANANICY_CPP_DIFFERENCES.md` §5.2 rather than matched, because the answer here is
-both lines.
+Partly closed, and still listed below because something remains: 5.1 and 5.2 (one sub-item each) and
+5.6 (the zero-interval case).
 
-### 5.2 `dump proc` and `dump autogroup` field values — Severity: Low — **two of three fixed in `8caebff`**
+### Still different
 
-The field *names* match the reference; three *values* do not, and one is always null.
+#### 5.1 `--verbose` and log output — Severity: Informational
 
-* `cmd` is the `comm` string in Rust (`src/dump.rs:74-82`) and the argv0/exe ladder in C++
-  (`process_info.cpp:188`) — so Rust's `rule` field and its `cmd` field can disagree for a process
-  that rewrote `argv[0]`.
-* `cmdline` is a JSON array in C++ (`process_info.cpp:243`) and a single space-joined string in Rust.
-* `oom_score_adj` is read as `unsigned` in C++ (`process_info.cpp:239-241`) and `i32` in Rust
-  (`crates/ananicy-platform/src/process_info.rs:43-47`). Verified: NetworkManager's `-900` prints as
-  `4294966396` under the reference and `-900` here.
-* `autogroup` was always `null` here; `cd77276` fixed it, see §7.2.
+`--verbose` is one step more verbose than the configured `loglevel`, clamped at `trace`, matching
+the reference's `max(0, level - 1)` (`febceac`; `ANANICY_CPP_DIFFERENCES.md` §6).
 
-**Resolution.** `cmd` and `cmdline` are fixed in `8caebff`. `cmd` was `/proc/<pid>/comm` while the `rule` beside it
-was matched on the `cmdline -> exe -> comm` ladder, so the two fields could describe different
-processes — `comm` is the kernel's, truncated to 15 characters, and is not what a rule is written
-against. The reference has no such split: its `cmd` is the same function it matches rules with, so
-`cmd` and `rule` always agree there. `cmdline` was the NUL-separated arguments joined with spaces;
-it is now the JSON array the reference emits, which is the only form that keeps an argument
-containing a space distinguishable from two arguments.
+What remains: at debug verbosity the reference prints the matched rule *instead of* the
+applied-rule line (`worker.cpp:92-96`), so with `log_applied_rule = true` the two emit a different
+number of lines for one rule. This daemon prints both. Documented in
+`ANANICY_CPP_DIFFERENCES.md` §5.2 — not matched, because both lines is the more useful answer and
+nothing parses the log.
 
-`oom_score_adj` is deliberately unchanged. The reference reads it as `unsigned`
-(`process_info.cpp:239-241`) and reports NetworkManager's `-900` as `4294966396`; the previous
-audit's own note recorded the reference's value as the surprising one. Documented in
-`ANANICY_CPP_DIFFERENCES.md` §5.1. 
+#### 5.2 `dump proc` field values — Severity: Low
 
-### 5.3 An explicit `null` in a rule deletes the inherited value here, and not in the reference — Severity: Medium
+`cmd` is the name the rule engine matched on and `cmdline` is an array of arguments, both matching
+the reference (`8caebff`). The shape of both dumps is documented in `CLI.md` and pinned by
+`tests/cli.rs`.
+
+What remains: `oom_score_adj` is signed here, so a process at `-900` is reported as `-900`. The
+reference reads the same file into an `unsigned` and reports `4294966396`. Diagnostic output that
+nothing computes on, so the wrap is not reproduced. Documented in `ANANICY_CPP_DIFFERENCES.md` §5.1
+and in `CLI.md`, where the value appears.
+
+#### 5.3 An explicit `null` in a rule deletes the inherited value here — Severity: Medium
 
 The reference merges a type into a rule **twice** (`rules.cpp:198-206`); this daemon merges once
-(`crates/ananicy-core/src/rules.rs:82-87`). An earlier draft of this entry said the reference
-"resurrects" the null on the second merge, which is not what happens — the null is never removed
-from `rule` in the first place. Traced through both, with a type
-`{"type":"t1","nice":5,"ioclass":"best-effort","ionice":2}` and a rule
-`{"name":"t1","type":"t1","nice":null,"sched":"idle"}`:
+(`crates/ananicy-core/src/rules.rs:82-87`). With a type carrying `nice: 5` and a rule carrying
+`"nice": null`:
 
-1. `type_rule.merge_patch(rule)`. JSON merge-patch *removes* a key whose patch value is null, and
-   the target here is `type_rule` — so the type's `nice: 5` is deleted from it.
-2. `rule.merge_patch(type_rule)`. `type_rule` no longer has a `nice` key, so nothing restores the
-   type's value. But `rule` still holds **its own** `nice: null`, because step 1 removed the null
-   from the other object.
+* `type_rule.merge_patch(rule)` deletes the type's `nice`, because a null patch value removes the
+  key from the *target*.
+* `rule.merge_patch(type_rule)` restores nothing — `type_rule` no longer has `nice` — and `rule`
+  still holds its own `nice: null`, because step 1 removed the null from the *other* object.
 
-So the reference's finished rule carries `nice: null`, where this daemon's carries **no `nice` key**
-at all — one merge, and the null does what merge-patch says it does (`rules.rs:246-248`).
+So the reference's finished rule carries `nice: null`, where this one's carries no `nice` at all. It
+then throws: `const int &rule_nice = rule["nice"]` (`worker.cpp:100`) cannot convert a JSON null, and
+the catch-all (`worker.cpp:203-206`) logs `critical: unhandled exception` and applies **nothing**
+from that rule — including its valid `sched`.
 
-From there the reference throws. `const int &rule_nice = rule["nice"]` (`worker.cpp:100`) converts a
-JSON null to an `int`, which nlohmann refuses; the worker's catch-all (`worker.cpp:203-206`) logs
-`critical: unhandled exception` and applies **nothing at all** from that rule — not the `sched`
-either, which was perfectly valid.
+One merge is what merge-patch means, and reproducing the double merge would mean reproducing a throw
+that silently discards a whole rule. Verified by execution here; the reference's behaviour is traced
+by hand. `ANANICY_CPP_DIFFERENCES.md` §5.1.
 
-Verified by execution on this side (`dump rules` emits no `nice`); the reference's behaviour is
-traced by hand, since it cannot be built here. **Left as it is:** one merge is what merge-patch
-means, and reproducing the double merge would mean reproducing a throw that discards a whole rule.
-Recorded in `ANANICY_CPP_DIFFERENCES.md` §5.1.
+#### 5.5 Cgroup v1/v2 classification — Severity: Medium
 
-
-### 5.4 A priority syscall failing with an unexpected errno aborts the rule here — Severity: Medium — **fixed in `c0086f7`**
-
-The reference's `test_errno` returns −1 on failure, and every caller tests `if (!set_X(…))`, which is
-false for −1 — so a failed `sched_setscheduler` is **treated as success** and the rest of the rule is
-applied anyway (`priority.cpp:34-36`; `worker.cpp:103,118,131,144,154,167,194`).
-
-Concrete trigger, verified by execution on this host: `sched_setscheduler(SCHED_FIFO, prio=0)` and
-`prio=200` both return `EINVAL(22)`. For a rule carrying `sched`, `ioclass`, `ionice`,
-`oom_score_adj` and `cgroup`, the reference logs the errno, gets −1, and applies the last four; this
-daemon returns `Err` at the `sched` attribute (`crates/ananicy-core/src/worker.rs:38-44`, whose
-`is_skippable()` lists only `PermissionDenied` and `Skipped`) and applies **none** of them.
-
-Which of the two is right is arguable — "the rule did not fully apply" is a truer log line than
-silence — but they are opposites, and the divergence is in the direction of *not* applying a
-perfectly valid `ionice`.
-
-**Resolution.** Fixed in `c0086f7`. Every attribute failure now records a partial failure and the walk continues,
-so a rejected `sched` no longer costs the rule a valid `ionice`. The outcome then depends on what
-actually happened, which is the part worth being precise about: nothing applied plus a failure is
-`Err` and logs at `error`, something applied plus a failure is `Partial` and logs at `warn`. The
-reference reaches the same place by accident — its `test_errno` returns -1 and its callers treat
-that as success — so the divergence was never about reporting, it was about which errnos the C++
-helper happened to swallow. 
-
-### 5.5 Cgroup v1/v2 classification — Severity: Medium
-
-`ananicy-cpp` stops scanning the mount table at the first cgroup mount it recognises
-(`cgroups.cpp:300-305`, `321-323`) and **abandons detection entirely** if that mount is a v1
-controller whose parent has no `cpu` sibling. This tree keeps scanning (`mounts.rs:84-92`, guarded
-only by `info.version == CgroupVersion::None`) and its cgroup2 branch has no "already set" guard, so
-a later `cgroup2` mount always wins (`mounts.rs:51-83`).
+The reference stops at the first cgroup mount it recognises (`cgroups.cpp:300-305, 321-323`) and
+abandons detection entirely if that mount is a v1 controller with no `cpu` sibling. This daemon
+keeps scanning (`mounts.rs:84-92`) and a later `cgroup2` mount always wins.
 
 Two consequences: a container exposing a single v1 controller mount with no `cpu` sibling works here
-and silently loses every `cgroup` rule in the reference; and on a **hybrid** host (v1 + unified) the
-two daemons pick different hierarchies, so every rule's `cgroup` name resolves to a different
-directory and running one after the other leaves orphans. Not demonstrable here — this host is
-cgroup2-only.
+and silently loses every `cgroup` rule in the reference; and on a **hybrid** host the two select
+different hierarchies, so a rule's cgroup name resolves to a different directory under each and
+running one after the other leaves the other's cgroups behind.
 
+The first is the reference losing a capability and is not reproduced. The second has no obviously
+correct answer — the reference's rule is "whichever mount came first", which is arbitrary — so this
+is a real open question rather than a defect on either side. Not demonstrable here: the audit host
+is cgroup2-only. `ANANICY_CPP_DIFFERENCES.md` §5.1.
 
-### 5.6 `check_freq` parsing — Severity: Low — **partly fixed in `78de5c6`**
+#### 5.6 `check_freq` parsing — Severity: Low
 
-The reference uses `std::stoul`, which stops at the first bad character, accepts a sign, and narrows
-to `uint32_t` (`config.cpp:129-137`); this tree uses `str::parse::<u32>()` and keeps the default on
-failure (`crates/ananicy-core/src/config.rs:154-162`). Verified: `-5`, `0x10` and `4294967296` are all
-rejected here and become `4294967291`, `0` and `0` there.
+`check_freq=0` is refused at parse time with an error naming the reason (`78de5c6`). The reference
+accepts it and then waits zero seconds, so `--manual-scanning` performs a full `/proc` walk in a
+tight loop — a core burner that looks like a working daemon. That is the reference's bug and it is
+not reproduced.
 
-`check_freq=0` is the consequential case: the reference's `wait_for(0s)` returns immediately, so
-`--manual-scanning` performs a **full `/proc` scan in a tight loop**. This tree substitutes 60 for a
-zero interval (`src/runtime.rs:183-184`). Rejecting the nonsense value is the better behaviour; the
-divergence is recorded because the previous audit's matrix row 22 mentions only that this side does
-not crash.
+What remains: the reference parses with `std::stoul`, which stops at the first bad character,
+accepts a sign and narrows to `uint32_t`, so `-5`, `0x10` and `4294967296` become three different
+numbers there and three errors here. Rejecting nonsense is the better answer and is still a
+divergence. `ANANICY_CPP_DIFFERENCES.md` §5.2.
 
-**Resolution.** The zero case is fixed in `78de5c6`: `check_freq=0` is refused at parse time with an error naming
-the reason, rather than stored and silently replaced with 60 at the point of use. The reference has
-no guard at all, which is the worse outcome the finding describes.
-The parsing difference stands. `std::stoul` stops at the first bad character, accepts a sign and
-narrows to `uint32_t`, so `-5`, `0x10` and `4294967296` become three different numbers there and
-three errors here. Rejecting nonsense is the better answer; it is still a divergence and is
-documented in `ANANICY_CPP_DIFFERENCES.md` §5.2. 
+#### 5.8 Core classification averages — Severity: Medium
 
-### 5.7 `llc-N` alias indexing — Severity: Medium — **fixed in `d0860d9`**
+The reference computes the core-type threshold as an **integer** mean and compares with an integer
+`>=` (`topology.cpp:95`, `:117`); this daemon uses `f64` (`topology.rs:431`, `:437`).
 
-The reference assigns LLC ids in ascending CPU order (`topology.cpp:235-283`); this tree assigns
-them in `read_dir` encounter order (`crates/ananicy-platform/src/topology.rs:281-317`, id =
-`llc_map.len()` at first sight, `topology.rs:118-135`). sysfs normally enumerates in ascending
-order, so they agree in practice — but nothing guarantees it, and on a multi-LLC machine a rule
-`{"cpuset":"llc-1"}` then pins to a different set of CPUs under the two daemons. The previous audit
-verified the alias *names* (row 81) but not the id→LLC mapping.
+They agree everywhere except where a capacity tier lands exactly on the truncated mean, and there
+the truncation is what makes the reference wrong: for two CPUs of capacity `{1, 2}` its average is
+1, so `1 >= 1` classifies the capacity-1 core as **big** and leaves `little-cores` empty — when it
+is plainly the little one. This daemon's threshold is 1.5 and puts it where it belongs. The 1.3×
+heterogeneity test is unaffected: it was brute-forced over 400 000 integer pairs and the two do not
+diverge there. `ANANICY_CPP_DIFFERENCES.md` §5.1.
 
-**Resolution.** Fixed in `d0860d9`. The `cpu*` entries are collected and sorted by id before the walk, so the
-numbering is a property of the machine rather than of the filesystem. `llc-0` is now the LLC
-containing CPU 0, as the reference's ascending walk makes it. 
-
-### 5.8 Core classification averages — Severity: Medium
-
-The reference computes the threshold as an **integer** mean and compares with an integer `>=`
-(`topology.cpp:95`, `:117`); this tree uses `f64` (`topology.rs:431`, `:437`).
-
-Smallest counter-example found by exhaustive search over the two formulas, on a machine both agree is
-heterogeneous: two CPUs with capacities `{1, 2}` (ratio 2.0, above the 1.3× threshold). The
-reference's `avg = 3/2 = 1`, so `1 >= 1` → **Big**, and `little-cores` is `""` — a rule naming it
-does nothing. This tree's `threshold = 1.5`, so `1 < 1.5` → **Little**, and the same rule pins the
-process to CPU 0.
-
-The 1.3× heterogeneity test itself was brute-forced over 400 000 integer pairs and does **not**
-diverge — the 1.3 threshold is safe; only the mean is not.
-
-**Left as it is.** An earlier draft of this entry also faulted a comment at `topology.rs:397-399`
-for claiming "the average-based split matches the reference daemon's". That comment was wrong and
-has since been rewritten (`topology.rs:409-419`) to say precisely this: the two formulas agree
-everywhere except a tier landing on the truncated mean, and there the truncation is what makes the
-reference wrong. Nothing else in the code needed changing. Recorded in
-`ANANICY_CPP_DIFFERENCES.md` §5.1.
-
-
-### 5.9 `--force-remove-semaphore` error path — Severity: Low — **fixed in `c835fc5`**
-
-The reference exits 1 with `Failed to remove semaphore! msg 'No such file or directory'`
-(`singleton_process.cpp:113-115`, `main.cpp:115-119`); this tree unlinks, logs, and exits 0
-(`src/ipc.rs:25-29`). Verified by execution: a second `--force-remove-semaphore` with no daemon
-running returns 0. A wrapper script using the exit code to confirm cleanup is misled. The reference
-also never stores a PID in the object.
-
-**Resolution.** Fixed in `c835fc5`. The unlink result is checked: a failure logs the errno and exits 1, matching
-`main.cpp:115-119`. The exit status is the point of the flag — a wrapper script that clears a stale
-object after a crash and checks the status before starting the daemon was being told the cleanup
-had worked. 
-
-### 5.10 `exe` readlink failure heuristic — Severity: Informational
+#### 5.10 `exe` readlink failure heuristic — Severity: Informational
 
 The reference keeps one **global, latching** counter (`static exe_fail_count`, threshold 5, reset
-only on success — `process.cpp:195-196, 224, 236, 243-244`); this tree keeps a per-PID LRU of 256
-entries (`crates/ananicy-platform/src/procfs.rs:15-17, 83-108`). Five `EACCES` on `/proc/*/exe` for
-**any** PIDs permanently disables exe-based naming for the whole reference daemon; this tree needs
-five failures for the *same* PID. The per-PID version is the correct fix and the reference is
-affected by a real bug — but the two can still resolve different names for the same process, and
-therefore match different rules.
+only on success — `process.cpp:195-196, 224, 236, 243-244`), so five `EACCES` on `/proc/*/exe` for
+*any* processes permanently disables exe-based naming for the whole daemon. This daemon counts per
+PID in a bounded LRU (`procfs.rs:15-17, 83-108`), so it takes five failures of the *same* process.
 
+The per-PID count is the correct behaviour and the reference is affected by a real bug. The two can
+still resolve different names for one process, and therefore match different rules — in the
+reference's favour only where its bug has already fired. `ANANICY_CPP_DIFFERENCES.md` §5.1.
 
-### 5.11 A deleted binary resolves to a different name — Severity: Low
+#### 5.11 A deleted binary resolves to a different name — Severity: Low
 
-The kernel appends ` (deleted)` to an `exe` readlink whose target has been
-unlinked. Both daemons strip it; the reference keeps one byte too many.
-`process.cpp:230-233` takes the *filename* first, so the string is `foo (deleted)`,
-and then:
+The kernel appends ` (deleted)` to an `exe` readlink whose target has been unlinked. The reference
+strips the filename with `substr(0, exe_name_end + 1)` (`process.cpp:230-233`), and the `+ 1` keeps
+the space belonging to the marker, so `/usr/bin/foo (deleted)` resolves to `"foo "` and a rule
+written as `{"name": "foo"}` does not match. This daemon truncates at the index and gets `"foo"`.
 
-```
-find(" (deleted)")  = 3           # the index of the space
-substr(0, n + 1)    = "foo "      # 4 characters — one too many   ← ananicy-cpp
-substr(0, n)        = "foo"       # 3 characters — correct          ← ananicy-rs
-```
+Reached by an ordinary package upgrade, where the new file is unlinked and recreated under a running
+process. **Not** by a NixOS store GC, which roots `/proc/<pid>/exe` and so cannot delete a binary
+that is executing — verified, and worth recording because the reverse is the natural assumption. The
+reference is the one that fails to match. `ANANICY_CPP_DIFFERENCES.md` §5.1, and pinned by
+`procfs.rs`'s unit tests, which fail with the reference's `+ 1` restored.
 
-(Checked by compiling the reference's expression, not by reading it. An earlier
-draft of this finding put the index at 14, which is the offset into the full
-`/proc/<pid>/exe` path rather than into the filename the code actually searches.)
+#### 5.12 An unreadable CPU is "no data" — Severity: Medium
 
-A rule `{"name":"foo"}` therefore matches here and not in the reference, for any
-process whose binary was replaced — which on an ordinary distribution is what a
-package upgrade does, since the new file is unlinked and recreated underneath the
-running process. The reference has the bug; the difference is that a rule
-matching differently is observable.
+The reference's "does this source differentiate the CPUs" test reads 0 for a CPU it cannot read, and
+`0 != reference` therefore counts as differentiating (`topology.cpp:53-64`), so one offline CPU
+makes it adopt a higher-priority capacity source and classify the machine by it. This daemon treats
+0 as absent and keeps looking (`topology.rs:212-216, 238-243`), computing the split over the CPUs
+that answered.
 
-**This does not happen on NixOS after a store GC**, which an earlier draft of this
-finding claimed. Nix's collector treats `/proc/<pid>/exe` as a garbage-collection
-root — 178 of them on the audit host, `/proc/1/exe` among them — so a routine GC
-cannot delete the binary a process is executing and cannot produce this state at
-all:
+So on a machine with an offline CPU the `big-cores`/`little-cores`/`turbo-cores` aliases can differ.
+Treating "no reading" as a distinct value is not something to reproduce.
+`ANANICY_CPP_DIFFERENCES.md` §5.1.
 
-```
-$ nix-store --gc --print-roots | grep '"/proc/1/exe'
-"/proc/1/exe" -> /nix/store/…-systemd-261.2
-```
+#### 5.16 `cpuset` whitespace — Severity: Low
 
-Reaching it on NixOS takes deleting a store path out from under a live process
-explicitly. The divergence is real; that way of arriving at it was not.
+`CpuSet::parse` trims each token (`cpuset.rs:55`, `:62`), so `"0, 1"` and `" 5"` are accepted. The
+reference tests the raw token for non-digits (`cpuset.cpp:262-267`) and rejects both. A rule written
+with a space after the comma therefore applies here and is ignored there.
 
+Being more permissive is the better answer, and the stricter rejections both daemons share
+(`0-a`, `1-2x`, a leading `-`, `,,`, a leading comma) are unchanged. `ANANICY_CPP_DIFFERENCES.md`
+§5.2.
 
-### 5.12 Offline CPUs change which capacity source is chosen — Severity: Medium
+#### 5.18 Netlink receive window — Severity: Informational
 
-The reference's "does this source differentiate the CPUs" test reads 0 for an unreadable CPU, and
-`0 != reference` therefore counts as differentiating (`topology.cpp:56-60`); this tree treats 0 as
-"no data" (`crates/ananicy-platform/src/topology.rs:212-216, 238-243`) and keeps looking. On a
-machine with any offline CPU, the reference stops at a source this tree passes over, and the
-core-type split — and so `big-cores`/`little-cores`/`turbo-cores` — differs.
-
-This is the mechanism §5.8 was about, in a form the previous audit's §5.1 did not identify. The fix
-in `b25eaba` removed the per-CPU choice but not this asymmetry.
-
-
-### 5.13 The X3D single-CCD alias — Severity: Low — **fixed in `8f36ec9`**
-
-The reference builds it as `0-(N-1)` with `_SC_NPROCESSORS_CONF` unconditionally
-(`x3d.cpp:161-169`); this tree returns `None` if no die reports an L3 size
-(`crates/ananicy-platform/src/x3d.rs:141-157`). On a single-CCD part with a CPU offline the aliases
-differ (`0-15` vs `0-7`); if `cache/index3/size` is unreadable the reference still defines both
-aliases and this tree defines neither. The reference's `die_id`→`cluster_id` fallback
-(`x3d.cpp:148-152`) is dead code — `read_int`'s default is 0, never negative — while `x3d.rs:116-121`
-implements it, so the two can group dies differently on a kernel without `die_id`.
-
-**Resolution.** Fixed in `8f36ec9` for the single-CCD case. The branch is keyed on the die count, as the reference
-is (`die_map.size() < 2`, `x3d.cpp:164-170`), and no longer requires a readable L3, so a part whose
-`cache/index3/size` is not exposed still gets both aliases instead of none.
-The `die_id` to `cluster_id` fallback is deliberately kept. The reference's copy of it is dead code
-— `read_int`'s default is 0 and never negative, so the condition it guards never holds — while
-`x3d.rs:116-121` implements it. That is a latent bug in the reference, not a compatibility surface,
-and matching it would group dies wrongly on a kernel that exposes `cluster_id` but not `die_id`. 
-
-### 5.14 `-nice` overflow — Severity: Informational — **fixed in `697e0b4`**
-
-`crates/ananicy-core/src/worker.rs:318` computes `1.25f64.powi(-nice as i32)`. A rule with
-`"nice": -2147483648` overflows the negation: release builds wrap to `i32::MIN`, `powi` yields `inf`,
-the saturating cast gives `u32::MAX` and the clamp yields `cpu.weight = 10000`; a debug or
-instrumented build **panics the worker thread**, and under `panic = "abort"` the daemon. No
-counterpart exists in the reference. Only reachable from a hostile or mistaken rule file.
-
-**Resolution.** Fixed in `697e0b4`. `powf(-(nice as f64))` has no integer step to overflow, so the `i64`-to-`f64`
-cast saturates where the clamp already handles it: an out-of-range nice yields the maximum weight
-instead of panicking the worker thread in a debug build or wrapping in a release one. 
-
-### 5.15 Realtime rules log a spurious warning — Severity: Low — **fixed in `4981a3b`**
-
-A realtime process whose rule names a `cgroup` produces a `WARN Rule application partially failed …
-Unsupported` on every cgroup-v2 host (`crates/ananicy-core/src/worker.rs:416-422`, `484-490`), and
-the `log_applied_rule` line the reference prints is suppressed (`worker.rs:222-234`). The reference
-logs at debug and does not suppress it (`worker.cpp:159-170`, `92-96`). The same suppression happens
-whenever a `cpuset` alias resolves empty (`worker.rs:451`), which the reference treats as a plain
-skip.
-
-**Resolution.** Fixed in `4981a3b`. Neither case is recorded as a failure any more. Skipping a realtime process'
-cgroup is the workaround working, and the reference logs it at debug and moves on; an empty
-`cpuset` alias is the documented way of saying "do not touch this process' affinity". Both keep
-their `debug!` lines, and the realtime one gains a second naming the process, so the decision is
-still visible to anyone reading at debug. 
-
-### 5.16 `cpuset` whitespace — Severity: Low
-
-`CpuSet::parse` trims each token (`crates/ananicy-core/src/cpuset.rs:55, 62`), so `"0, 1"` and
-`" 5"` are accepted; the reference tests the raw token for non-digits and rejects both
-(`cpuset.cpp:224-228, 262-267`). A rule written with a space after the comma works here and is
-silently ignored there. The previous audit documented the stricter rejections (`0-a`, `1-2x`) but
-not this.
-
-
-### 5.17 BPF backend — Severity: Informational — **no difference; the entry was wrong**
-
-An earlier draft of this entry ended "the Rust side additionally wires libbpf's print callback to
-`--verbose`, which is the only genuine difference". The reference does exactly that
-(`bpf_program_utils.c:14-26`): a `libbpf_print_fn` that returns early unless a `g_verbose` flag is
-set, installed with `libbpf_set_print` in the same `initialize_bpf_program` that takes `verbose`.
-So that was not a difference, and with it gone there is no BPF-specific difference at all.
-
-Checked, since the crate now builds under `nix develop`:
-
-| | `ananicy-cpp` | `ananicy-rs` |
-|---|---|---|
-| `ananicy_cpp.bpf.c` | — | **byte-identical** (`diff`, against `libananicycpp_bpf/src/`) |
-| `min_us` rate limit | inert, check commented out | same file, so the same |
-| perf buffer | `perf_buffer__new(…, 64, …)` | `PerfBufferBuilder::new` — inherits 64 as libbpf-rs' default |
-| lost-event callback | `fmt::print(stderr, …)` | `error!`, which tracing sends to stderr |
-| libbpf print callback | `g_verbose`-gated, stderr | `--verbose`-gated, stderr |
-
-Two things worth stating precisely rather than as agreement. The perf buffer is 64 pages in both
-because libbpf-rs' `PerfBufferBuilder::new` defaults to 64 — this daemon does not *ask* for 64, it
-inherits it, and a future libbpf-rs that changed its default would silently change the buffer. The
-previous audit claimed this side used a *smaller* buffer and was wrong about that (§10); the
-accurate statement is that it does not choose one. And `bpf-min-us` is a dead option in **both**:
-the program accepts the constant and the rate-limit check is commented out at
-`ananicy_cpp.bpf.c:60`, so neither daemon's `--bpf-min-us` does anything.
-
-The one real ordering difference — the initial `/proc` scan running before the subscription in the
-reference and concurrently with it here — belongs to neither backend and is not BPF-specific. It is
-matrix row 6, and until this pass it was in the matrix but in no document; it is now recorded in
-`ANANICY_CPP_DIFFERENCES.md` §5.2.
-
-
-### 5.18 Netlink receive window — Severity: Informational — **no difference; the entry was wrong**
-
-An earlier draft of this entry said "this tree sets neither", which is false, and contradicted
-`ANANICY_CPP_DIFFERENCES.md` §5 in the same repository. Verified, both sides:
+The two daemons set *different* socket options, and the earlier version of this entry claimed this
+one set neither, which was false and contradicted `ANANICY_CPP_DIFFERENCES.md` in this repository.
 
 | | `SO_RCVBUF` | `SO_RCVTIMEO` | how it drains |
 |---|---|---|---|
 | `ananicy-cpp` | default | 500 ms (`netlink_program_utils.c:45-49`) | a blocking `recv` that times out |
-| `ananicy-rs` | 8 MiB, falling back with a warning (`netlink.rs:48-56`) | not set | non-blocking, through `epoll` with a 100 ms tick (`netlink.rs:93-115`) |
+| `ananicy-rs` | 8 MiB, warning rather than failing if refused (`netlink.rs:48-56`) | not set | non-blocking, `epoll` with a 100 ms tick (`netlink.rs:93-115`) |
 
-The two differ in *which* socket option they set, not in whether they set one. A larger receive
-buffer is the point: `SO_RCVBUF` is what the kernel overruns when a burst of `fork`/`exec` events
-outruns the reader, and the failure mode is `ENOBUFS` and lost events. The reference's 500 ms
-`SO_RCVTIMEO` bounds how long a `recv` may block; it does nothing about the buffer.
-
-Not changed: this daemon's behaviour is the better of the two, so the note stays. The consequence
-to be aware of is a slightly more active loop — 100 ms of `epoll` wakeups against a 500 ms blocking
-read — bought with fewer overruns. Already recorded in `ANANICY_CPP_DIFFERENCES.md` §5; this entry
-now agrees with it.
+`SO_RCVBUF` is what the kernel overruns when a burst of `fork`/`exec` events outruns the reader, and
+the failure mode is `ENOBUFS` and lost events; the reference's 500 ms `SO_RCVTIMEO` bounds how long a
+`recv` may block and does nothing about the buffer. The cost here is a slightly more active loop,
+which is the trade `ANANICY_CPP_DIFFERENCES.md` §5 already described.
 
 The `prev_pid` reset difference in the same path is real and documented there.
 
-
-### 5.19 `get_cgroup_for_pid` ignores `sd_pid_get_cgroup` — Severity: Informational
+#### 5.19 `get_cgroup_for_pid` does not use `sd_pid_get_cgroup` — Severity: Informational
 
 The reference calls `sd_pid_get_cgroup` under `ENABLE_SYSTEMD` (`cgroups.cpp:336-346`); this daemon
-always reads `/proc/<pid>/cgroup` (`debug.rs:84`). Unchanged from the previous audit's finding.
+always reads `/proc/<pid>/cgroup` (`debug.rs:84`).
 
-Narrower than it looks, which the earlier entry did not say: **`get_cgroup_for_pid` is not on the
+Narrower than it looks, and the earlier entry did not say so: **`get_cgroup_for_pid` is not on the
 rule-application path in either daemon.** Every caller in the reference is a test
 (`unit-core.cpp:104,111,115`) or the `debug cgroups` diagnostic (`debug.cpp:52`). Nothing that
-matches a rule, moves a process, or writes a cgroup setting goes through it, so the divergence
-affects one diagnostic line and no behaviour.
+matches a rule, moves a process, or writes a cgroup setting goes through it, so this affects one
+diagnostic line and no behaviour.
 
-Where the two answers differ is inside a cgroup namespace: `sd_pid_get_cgroup` resolves the path as
-the *systemd* manager sees it, while `/proc/<pid>/cgroup` is namespace-relative, so in a container
-they can name different directories. That is a genuine reason for the reference to prefer it, and
-not one this daemon can act on without a systemd dependency it does not otherwise have — the answer
-it reads is the one that is correct *from inside* the namespace the daemon is running in, which is
-the one that matters for deciding where to move a process. Recorded in
-`ANANICY_CPP_DIFFERENCES.md` §5.
+The two answers differ inside a cgroup namespace: `sd_pid_get_cgroup` resolves the path as the
+*systemd* manager sees it, `/proc/<pid>/cgroup` is namespace-relative. That is a real reason for the
+reference to prefer it, and not one this daemon can act on without a systemd dependency it does not
+otherwise have — and what it reads is the answer correct *from inside* the namespace the daemon is
+running in, which is the one that matters when deciding where to move a process. The reference also
+ignores the call's return value, so on failure it reads an uninitialised `char *`
+(`cgroups.cpp:336-346`). `ANANICY_CPP_DIFFERENCES.md` §5.
 
-The reference also has a latent bug here: `sd_pid_get_cgroup`'s return value is ignored, so on
-failure `cgroup` is uninitialised and `std::string cgroup_name(cgroup)` reads it anyway. Not a
-concern for a rewrite that does not make the call.
-
----
 
 ## 6. Rust-only capabilities with a concrete effect
 
@@ -891,13 +703,23 @@ report a real autogroup across 81 groups, and the 273 that remain `null` are exa
 threads — which have none, and which the reference also reports as `null`.
 
 
-### 7.3 The Medium set, ranked
+### 7.3 The Medium set, and what became of it
 
-Six undocumented differences of Medium severity, from §5: type-inheritance `null` (§5.3),
-unexpected errno aborting a rule (§5.4), cgroup classification (§5.5), `llc-N` ordering (§5.7),
-core-average boundary (§5.8), offline-CPU source selection (§5.12). Each needs a row in
-`docs/ANANICY_CPP_DIFFERENCES.md` §5 or a fix. Two of the six (§5.7, §5.8) decide which rule
-matches a given process, which makes them the first two to address.
+Three of §5's findings were rated Medium. All are now settled, and the ways they settled differ in a
+way worth stating:
+
+* **§5.4, an attribute failure aborting the rest of the rule** — **fixed** (`c0086f7`). This was the
+  only one where the reference was right and this daemon was wrong, and it cost a valid `ionice`
+  whenever a rule also named a `sched` the kernel would not take.
+* **§5.3, an explicit `null` resurrecting a type's value** and **§5.8, an integer mean putting the
+  capacity-1 core of a `{1, 2}` machine in the *big* tier** — **documented, not matched**. Both are
+  the reference being wrong, and reproducing either would cost a working rule.
+* **§5.5, §5.7 and §5.12** — **documented**. §5.7 and §5.12 are the reference misreading `read_dir`
+  order and an unreadable capacity file; §5.5 is a hybrid host, where the reference's rule is
+  "whichever mount came first" and there is no obviously correct answer on either side.
+
+Each is in `docs/ANANICY_CPP_DIFFERENCES.md` §5.1. Nothing in this set is a known defect in this
+daemon.
 
 ---
 
@@ -982,8 +804,8 @@ the double merge); `"nice"` out of range (the kernel clamps rather than returnin
   §5.3 and §5.4, and the C++ half of the matrix's "C++ has none" rows.
 * **The BPF backend has no test coverage.** It now *builds* — `nix develop` supplies libbpf, and
   `nix develop --command cargo test --workspace` passes with it — so the `--verbose` plumbing into
-  libbpf's print callback is at least compile-checked, which §11 previously could not claim. §5.17
-  remains a source comparison plus a `diff` of the two identical `ananicy_cpp.bpf.c` files, because
+  libbpf's print callback is at least compile-checked, which the first version of this document
+  could not claim. §8.1 records the comparison; it remains source-level plus a `diff`, because
   exercising the path needs root and a BPF-capable kernel, and the crate has no tests of its own.
 * **Nothing requiring a cgroup-v2 delegated-root service was exercised against a real delegated
   subtree.** The owned branch of the cgroup manager is covered only by the simulated hierarchy in
@@ -1053,9 +875,10 @@ be wrong the moment anything else landed.
 
 ### 10.1 Three findings the previous audit got wrong
 
-* **The perf buffer was never smaller.** The matrix and §5.17 said this side used libbpf-rs'
-  default page count as if it were smaller than the reference's 64. `PerfBufferBuilder::new` already
-  uses 64. No change was made, and both places now say so.
+* **The perf buffer was never smaller.** The matrix and the first §5.17 said this side used
+  libbpf-rs' default page count as if it were smaller than the reference's 64.
+  `PerfBufferBuilder::new` already uses 64 — and §8.1 now says the sharper thing, that the
+  count is inherited rather than chosen. No change was made.
 * **Logs went to stdout.** The previous audit's §5.20 claimed this side "keeps stdout clean (JSON only) and logs the
   version at INFO on stderr — strictly better". It did not: `tracing_subscriber::fmt` defaults to
   stdout, so every log line was interleaved with the JSON and `dump cgroups | jq` failed. The claim
