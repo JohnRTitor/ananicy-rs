@@ -69,9 +69,8 @@ impl ProcessInfo {
             .to_string();
         let stat_name = parse_stat(&stat).unwrap_or_default();
 
-        let autogroup_val =
-            read_to_string(format!("/proc/{}/task/{}/autogroup", pid, tpid)).unwrap_or_default();
-        let autogroup = get_autogroup_from_str(&autogroup_val);
+        let autogroup =
+            get_autogroup_from_str(&read_to_string(autogroup_path(pid)).unwrap_or_default());
 
         let size = std::mem::size_of::<crate::abi::sched_attr::sched_attr>() as u32;
         let mut attr = crate::abi::sched_attr::sched_attr {
@@ -128,6 +127,17 @@ fn parse_stat(stat: &str) -> Option<String> {
     let start = stat.find('(')?;
     let end = stat.rfind(')')?;
     Some(stat[start + 1..end].to_string())
+}
+
+/// Where the kernel publishes a process's autogroup.
+///
+/// The autogroup is a property of the *thread group*, not of a thread, and the
+/// kernel publishes it in exactly one place: `/proc/<pid>/autogroup`, which is
+/// the thread-group leader's entry. There is no `/proc/<pid>/task/<tid>/autogroup`
+/// — unlike `comm` and `stat`, which are genuinely per-thread and are read
+/// through the `task/<tid>` path above.
+fn autogroup_path(pid: i32) -> String {
+    format!("/proc/{pid}/autogroup")
 }
 
 fn get_autogroup_from_str(s: &str) -> Option<Value> {
@@ -218,10 +228,40 @@ mod tests {
 
     #[test]
     fn autogroup_lines_are_parsed_into_group_and_nice() {
-        // The shape written by the kernel to /proc/<pid>/task/<tid>/autogroup.
+        // The shape written by the kernel to /proc/<pid>/autogroup.
         let parsed = get_autogroup_from_str("/autogroup-3 nice 7").unwrap();
         assert_eq!(parsed["group"], 3);
         assert_eq!(parsed["nice"], 7);
+    }
+
+    #[test]
+    fn autogroup_is_read_from_a_path_the_kernel_actually_provides() {
+        use std::path::Path;
+
+        let pid = std::process::id() as i32;
+        let leader = autogroup_path(pid);
+        let per_thread = format!("/proc/{pid}/task/{pid}/autogroup");
+
+        if !Path::new(&leader).exists() {
+            // A kernel built without CONFIG_SCHED_AUTOGROUP, or a sandbox that
+            // does not mount it. There is nothing to read and nothing to assert.
+            return;
+        }
+
+        assert!(
+            !Path::new(&per_thread).exists(),
+            "the kernel now publishes a per-thread autogroup at {per_thread:?}; \
+             it would be a different file from {leader:?} and the one to read \
+             would need revisiting"
+        );
+
+        let info = ProcessInfo::new(pid, pid, None);
+        assert!(
+            info.autogroup.is_some(),
+            "the kernel published {leader:?} but the daemon reported no autogroup \
+             for its own process: {:?}",
+            info.autogroup
+        );
     }
 
     #[test]
