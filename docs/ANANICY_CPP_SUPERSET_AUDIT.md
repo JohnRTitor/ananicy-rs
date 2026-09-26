@@ -417,17 +417,31 @@ audit's own note recorded the reference's value as the surprising one. Documente
 
 ### 5.3 An explicit `null` in a rule deletes the inherited value here, and not in the reference — Severity: Medium
 
-The reference merges a type into a rule **twice** (`rules.cpp:198-206`): `type.merge_patch(rule)` and
-then `rule.merge_patch(type)`. This tree merges once (`crates/ananicy-core/src/rules.rs:246-253`).
+The reference merges a type into a rule **twice** (`rules.cpp:198-206`); this daemon merges once
+(`crates/ananicy-core/src/rules.rs:82-87`). An earlier draft of this entry said the reference
+"resurrects" the null on the second merge, which is not what happens — the null is never removed
+from `rule` in the first place. Traced through both, with a type
+`{"type":"t1","nice":5,"ioclass":"best-effort","ionice":2}` and a rule
+`{"name":"t1","type":"t1","nice":null,"sched":"idle"}`:
 
-With a type `{"type":"t1","nice":5,"ioclass":"best-effort","ionice":2}` and a rule
-`{"name":"t1","type":"t1","nice":null,"sched":"idle"}`, `dump rules` here emits a rule with **no**
-`nice` key — the null deleted it, which is the correct reading of a merge-patch. The reference
-resurrects it on the second merge, and then `rule["nice"]` is a `null` that its `const int&`
-conversion cannot handle: the worker's catch-all (`worker.cpp:203-206`) logs
-`critical: unhandled exception` and applies **nothing at all** from that rule.
+1. `type_rule.merge_patch(rule)`. JSON merge-patch *removes* a key whose patch value is null, and
+   the target here is `type_rule` — so the type's `nice: 5` is deleted from it.
+2. `rule.merge_patch(type_rule)`. `type_rule` no longer has a `nice` key, so nothing restores the
+   type's value. But `rule` still holds **its own** `nice: null`, because step 1 removed the null
+   from the other object.
 
-Verified by execution on this side; the merge order was traced by hand through the reference.
+So the reference's finished rule carries `nice: null`, where this daemon's carries **no `nice` key**
+at all — one merge, and the null does what merge-patch says it does (`rules.rs:246-248`).
+
+From there the reference throws. `const int &rule_nice = rule["nice"]` (`worker.cpp:100`) converts a
+JSON null to an `int`, which nlohmann refuses; the worker's catch-all (`worker.cpp:203-206`) logs
+`critical: unhandled exception` and applies **nothing at all** from that rule — not the `sched`
+either, which was perfectly valid.
+
+Verified by execution on this side (`dump rules` emits no `nice`); the reference's behaviour is
+traced by hand, since it cannot be built here. **Left as it is:** one merge is what merge-patch
+means, and reproducing the double merge would mean reproducing a throw that discards a whole rule.
+Recorded in `ANANICY_CPP_DIFFERENCES.md` §5.1.
 
 
 ### 5.4 A priority syscall failing with an unexpected errno aborts the rule here — Severity: Medium — **fixed in `c0086f7`**
