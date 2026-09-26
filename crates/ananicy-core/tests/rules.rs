@@ -9,7 +9,7 @@
 //!
 //! The `name_regex` extension and the `#`-comment / CRLF tolerance exist for
 //! compatibility with the rule files shipped by the `ananicy` and `ananicy-cpp`
-//! communities; see `docs/ANANICY_CPP_DIFFERENCES.md`.
+//! communities; see `docs/COMPATIBILITY.md`.
 
 use {
     ananicy_core::{

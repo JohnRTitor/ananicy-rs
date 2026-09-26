@@ -34,7 +34,7 @@ fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, u8>> {
 /// `ananicy-cpp` truncates one byte later, keeping the space, so `/usr/bin/foo
 /// (deleted)` resolves to `"foo "` there and to `"foo"` here — and a rule written
 /// as `{"name": "foo"}` therefore matches here and not there. This daemon's
-/// answer is the correct one; see `docs/ANANICY_CPP_DIFFERENCES.md` §5.1.
+/// answer is the correct one; see `docs/COMPATIBILITY.md` §5.1.
 fn strip_deleted_suffix(name: &str) -> String {
     match name.find(" (deleted)") {
         Some(index) => name[..index].to_string(),
