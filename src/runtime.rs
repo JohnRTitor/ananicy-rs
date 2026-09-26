@@ -199,8 +199,10 @@ fn create_cgroups(rules: &Arc<Rules>) {
 
 fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag: Arc<AtomicBool>) {
     spawn_named_thread!("ananicy-scan", move || {
-        let freq = config.get().check_freq;
-        let check_freq = if freq > 0 { freq } else { 60 };
+        // Zero is refused at parse time, so there is no sensible value to
+        // substitute here: an interval of zero would mean a full `/proc` walk in
+        // a tight loop.
+        let check_freq = config.get().check_freq;
         let mut last_scan = Instant::now();
 
         while !shutdown_flag.load(SeqCst) {

@@ -152,13 +152,24 @@ impl ConfigSnapshot {
 
                 match key {
                     "check_freq" => {
-                        if let Ok(freq) = value.parse() {
-                            config.check_freq = freq;
-                        } else {
-                            diagnostics.push(ConfigDiagnostic::Error(format!(
+                        // A zero interval is rejected rather than stored. The
+                        // reference accepts it and then waits zero seconds, so
+                        // `--manual-scanning` performs a full `/proc` walk in a
+                        // tight loop — a core burner that looks like a working
+                        // daemon. This daemon has always substituted 60 at the
+                        // point of use; refusing the value says so at start-up,
+                        // where an operator editing the file will see it.
+                        match value.parse() {
+                            Ok(0) => diagnostics.push(ConfigDiagnostic::Error(
+                                "Invalid check_freq value: 0 (the full scan interval must be \
+                                 at least 1 second)"
+                                    .to_string(),
+                            )),
+                            Ok(freq) => config.check_freq = freq,
+                            Err(_) => diagnostics.push(ConfigDiagnostic::Error(format!(
                                 "Invalid check_freq value: {}",
                                 value
-                            )));
+                            ))),
                         }
                     }
                     "cgroup_load" => config.cgroup_load = value == "true",
