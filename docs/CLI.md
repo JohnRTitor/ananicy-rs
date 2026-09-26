@@ -127,6 +127,49 @@ Example:
 sudo ananicy-rs dump rules
 ```
 
+### `dump proc` and `dump autogroup` output
+
+Both print one JSON object on stdout and nothing else, so they pipe into a JSON
+tool directly. `dump proc` is keyed by thread ID; `dump autogroup` is keyed by
+autogroup number, and each group holds the processes in it:
+
+```jsonc
+// dump autogroup
+{
+  "1": {
+    "nice": 0,
+    "proc": {
+      "1370": { "pid": 1370, "tpid": 1370, "cmd": "postgres", /* … */ }
+    }
+  }
+}
+```
+
+A `dump proc` entry carries `pid`, `tpid`, `exe`, `comm`, `cmd`, `cmdline`,
+`stat`, `stat_name`, `autogroup`, `sched`, `rtprio`, `nice`, `latency_nice`,
+`ionice` and `oom_score_adj` — fifteen fields. A sixteenth, `rule`, names the
+rule that matched and is **omitted entirely** when none did, so a parser must
+treat it as optional rather than assume a `null`. `ananicy-cpp` does not report
+it at all. In `dump autogroup` the per-process `autogroup` key is removed,
+because the grouping is the outer level.
+
+Three fields are worth knowing about, because reading them wrong is easy:
+
+- **`cmd` is the name the rule engine matched on**, resolved through
+  `cmdline → exe → comm`. It is usually *not* the same as `comm`, which is the
+  kernel's own name, truncated to 15 characters — `cmd` is `postgres` where
+  `comm` is `.postgres-wrapp`. A rule is written against `cmd`.
+- **`cmdline` is an array of arguments**, not one string, so an argument
+  containing a space stays distinguishable from two arguments.
+- **`oom_score_adj` is signed.** A process at `-900` is reported as `-900`.
+  `ananicy-cpp` reads the same file into an `unsigned` and reports
+  `4294966396`; anything arithmetic on this field has to cope with that if it is
+  parsing both daemons' output. See
+  [`ANANICY_CPP_DIFFERENCES.md`](./ANANICY_CPP_DIFFERENCES.md) §5.1.
+
+Processes with no autogroup — kernel threads, in practice — are absent from
+`dump autogroup` entirely, and report `"autogroup": null` in `dump proc`.
+
 ## Shell Completions
 
 Generate shell completions and output them to stdout so you can redirect them into the appropriate completion path for your shell.
