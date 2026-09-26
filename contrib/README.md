@@ -58,12 +58,13 @@ sudo systemctl enable --now ananicy-rs.service
 
 These were read out of the build, not inferred from the source tree:
 
-- The default feature set links `libsystemd.so.0` and `libpcre2-8.so.0`. The
+- The default feature set links exactly one system library, `libsystemd.so.0`. The
   `systemd` feature is on by default and declares `#[link(name = "systemd")]`, so
-  libsystemd is a link-time dependency of any default build; `pcre2-sys` links
-  PCRE2 and falls back to building its own static copy when the pkg-config probe
-  fails. Every recipe therefore declares both, deliberately, rather than letting
-  the fallback produce a differently configured regex engine.
+  libsystemd is a link-time dependency of any default build. The regex engine is
+  pure Rust and links nothing, so there is no second system dependency to declare
+  and no pkg-config probe whose failure would silently substitute a differently
+  configured engine. Every recipe therefore declares libsystemd, and nothing
+  else, deliberately.
 - `make install` with `PREFIX=/usr` writes exactly two files: the `0755` binary
   at `/usr/bin/ananicy-rs` and the `0644` unit at
   `/usr/lib/systemd/system/ananicy-rs.service`.

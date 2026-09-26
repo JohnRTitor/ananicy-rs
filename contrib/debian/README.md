@@ -166,7 +166,7 @@ tag, with the reason.
 | `Section` | `admin` | it administers process priorities |
 | `Standards-Version` | 4.7.0 | |
 | `Rules-Requires-Root` | `no` | the build only runs `cargo build` and `cargo test`; the tests that need root skip themselves |
-| `Depends` | `${shlibs:Depends}, ${misc:Depends}` | `dpkg-shlibdeps` turns the linker-recorded `libsystemd.so.0` and `libpcre2-8.so.0` into a real dependency |
+| `Depends` | `${shlibs:Depends}, ${misc:Depends}` | `dpkg-shlibdeps` turns the linker-recorded `libsystemd.so.0` into a real dependency |
 | `Recommends`/`Suggests` | none | see below |
 
 No dependency on systemd-as-init is declared, and none should be: the daemon
@@ -181,7 +181,7 @@ get packaged, the right relationship is a `Recommends` or a separate
 
 ## Build dependencies
 
-`cargo`, `rustc (>= 1.88)`, `pkgconf`, `libpcre2-dev`, `libsystemd-dev`, plus
+`cargo`, `rustc (>= 1.88)`, `pkgconf`, `libsystemd-dev`, plus
 `debhelper-compat (= 13)`.
 
 `make` is deliberately **not** in the list even though `make install` is what
@@ -196,7 +196,7 @@ is genuinely required, because linking needs a C compiler and libc headers, and
 
 `pkgconf` rather than `pkg-config`: the latter has been a transitional package
 since bookworm. It provides the same `pkg-config` binary, which is what
-`pcre2-sys` invokes.
+`libbpf-sys` invokes.
 
 `rustc (>= 1.88)` is the floor, and it is higher than the edition requires.
 Edition 2024 needs 1.85, but the workspace uses let chains — 30 `&& let`
@@ -211,11 +211,6 @@ the same reason.
 
 `clang`, `libbpf-dev` and `rustfmt` are **not** build dependencies, because the
 `bpf` feature is not enabled. See the feature section below.
-
-`libpcre2-dev` is required rather than optional: `pcre2-sys` probes for
-`libpcre2-8` with pkg-config and only falls back to building its own vendored
-copy when the probe fails, and that copy is a different build (`SUPPORT_JIT=1`
-forced, linked statically).
 
 ## Configuration and upgrades
 

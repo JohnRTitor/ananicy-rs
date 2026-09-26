@@ -9,7 +9,6 @@
   zlib,
   zstd,
   libbpf,
-  pcre2,
   systemdLibs,
   version ? "unstable",
   withBpf ? true,
@@ -43,23 +42,23 @@ rustPlatform.buildRustPackage {
     llvmPackages.clang
   ];
 
-  buildInputs = [
-    pcre2
-  ]
-  ++ lib.optionals withBpf [
-    elfutils
-    zlib
-    zstd
-    libbpf
-  ]
-  ++ lib.optionals withSystemd [
-    systemdLibs
-  ];
+  buildInputs =
+    lib.optionals withBpf [
+      elfutils
+      zlib
+      zstd
+      libbpf
+    ]
+    ++ lib.optionals withSystemd [
+      systemdLibs
+    ];
 
   buildNoDefaultFeatures = true;
-  buildFeatures = [ "netlink" ]
-    ++ lib.optionals withBpf [ "bpf" ]
-    ++ lib.optionals withSystemd [ "systemd" ];
+  buildFeatures = [
+    "netlink"
+  ]
+  ++ lib.optionals withBpf [ "bpf" ]
+  ++ lib.optionals withSystemd [ "systemd" ];
 
   checkFlags = [
     # Fails in Nix sandbox due to restricted permissions
@@ -77,7 +76,8 @@ rustPlatform.buildRustPackage {
     install -Dm644 -t $out/share/doc/$pname/docs docs/BUILD.md docs/CLI.md \
       docs/COMPATIBILITY.md docs/CONFIGURATION.md docs/SYSTEMD.md \
       docs/TESTING.md docs/TOPOLOGY.md
-  '' + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+  ''
+  + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
     installShellCompletion --cmd ananicy-rs \
       --bash <($out/bin/ananicy-rs completions bash) \
       --fish <($out/bin/ananicy-rs completions fish) \

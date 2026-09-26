@@ -38,12 +38,10 @@ BuildRequires:  cargo
 BuildRequires:  rust >= 1.88
 # `make install` is what places the binary and the unit.
 BuildRequires:  make
-# pcre2-sys asks pkg-config for libpcre2-8 and only falls back to building its
-# own vendored copy when the probe fails. The fallback is a different build
-# (SUPPORT_JIT=1 forced, linked statically), so the system library is required,
-# not optional.
+# libbpf-sys asks pkg-config for libbpf. The regex engine is pure Rust and links
+# nothing, so there is no probe for it and no vendored fallback that could
+# substitute a differently configured engine for the one the manifest names.
 BuildRequires:  pkgconf-pkg-config
-BuildRequires:  pcre2-devel
 # The `systemd` feature is on by default and declares `#[link(name = "systemd")]`
 # in ananicy-platform, so libsystemd.so is a link-time dependency of the
 # default build. `systemd-devel` also pulls in the compiler.
@@ -51,8 +49,9 @@ BuildRequires:  systemd-devel
 # For the systemd_post, systemd_preun and systemd_postun_with_restart macros.
 BuildRequires:  systemd-rpm-macros
 
-# No manual Requires: the linker records libsystemd.so.0 and libpcre2-8.so.0 and
-# rpm turns those SONAMEs into requires against systemd-libs and pcre2. The
+# No manual Requires: the linker records libsystemd.so.0 and rpm turns that
+# SONAME into a require against systemd-libs. The regex engine links nothing, so
+# there is no second entry. The
 # daemon itself needs no particular init system, so nothing here depends on
 # systemd-as-init: the unit is what asks for it, and `ananicy-rs start` also runs
 # under OpenRC, runit, s6, or no init at all.

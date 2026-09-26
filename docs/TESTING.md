@@ -38,7 +38,7 @@ fixture instead of the host.
 | `src/cgroup.rs` | the cgroup path type a process is resolved into |
 | `tests/config.rs` | `ananicy.conf` syntax, unknown keys, malformed values, missing files |
 | `tests/config_logging.rs` | `loglevel` / `log_applied_rule` handling and reload |
-| `tests/rules.rs` | rule, type and cgroup loading, matching, directory loading, inheritance |
+| `tests/rules.rs` | rule, type and cgroup loading, matching, directory loading, inheritance, and the `name_regex` contract: the whole corpus of patterns any ananicy rule has ever used, the constructs the engine refuses, and the size and nesting limits |
 | `tests/cpuset.rs` | the `cpuset` field: parsing, serialization, bounds |
 | `tests/worker_rules.rs` | which platform operations a matched rule triggers |
 | `tests/worker_logging.rs` | how the outcome of a rule application is reported |

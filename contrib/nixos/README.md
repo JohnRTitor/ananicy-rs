@@ -33,7 +33,7 @@ nix run github:JohnRTitor/ananicy-rs
 nix build              # -> ./result
 nix flake check        # builds the package as a check
 nix build .#ananicy-rs # same derivation, explicit attribute
-nix develop            # shell with cargo, rustfmt, clippy, clang, libbpf, pcre2
+nix develop            # shell with cargo, rustfmt, clippy, clang, libbpf
 nixfmt --check contrib/nixos/*.nix flake.nix default.nix
 ```
 
@@ -73,7 +73,6 @@ does not carry a copy of `LICENSE`.
 
 | Input | Why |
 | --- | --- |
-| `pcre2` | `pcre2-sys` probes for `libpcre2-8`; the system library is the point |
 | `elfutils`, `zlib`, `zstd` | `libbpf`'s own link-time dependencies, which nixpkgs keeps separate |
 | `llvmPackages.clang` | compiles the BPF C |
 | `pkg-config` | the `pkg-config` probe |

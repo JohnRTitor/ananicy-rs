@@ -10,13 +10,80 @@ use {
     tracing::{debug, error, warn},
 };
 
+/// One `name_regex` rule, compiled once when the rule file is read.
+///
+/// A rule file is third-party content, so the pattern is not this daemon's to
+/// trust, and the ways one can hurt are bounded by the engine's own defaults
+/// rather than by anything written here:
+///
+/// * expansion is capped at roughly a tenth of a second of compilation, so a
+///   rule like `\w{200000,}` — eleven characters — is a log line instead of a
+///   start-up stall;
+/// * nesting is capped at 250 levels, which is a stack overflow otherwise. The
+///   release profile sets `panic = "abort"`, so an overflow would take the whole
+///   daemon down rather than just this thread.
+///
+/// Both are `regexr`'s defaults and are deliberately not raised; the previous
+/// engine set no equivalent limit, so a rule like either of the above could take
+/// the process out. This type exists rather than a bare `Vec<(Regex, String)>` so
+/// that the engine stays behind `compile` and `is_match`, which makes the limits
+/// and the budget arm below the only places a pattern can reach.
+struct Matcher {
+    compiled: regexr::Regex,
+    /// The `name` of the program rule this pattern belongs to. Held so a failure
+    /// can name the rule it came from; the pattern's own source is also kept by
+    /// the engine, for the same purpose.
+    name: String,
+}
+
+impl Matcher {
+    fn compile(pattern: &str, name: &str) -> Result<Self, regexr::Error> {
+        // No `jit(true)`, and no `default-features = false` either: the `simd`
+        // feature is what drives the literal prefilter, and the prefilter is what
+        // makes a match cheap on a haystack of 3-15 bytes — the kernel truncates
+        // `/proc/<pid>/comm` to 15, and an `argv[0]` basename is short in
+        // practice. A JIT cannot amortise its own compilation over a match that
+        // size, and most rule patterns would not take a JIT anyway: one with an
+        // alternation goes to an ordered-NFA engine so that PCRE's leftmost-first
+        // branch priority is reproduced, and one with a lookahead goes to the
+        // tagged-NFA engine, and neither of those has a JIT on this target.
+        Ok(Self {
+            compiled: regexr::RegexBuilder::new(pattern).build()?,
+            name: name.to_string(),
+        })
+    }
+
+    /// Whether `name` matches. Every engine `regexr` can pick is linear in the
+    /// length of `name`, so this is bounded work; the one exception is a pattern
+    /// containing a backreference, because matching one is NP-hard in general.
+    /// That runs on a backtracking engine under a step budget, and the budget
+    /// being spent is reported rather than hung on.
+    fn is_match(&self, name: &str) -> bool {
+        match self.compiled.try_is_match(name) {
+            Ok(matched) => matched,
+            Err(e) => {
+                // A bounded "no match" with a log behind it is the right answer
+                // for a rule this daemon did not write: leaving a process alone is
+                // better than applying settings decided by a truncated search.
+                warn!(
+                    "name_regex '{}' (rule '{}') exhausted its match budget: {}",
+                    self.compiled.as_str(),
+                    self.name,
+                    e
+                );
+                false
+            }
+        }
+    }
+}
+
 pub struct Rules {
     config: Arc<Config>,
     programs: HashMap<RuleName, Arc<Value>>,
     types: HashMap<TypeName, Arc<Value>>,
     cgroups: HashMap<CgroupName, Arc<Value>>,
-    // Store fallback regex rules if enabled
-    regex_programs: Vec<(pcre2::bytes::Regex, String)>,
+    // Store fallback regex rules if enabled, in rule-file load order
+    regex_programs: Vec<Matcher>,
     // Cache for resolved rules to avoid linear scan overhead on every process
     resolved_cache: Mutex<lru::LruCache<String, Option<Arc<Value>>>>,
 }
@@ -143,12 +210,12 @@ impl Rules {
                         .insert(RuleName(name.to_string()), Arc::new(value.clone()));
 
                     if let Some(regex_str) = value.get("name_regex").and_then(|v| v.as_str()) {
-                        match pcre2::bytes::RegexBuilder::new()
-                            .utf(true)
-                            .ucp(true)
-                            .build(regex_str)
-                        {
-                            Ok(re) => self.regex_programs.push((re, name.to_string())),
+                        match Matcher::compile(regex_str, name) {
+                            Ok(matcher) => self.regex_programs.push(matcher),
+                            // The rule is already in `programs`, so a pattern
+                            // this daemon cannot compile costs the process its
+                            // regex matching and nothing else: it still matches
+                            // by exact name.
                             Err(e) => error!("Invalid regex '{}' in rule: {}", regex_str, e),
                         }
                     }
@@ -204,10 +271,11 @@ impl Rules {
             return Some(rule.clone());
         }
 
-        // 2. Regex fallback
-        for (re, prog_name) in &self.regex_programs {
-            if re.is_match(target_name.as_bytes()).unwrap_or(false)
-                && let Some(rule) = self.programs.get(&RuleName(prog_name.clone()))
+        // 2. Regex fallback, in rule-file load order, so the first pattern that
+        // matches wins exactly as it does in the reference.
+        for matcher in &self.regex_programs {
+            if matcher.is_match(target_name)
+                && let Some(rule) = self.programs.get(&RuleName(matcher.name.clone()))
             {
                 return Some(rule.clone());
             }

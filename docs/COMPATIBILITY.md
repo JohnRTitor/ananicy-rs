@@ -58,7 +58,7 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Netlink Overrun Recovery:** If the Netlink listener is overwhelmed and drops events (`ENOBUFS`), `ananicy-cpp` will exit. `ananicy-rs` recovers automatically by falling back to a full `procfs` scan, waiting briefly, and reconnecting without terminating the daemon.
 - **Startup Cgroup Detection:** On systems where cgroup filesystems mount slightly after the daemon starts during early boot, `ananicy-cpp` may fail to detect cgroups. `ananicy-rs` implements a retry loop (up to ~10 seconds) to wait for cgroup mounts to become available before giving up.
 - **Resilient Priority Application:** If standard process priority adjustments (like `nice` values) are rejected by the kernel (e.g., due to Permission Denied), `ananicy-cpp` aborts applying the rule entirely. `ananicy-rs` will log the failure but continue executing, ensuring that the `cgroup_realtime_workaround` (if enabled in your config) is still applied.
-- **Unconditional Regex Support:** While `ananicy-cpp` treats regex support as an optional compile-time dependency, `ananicy-rs` includes it unconditionally by default, as the Rust regex engine is lightweight and avoids the complexities of maintaining a separate feature-gated build variant.
+- **Unconditional Regex Support:** While `ananicy-cpp` treats regex support as an optional compile-time dependency, `ananicy-rs` includes it unconditionally by default, as the Rust regex engine is lightweight and avoids the complexities of maintaining a separate feature-gated build variant. It is also pure Rust, so it needs no system library and no pkg-config probe.
 - **NixOS wrapper executables:** A process whose name starts with `.` and ends with `-wrapped` (how NixOS names the real binary of a shell-script wrapper) is looked up without the leading `.` and the `-wrapped` suffix, so the rule written for the program inside the wrapper applies. `ananicy-cpp` matches the literal name and finds nothing.
 - **Strict Success Semantics:** When `log_applied_rule` is enabled, `ananicy-cpp` logs the rule application message *before* applying the rule attributes. If the application fails, a false positive success message remains in the log. `ananicy-rs` intentionally emits the message only after all enabled rule attributes complete successfully; partial, skipped, and failed applications are reported separately. Rust also keeps the opt-in applied-rule event independent of its separate debug rule-match event.
 - **Live Log-Level Reload:** `ananicy-rs` applies a reloaded `loglevel` to the active filter, while `ananicy-cpp` retains its original process-wide level. Because Rust uses `tracing`, its supported `critical` configuration value is an error-threshold alias rather than a distinct emitted severity; Rust also accepts case-insensitive names and the legacy `fatal` alias.
@@ -230,6 +230,58 @@ configuration it fell back to.
   through `ANANICY_CPP_CONF`, which is how the reference's path is set. A control command that has
   the side effect of creating a file is worth knowing about before a packaging script runs it.
 
+### 5.4 The `name_regex` engine is not PCRE2
+
+`name_regex` was historically matched with PCRE2, built with `PCRE2_UTF` and
+`PCRE2_UCP`. It is now matched with [`regexr`](https://crates.io/crates/regexr), a
+pure-Rust engine that implements a PCRE-compatible subset. The `name_regex` key
+itself, the matching rules, and the answers for every pattern in any shipped rule
+set are unchanged; what changed is which patterns are *accepted*, and one class
+of escape's *meaning*.
+
+**Kept, deliberately:**
+
+- Lookaround in all four directions, including variable-width lookbehind, which
+  the reference rejects. A negative lookahead is the one advanced construct any
+  ananicy rule has ever used, and it is why the standard `regex` crate is not
+  usable here: it omits lookaround to guarantee linear-time matching, so
+  `^bash(?!_script)` is a compile error rather than a rule.
+- `$` meaning "end of the name, or just before a final newline", which is PCRE's
+  definition and *not* what `regex` or `regex-automata` implement. A rule written
+  `^foo$` keeps matching a process whose `argv[0]` is `foo\n…`; see §5.2 for why
+  that case is reachable.
+- PCRE's leftmost-first alternation priority, so `^(java|javaw)$` resolves the way
+  it always has rather than the way a plain DFA would.
+- Unanchored search, so a rule can match anywhere in a name, and UTF-8 input.
+
+**Changed, and a rule relying on this needs editing:**
+
+- `\d`, `\w`, `\D`, `\W` and the POSIX classes `[[:digit:]]`, `[[:alpha:]]` and
+  their siblings are **ASCII-only** now. Under `PCRE2_UCP` they were
+  Unicode-aware, so `\d` matched `٣`. A Unicode property class is Unicode-aware
+  under both engines, so port such a rule to `\p{Nd}`, `\p{L}` and so on — those
+  spellings work in the reference too. No rule in any ananicy ruleset uses
+  either form: the shipped rule set contains no `name_regex` at all.
+- A handful of constructs are now refused at load with a logged error instead of
+  compiling: atomic groups `(?>…)`, possessive quantifiers (`a++`, `a*+`, `a?+`),
+  `\K`, branch reset `(?|…)`, conditionals `(?(1)…)`, the `(*UTF)`/`(*UCP)` verbs
+  and `\V`. All are valid PCRE2 and none appears in any ananicy ruleset. A
+  refused pattern costs the rule its *regex* matching and nothing else — the rule
+  is still registered and still matches by exact name, which is the same
+  behaviour an unparseable pattern has always had.
+
+**Gained, as a side effect of leaving PCRE2.** Pattern size and nesting depth are
+now bounded. A rule containing `\w{200000,}` or several hundred levels of
+grouping is refused rather than stalling start-up or overflowing the stack, and
+the release profile's `panic = "abort"` would have made the latter fatal to the
+daemon rather than to one rule. A pattern containing a backreference is the only
+shape that can run long, and it is searched under a step budget: if the budget is
+spent the engine says so and the process is left alone.
+
+Nothing else about the daemon changed. In particular the engine links no system
+library, so the release binary no longer has a `libpcre2-8.so.0` dependency and
+no packaging recipe needs a PCRE2 development package.
+
 
 ## 6. Compatibility Requirements Kept on Purpose
 
@@ -241,7 +293,7 @@ They are part of the contract, not accidents, and each is pinned by a test:
 | --- | --- |
 | A rule line may be followed by a `#` comment, and CRLF files are accepted. | `ananicy-core/tests/rules.rs` |
 | A rule is the text between the first `{` and the last `}` of the line. | `ananicy-core/tests/rules.rs` |
-| `name_regex` accepts PCRE2 syntax, including lookarounds. | `ananicy-core/tests/rules.rs`, `tests/worker_rules.rs` |
+| `name_regex` accepts PCRE2 syntax, including lookarounds. See §5.4 for the constructs it no longer accepts. | `ananicy-core/tests/rules.rs`, `tests/worker_rules.rs`, and the corpus in `the_whole_ananicy_name_regex_corpus_still_matches` |
 | The configuration key for cgroup application is `apply_cgroup`. | `ananicy-core/tests/config.rs` |
 | `loglevel` accepts `critical` and the legacy `fatal` alias, case-insensitively. | `ananicy-core/src/config.rs` |
 | Rules are read from `*.rules`, `*.types` and `*.cgroups`; other extensions are ignored. | `ananicy-core/tests/rules.rs` |
@@ -290,7 +342,7 @@ indistinguishable from never having looked: this table is the evidence of covera
   | `x3d_mode` values | `cache`/`frequency` | same |
   | `apply_ioclass` | inert | inert |
   | Rule extensions | `.rules`/`.types`/`.cgroups` | same |
-  | `name_regex` engine | PCRE2 + UTF + UCP | same |
+  | `name_regex` engine | `regexr`, PCRE-compatible subset | same, modulo §5.4 |
   | CRLF rule files | handled | handled |
   | Exact vs regex precedence | exact first | exact first |
   | Type inheritance | single merge | single merge | but see §5.3 |
@@ -302,7 +354,7 @@ indistinguishable from never having looked: this table is the evidence of covera
   | Unknown `ioclass` | logged, rule continues | `Skipped`, rule continues |
   | `ioclass: "none"` | no write | no write |
   | `latency_nice` fallback | falls back to `nice` | same |
-  | Non-sandboxable errno | `test_errno` → −1 → treated as success | partial failure, rest of the rule applied | see §5.4 |
+  | Non-sandboxable errno | `test_errno` → −1 → treated as success | partial failure, rest of the rule applied | see §5.2 |
   | Empty alias means skip | yes | yes |
   | `.bpf.c` program | — | byte-identical |
   | Perf buffer pages | 64 | 64 |

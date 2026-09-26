@@ -72,15 +72,14 @@ jobs:
           key: cargo-fedora-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-fedora-${{ runner.os }}-
       # One BuildRequires of contrib/fedora/ananicy-rs.spec per package, and
-      # nothing more. `gcc` is absent because pcre2-devel and systemd-devel pull
-      # it in. `clang`, `libbpf-devel` and `rustfmt` are absent because the
-      # recipe does not enable the `bpf` feature and so does not build the eBPF
-      # toolchain.
+      # nothing more. `gcc` is absent because systemd-devel pulls it in. `clang`,
+      # `libbpf-devel` and `rustfmt` are absent because the recipe does not enable
+      # the `bpf` feature and so does not build the eBPF toolchain.
       - name: Install build dependencies
         run: |
           dnf install -y \
             rpm-build make cargo rust \
-            pkgconf-pkg-config pcre2-devel \
+            pkgconf-pkg-config \
             systemd-devel systemd-rpm-macros \
             rpmlint
       - name: Build the source and binary RPMs
@@ -186,7 +185,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential debhelper dpkg-dev \
             cargo rustc \
-            pkg-config libpcre2-dev libsystemd-dev \
+            pkg-config libsystemd-dev \
             lintian
       # debian/control declares `Rules-Requires-Root: no`, so build as a plain
       # user rather than merely claiming it. dpkg-source also wants the tree in a
@@ -268,12 +267,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # base-devel is the group most PKGBUILD makedepends entries come from --
       # `make` and `pkgconf` are in it, `git` came with the step above, and
-      # `cargo` is not in it at all, so it is named here. pcre2 and systemd-libs
-      # are named rather than left to base-devel because they are the two
-      # shared libraries the binary links.
+      # `cargo` is not in it at all, so it is named here. systemd-libs is named
+      # rather than left to base-devel because it is the shared library the
+      # binary links; the regex engine links nothing, so there is no second one.
       - name: Install build dependencies
         run: |
-          pacman -S --noconfirm --needed base-devel cargo pcre2 systemd-libs namcap
+          pacman -S --noconfirm --needed base-devel cargo systemd-libs namcap
       - name: Cache the cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

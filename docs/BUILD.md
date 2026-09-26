@@ -48,8 +48,8 @@ stable ships rustc 1.85.1, so the `.deb` cannot be built there and
 
 ### Native libraries
 
-Three crates in `Cargo.lock` link a system library: `pcre2-sys`, `libbpf-sys`,
-and `ananicy-platform` itself, which declares `#[link(name = "systemd")]` in
+Two crates in `Cargo.lock` link a system library: `libbpf-sys`, and
+`ananicy-platform` itself, which declares `#[link(name = "systemd")]` in
 `src/service.rs` under the `systemd` feature (`linux-raw-sys`,
 `core-foundation-sys`, `js-sys`, `web-sys` and `windows-sys` are raw syscall
 bindings and non-Linux targets, and link nothing).
@@ -63,39 +63,32 @@ development files will not link. You can see it in the result:
 ```console
 $ readelf -d target/release/ananicy-rs | grep NEEDED
  0x0000000000000001 (NEEDED)  Shared library: [libsystemd.so.0]
- 0x0000000000000001 (NEEDED)  Shared library: [libpcre2-8.so.0]
  0x0000000000000001 (NEEDED)  Shared library: [libgcc_s.so.1]
  0x0000000000000001 (NEEDED)  Shared library: [libm.so.6]
  0x0000000000000001 (NEEDED)  Shared library: [libc.so.6]
 ```
 
-Only the `bpf` feature's `libbpf-sys` is avoidable, and only by dropping
-`systemd` as well: `--no-default-features --features netlink` needs neither
-`libsystemd` nor the eBPF toolchain, at the cost of `sd_notify` readiness,
-journald logging and the unit-name detection in `src/systemd.rs`.
+Both are avoidable, and only by dropping `systemd` as well:
+`--no-default-features --features netlink` needs neither `libsystemd` nor the
+eBPF toolchain, at the cost of `sd_notify` readiness, journald logging and the
+unit-name detection in `src/systemd.rs`.
 
-`pcre2` is worth separating out, because it is the one that is easy to get
-wrong. `pcre2-sys` first asks `pkg-config` for `libpcre2-8`, and only builds its
-own vendored copy if that fails. Both paths work, but they are not the same
-build: the vendored copy is compiled with `SUPPORT_JIT=1` forced and linked
-statically. `contrib/nixos/package.nix` puts `pcre2` in `buildInputs`, so `nix build`
-links the shared library, and a host without `libpcre2-8` silently produces a
-binary with a different regex engine than the one that ships. Install the
-development package so that a local build matches the Nix package.
+The regex engine is pure Rust and links nothing, so it needs no development
+package, no `pkg-config` probe, and no `-dev`/`-devel` split to reason about.
+That is why the table below is as short as it is.
 
 #### Packages
 
 Package names are not mechanical translations of each other, and the difference
 is where mistakes happen: Debian ends development packages in `-dev` and keeps
 the library's `lib` prefix, while Fedora ends them in `-devel` and moves the
-prefix to the front of the base name — so `libpcre2-dev` is `pcre2-devel`, not
-`libpcre2-devel`. Arch uses the upstream names unchanged, except for
+prefix to the front of the base name — so `libbpf-dev` is `libbpf-devel`, not
+`libbpf-devel-dev`. Arch uses the upstream names unchanged, except for
 `systemd-libs`, which is the package carrying `libsystemd.so.0`.
 
 | Needed for | Debian / Ubuntu | Fedora / RHEL | Arch | Nix |
 | --- | --- | --- | --- | --- |
 | libsystemd (default features) | `libsystemd-dev` | `systemd-devel` | `systemd-libs` | `systemdLibs` |
-| PCRE2 (recommended) | `libpcre2-dev` | `pcre2-devel` | `pcre2` | `pcre2` |
 | libbpf (`bpf` feature) | `libbpf-dev` | `libbpf-devel` | `libbpf` | `libbpf` |
 | BPF toolchain (`bpf` feature) | `clang` | `clang` | `clang` | `llvmPackages.clang` |
 | `pkg-config` probe | `pkg-config` | `pkgconf-pkg-config` | `pkgconf` | `pkg-config` |
@@ -110,13 +103,13 @@ Install everything a default build needs:
 
 ```bash
 # Debian / Ubuntu
-sudo apt-get install pkg-config libpcre2-dev libsystemd-dev
+sudo apt-get install pkg-config libsystemd-dev
 
 # Fedora
-sudo dnf install pkgconf-pkg-config pcre2-devel systemd-devel
+sudo dnf install pkgconf-pkg-config systemd-devel
 
 # Arch
-sudo pacman -S pkgconf pcre2 systemd-libs
+sudo pacman -S pkgconf systemd-libs
 ```
 
 And everything on top of that for the `bpf` feature:
@@ -270,7 +263,7 @@ nix build                # ./result
 nix run .                # run the daemon
 nix build .#ananicy-rs   # same package, explicit attribute
 nix flake check          # build the package as a check
-nix develop              # shell with cargo, rustfmt, clippy, clang, libbpf, pcre2
+nix develop              # shell with cargo, rustfmt, clippy, clang, libbpf
 ```
 
 `nix build` runs the test suite, skipping one test that cannot pass in the
@@ -284,13 +277,10 @@ A system test that calls `sched_setaffinity` on the test process itself cannot
 have its mask changed under the sandbox's restrictions, so it is excluded
 rather than made to pass vacuously.
 
-The Nix build differs from a local one in three ways worth knowing:
+The Nix build differs from a local one in two ways worth knowing:
 
 - **Features.** `buildNoDefaultFeatures = true`, then `netlink`, plus `bpf` and
   `systemd` where available. The feature set is explicit rather than inherited.
-- **PCRE2.** `pcre2` is in `buildInputs`, so pkg-config finds `libpcre2-8` and
-  the shared library is linked. See the note above — this is what a local build
-  should match.
 - **Hardening.** `hardeningDisable = [ "zerocallusedregs" ]`. Rust 1.85 started
   emitting `zero_caller_used_regs` in function attributes, which trips the
   kernel hardening check in the Nix sandbox.
@@ -385,7 +375,7 @@ containers that do not have it. CI also requests the `rustfmt` component
 explicitly — see below for why that is not optional.
 
 The distro matrix builds `--all-features` in `fedora:latest` and
-`archlinux:latest`, so it needs clang, pcre2, libbpf and pkg-config in the
+`archlinux:latest`, so it needs clang, libbpf and pkg-config in the
 image, under that distribution's own package names.
 
 `packaging.yml` installs only the `BuildRequires` each recipe declares, so a
@@ -439,7 +429,6 @@ run. `packaging.yml`, `nixos.yml` and `release.yml` list themselves.
 | `Failed to build BPF skeleton. Needs clang, a pkg-config …` | One of the three tools the `bpf` crate needs is missing or unusable. The cause line above the panic says which step failed. |
 | `failed to generate skeleton … Caused by: Failed to rustfmt` | rustfmt is missing or unusable for the active toolchain. |
 | `error: failed to run custom build command for 'libbpf-sys'` | libbpf's development files are missing, or `pkg-config` cannot find them. |
-| `No match for argument: libpcre2-devel` | Fedora's package is `pcre2-devel`. Debian's is `libpcre2-dev`. |
 | `failed to run custom build command for 'ananicy-bpf'` | clang missing, or it cannot target BPF. |
 | `the crate 'ananicy-bpf' … requires libbpf` | `--workspace` or `--all-features` on a host without the eBPF toolchain. Build the default members instead. |
 | `error: E0658: `let` expressions in this position are unstable` | rustc older than 1.88. Let chains are stable, not a nightly feature; upgrade the toolchain. |
@@ -497,6 +486,24 @@ build the crate without it.
 ```bash
 cargo bench
 ```
+
+The rule-matching benchmarks exist to catch a regression in the path a process
+name actually takes, which is `Rules::get_rule` on a name that is *not* in the
+lookup cache. Two shapes matter and they are measured separately, because they
+answer different questions:
+
+- `rules_regex_<N>_rules/lookup_miss` — one uncached lookup, against a pool of
+  names larger than the 5 000-entry cache so the lookup really does reach the
+  regex loop. This is the per-exec cost in netlink mode and the per-process cost
+  of a manual scan, and it is the number to watch.
+- `rules_regex_<N>_rules/cold_full_scan` — every process name looked up against
+  a rule set built from scratch, which is the first scan after start-up or a
+  `--reload`. It includes whatever one-time state an engine builds on its first
+  search, so it is the honest worst case and not a steady-state figure.
+
+Every scan after the first hits the cache and does no matching at all, which is
+why a benchmark that reuses a handful of names measures hash bookkeeping instead
+of the regex path.
 
 ## Fuzzing
 

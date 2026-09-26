@@ -4,8 +4,8 @@ Priority: optional
 Maintainer: ananicy-rs packagers <ananicy-rs-packaging@example.invalid>
 # ananicy-rs is a cargo workspace whose four crates are all unpublished, so
 # `dh-cargo` and `debcargo` do not apply and this uses Debian's own cargo
-# wrapper instead; both pcre2-sys and ananicy-platform link a system library that
-# the default feature set needs. clang, libbpf-dev and rustfmt are absent because
+# wrapper instead; ananicy-platform links a system library that the default
+# feature set needs. clang, libbpf-dev and rustfmt are absent because
 # the `bpf` feature is not enabled.
 #
 # `make` is absent too: `make install` is what places the binary and the unit,
@@ -15,7 +15,7 @@ Maintainer: ananicy-rs packagers <ananicy-rs-packaging@example.invalid>
 #
 # `pkgconf` rather than `pkg-config`: the latter has been a transitional package
 # since bookworm. It provides the same `pkg-config` binary, which is what
-# pcre2-sys invokes.
+# libbpf-sys invokes.
 #
 # rustc is 1.88, not 1.85, and that is not a guess: edition 2024 needs 1.85, but
 # the workspace uses let chains (`&& let`, 30 of them) and those stabilised in
@@ -32,7 +32,6 @@ Build-Depends:
  cargo,
  rustc (>= 1.88),
  pkgconf,
- libpcre2-dev,
  libsystemd-dev,
 Standards-Version: 4.7.0
 Homepage: https://github.com/JohnRTitor/ananicy-rs
@@ -47,8 +46,9 @@ Architecture: linux-any
 # The daemon is built on netlink, cgroups and procfs, and nothing in the tree
 # compiles on another operating system.
 #
-# ${shlibs:Depends} already carries the two libraries the linker records:
-# libsystemd.so.0 and libpcre2-8.so.0. Nothing depends on systemd as the init
+# ${shlibs:Depends} already carries the one library the linker records,
+# libsystemd.so.0. The regex engine is pure Rust and links nothing, so there is
+# no second entry to add. Nothing depends on systemd as the init
 # system, and nothing depends on a rule set: ananicy-rs ships no rules, and no
 # Debian derivative packages ananicy-cpp or the Ananicy rule set, so a
 # Recommends would name a package that cannot exist. See README.md.
