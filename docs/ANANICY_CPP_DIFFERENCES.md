@@ -61,7 +61,6 @@ To allow both implementations to coexist on the same system without colliding, `
 - **`CPUWeight`:** `ananicy-cpp` reads only `CPUQuota` from a `.cgroups` rule and says so; `ananicy-rs` also honours `CPUWeight`, which its configuration reference has documented all along.
 - **`apply_cpu_weight`:** the only key in `ananicy.conf` with no counterpart in `ananicy-cpp`. It gates the `nice` → `cpu.weight` mirror described in §4, and defaults to the behaviour the daemon had before it existed, so no existing configuration changes.
 - **`check_disks_schedulers`:** `ananicy-cpp` has no start-up check for block devices on a scheduler that cannot honour `ioclass`/`ionice`, although the key is in its own `test-readfile.txt` fixture and it documents the CFQ/BFQ requirement. Restored from the original Ananicy, where it shipped enabled; read-only, defaults to on.
-- **`--verbose`:** `ananicy-cpp` makes `--verbose` one step more verbose than the configured `loglevel` (`error` becomes `warn`). `ananicy-rs` treats it as "at least debug", which is the same in every configuration except `trace`, where the reference stays at `trace` and this daemon drops to `debug`.
 - **`--benchmark-count`:** `ananicy-cpp` compares the count in its main loop, so it keeps running for a whole `check_freq` interval (a minute by default) after reaching it. `ananicy-rs` stops as soon as the worker reaches it, which is a few milliseconds later.
 - **An unknown action:** `ananicy-cpp` logs `Unknown action requested` and then starts the daemon anyway. `ananicy-rs` exits 1.
 - **Exit codes for a misused `dump`:** `ananicy-cpp` exits 1 for a missing or unknown sub-action; `ananicy-rs` exits 2, the code it uses for every usage error. `--reload` and `--force-remove-semaphore` exit 1 in both.
@@ -93,6 +92,14 @@ They are part of the contract, not accidents, and each is pinned by a test:
 | An unrecognised `ioclass` is dropped and the rest of the rule still applies. | `ananicy-core/tests/worker_rules.rs` |
 | A task counts as realtime by its static priority, not by its policy. | `ananicy-platform/tests/procfs.rs` |
 | stdout carries the answer, stderr carries the log, so `dump` output parses. | `tests/cli.rs` |
+| `--verbose` is one step more verbose than the configured `loglevel`, clamped at `trace`. | `src/startup.rs` |
+| `llc-N` aliases are numbered by ascending CPU id, so `llc-0` is the LLC containing CPU 0. | `ananicy-platform/tests/topology.rs` |
+| An X3D single-CCD part is recognised by its die count, so both aliases exist even with no readable L3. | `ananicy-platform/src/x3d.rs` |
+| `dump proc`'s `cmd` is the name the rule engine matched on, and `cmdline` is an array of the arguments. | `tests/cli.rs` |
+| A failed `--force-remove-semaphore` exits 1; only a successful unlink exits 0. | `tests/cli.rs` |
+| An attribute that fails does not prevent the rule's remaining attributes from being applied. | `ananicy-core/tests/worker_rules.rs` |
+| Skipping a realtime process' cgroup, or a `cpuset` alias that resolves empty, is not a failure. | `ananicy-core/tests/worker_rules.rs` |
+| The `nice` → `cpu.weight` mirror cannot overflow, whatever `nice` a rule carries. | `ananicy-core/tests/worker_rules.rs` |
 
 Two historical leniencies were deliberately *not* reproduced, because accepting
 malformed input silently is worse than rejecting it:
@@ -101,3 +108,83 @@ malformed input silently is worse than rejecting it:
   (`ananicy-core/tests/cpuset.rs`).
 - Booleans must be spelled `true`; `1`, `yes` and `True` are false
   (`ananicy-core/tests/config.rs`).
+
+### 5.1 Where matching the reference would mean reproducing a defect
+
+The following are differences from `ananicy-cpp` that are **not** corrected, because
+correcting them would mean deliberately reproducing a defect in the reference. They
+are recorded here so that "the two daemons differ here" is a decision on the record
+rather than an oversight, and so that anyone porting a rule set knows which way the
+divergence goes.
+
+- **`oom_score_adj` is signed.** The reference reads `/proc/<pid>/oom_score_adj` into an
+  `unsigned` (`process_info.cpp:239-241`), so a process at `-900` is reported as
+  `4294966396` in `dump proc` and `dump autogroup`. This daemon reports `-900`. The value is
+  diagnostic output that nothing computes on; reproducing the wrap would mean emitting a
+  number that is not the process' score.
+- **A type is merged into a rule once, not twice.** The reference merges in both directions
+  (`rules.cpp:198-206`), so an explicit `null` in a rule is deleted by the first merge and
+  resurrected by the second, after which its `const int&` conversion throws and the worker's
+  catch-all applies *nothing at all* from that rule. This daemon merges once, which is what
+  merge-patch means: `{"nice": null}` deletes an inherited `nice`, and the rest of the rule
+  applies. Both readings are defensible for a rule that deliberately writes a null; only one
+  of them also throws.
+- **The core-type split uses a floating-point mean.** The reference's is an integer
+  (`topology.cpp:95`, `:117`), so for two CPUs of capacity {1, 2} its average is 1, `1 >= 1`,
+  and the capacity-1 core is classified *big* — leaving `little-cores` empty and making a rule
+  naming it do nothing. This daemon's threshold is 1.5 and puts that core in `little-cores`,
+  which is the point of the split. The 1.3× heterogeneity test is unaffected and was
+  brute-forced over the integer range to confirm it.
+- **A deleted binary's name has no trailing space.** The reference's `substr(0,
+  exe_name_end + 1)` keeps one byte too many (`process.cpp:230-233`), so `/usr/bin/foo
+  (deleted)` resolves to `"foo "` and no rule matches it. This daemon truncates to `"foo"`.
+  The reference is the one that fails to match; reproducing the space would break rules that
+  work here after a package upgrade or a NixOS store GC.
+- **The `exe` readlink failure heuristic is per-PID.** The reference keeps one global counter
+  that latches (`process.cpp:195-196, 224, 236, 243-244`), so five `EACCES` on `/proc/*/exe`
+  for *any* processes disables exe-based naming for the whole daemon, permanently. This daemon
+  counts per PID in a bounded LRU, so it takes five failures of the *same* process. The two can
+  still resolve different names for one process, and therefore match different rules — in the
+  reference's favour only where its bug has already fired.
+- **An unreadable CPU is "no data", not a distinct value.** The reference reads 0 for a CPU it
+  cannot read and treats `0 != reference` as the source differentiating the CPUs
+  (`topology.cpp:56-60`), so one offline CPU makes it adopt a higher-priority capacity source
+  and classify the machine by it. This daemon treats 0 as absent and keeps looking
+  (`topology.rs:212-216, 238-243`), so the split is computed over the CPUs that answered. The
+  `big-cores`/`little-cores`/`turbo-cores` aliases can therefore differ on a machine with an
+  offline CPU.
+- **Cgroup v1/v2 classification prefers the unified hierarchy.** The reference stops at the
+  first cgroup mount it recognises (`cgroups.cpp:300-305, 321-323`) and abandons detection
+  entirely if that mount is a v1 controller with no `cpu` sibling, so a container exposing one
+  such mount silently loses every `cgroup` rule. This daemon keeps scanning
+  (`mounts.rs:84-92`) and a later `cgroup2` mount always wins. On a hybrid host the two
+  therefore select different hierarchies, and since a rule's cgroup name then resolves to a
+  different directory under each, running one after the other leaves the other's cgroups
+  behind. Cgroup v2-only and v1-only hosts agree.
+
+### 5.2 Where this daemon is the stricter or the looser one
+
+- **A `cpuset` string may contain whitespace.** `CpuSet::parse` trims each token, so
+  `"0, 1"` and `" 5"` are accepted; the reference tests the raw token for non-digits and
+  rejects both (`cpuset.cpp:224-228, 262-267`). A rule written with a space after the comma
+  therefore applies here and is ignored there. The reference also rejects the malformed forms
+  both daemons reject (`0-a`, `1-2x`, a leading `-`, `,,`, a leading comma).
+- **`check_freq` is parsed strictly, and zero is refused.** The reference uses `std::stoul`,
+  which stops at the first bad character, accepts a sign and narrows to `uint32_t`, so
+  `-5` becomes `4294967291`, `0x10` becomes `16`, and `4294967296` becomes `0`
+  (`config.cpp:129-137`); all three are errors here. `check_freq=0` is accepted by the
+  reference and then makes `--manual-scanning` perform a full `/proc` walk in a tight loop; it
+  is refused here with an error naming the reason, rather than stored and quietly replaced at
+  the point of use.
+- **At debug verbosity the applied-rule line is not suppressed.** The reference prints the
+  matched rule *instead of* the applied-rule line when the level is debug
+  (`worker.cpp:92-96`), so with `log_applied_rule = true` the two daemons emit a different
+  number of lines for one rule. This daemon prints the debug match and, when enabled, the
+  applied-rule line as well.
+- **A failure on one attribute does not cost the rule the rest of them.** The reference's
+  `test_errno` returns -1 and its callers test `if (!set_X(…))`, which is false for -1, so a
+  refused `sched_setscheduler` is indistinguishable from success and the remaining attributes
+  are applied silently. This daemon applies the rest too, and reports the outcome: a total
+  failure logs at `error`, a partial one at `warn`. `sched_setscheduler(SCHED_FIFO, 0)` and
+  `(SCHED_FIFO, 200)` both return `EINVAL`, so this was reachable with an ordinary rule — one
+  that also named an `ionice` the kernel would have accepted.
