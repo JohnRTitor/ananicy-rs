@@ -72,42 +72,6 @@ To allow both implementations to coexist on the same system without colliding, `
 - **The single-instance lock:** `ananicy-cpp` uses the POSIX shared-memory object `/AnanicyCppMutex` and this daemon uses `/AnanicyRsMutex`, so the two can run side by side — as intended — and the object this daemon creates is mode `0600` where the reference uses `0644`. A `--force-remove-semaphore` from one does not release the other.
 - **Developer tools:** `ananicy-cpp` builds two extra binaries, `runqslower_cpp` and `netlink_proc_cpp`, which print raw event-source output. They are not installed by its `cmake --install` and `ananicy-rs` does not build them; the equivalent check is `loglevel = trace`, which logs the name and PID of every process a rule matched.
 
-## 6. Compatibility Requirements Kept on Purpose
-
-The following behaviours are *not* differences — `ananicy-rs` reproduces them so
-that configuration files and rule sets written for the C++ daemon keep working.
-They are part of the contract, not accidents, and each is pinned by a test:
-
-| Behaviour | Test |
-| --- | --- |
-| A rule line may be followed by a `#` comment, and CRLF files are accepted. | `ananicy-core/tests/rules.rs` |
-| A rule is the text between the first `{` and the last `}` of the line. | `ananicy-core/tests/rules.rs` |
-| `name_regex` accepts PCRE2 syntax, including lookarounds. | `ananicy-core/tests/rules.rs`, `tests/worker_rules.rs` |
-| The configuration key for cgroup application is `apply_cgroup`. | `ananicy-core/tests/config.rs` |
-| `loglevel` accepts `critical` and the legacy `fatal` alias, case-insensitively. | `ananicy-core/src/config.rs` |
-| Rules are read from `*.rules`, `*.types` and `*.cgroups`; other extensions are ignored. | `ananicy-core/tests/rules.rs` |
-| `apply_ioclass` is accepted, reported, and inert: a rule's `ioclass` is gated by `apply_ionice` alone, as in `ananicy-cpp`. | `ananicy-core/tests/worker_rules.rs` |
-| One capacity source is chosen for the whole machine, the first that both reports a value and tells two CPUs apart. | `ananicy-platform/tests/topology.rs` |
-| `ioclass: "none"` writes nothing: the class is a reading, not a value. | `ananicy-platform/tests/ioprio.rs` |
-| An unrecognised `ioclass` is dropped and the rest of the rule still applies. | `ananicy-core/tests/worker_rules.rs` |
-| A task counts as realtime by its static priority, not by its policy. | `ananicy-platform/tests/procfs.rs` |
-| stdout carries the answer, stderr carries the log, so `dump` output parses. | `tests/cli.rs` |
-| `--verbose` is one step more verbose than the configured `loglevel`, clamped at `trace`. | `src/startup.rs` |
-| `llc-N` aliases are numbered by ascending CPU id, so `llc-0` is the LLC containing CPU 0. | `ananicy-platform/tests/topology.rs` |
-| An X3D single-CCD part is recognised by its die count, so both aliases exist even with no readable L3. | `ananicy-platform/src/x3d.rs` |
-| `dump proc`'s `cmd` is the name the rule engine matched on, and `cmdline` is an array of the arguments. | `tests/cli.rs` |
-| A failed `--force-remove-semaphore` exits 1; only a successful unlink exits 0. | `tests/cli.rs` |
-| An attribute that fails does not prevent the rule's remaining attributes from being applied. | `ananicy-core/tests/worker_rules.rs` |
-| Skipping a realtime process' cgroup, or a `cpuset` alias that resolves empty, is not a failure. | `ananicy-core/tests/worker_rules.rs` |
-| The `nice` → `cpu.weight` mirror cannot overflow, whatever `nice` a rule carries. | `ananicy-core/tests/worker_rules.rs` |
-
-Two historical leniencies were deliberately *not* reproduced, because accepting
-malformed input silently is worse than rejecting it:
-
-- `0-a` is rejected instead of being read as the range `0-0`
-  (`ananicy-core/tests/cpuset.rs`).
-- Booleans must be spelled `true`; `1`, `yes` and `True` are false
-  (`ananicy-core/tests/config.rs`).
 
 ### 5.1 Where matching the reference would mean reproducing a defect
 
@@ -201,3 +165,101 @@ divergence goes.
   Scanning first is the more conventional order, but subscribing first is the one that cannot drop
   an event, and a duplicate report is cheaper than a lost one — the worker re-resolves the process
   and applies the same rule again.
+### 5.3 Diagnostic and configuration surface
+
+The nine differences below were in the audit's matrix as `DIFF` and in no document, which is the one
+way a rewrite can hold a known divergence without anyone reading the contract finding out. Seven were
+verified against a built `ananicy-cpp`; the two that could not be say so.
+
+**The configuration environment variables are renamed, and this will bite on migration.** The
+reference reads `ANANICY_CPP_CONF` and `ANANICY_CPP_CONFDIR` (`main.cpp:134-136`) and has no
+configuration flag of any kind. This daemon reads `ANANICY_RS_CONF` and `ANANICY_RS_CONFDIR`, and
+additionally takes `--config` and `--config-dir`. An operator who exports `ANANICY_CPP_CONF` and then
+changes which daemon is installed gets **no error and no warning** — the variable is simply not read,
+and the daemon falls back to `/etc/ananicy.d`. Verified: with `ANANICY_CPP_CONF` pointing at a file
+saying `check_freq = 7`, the reference reports 7 and this daemon reports 15, the value in the system
+configuration it fell back to.
+
+- **A flag with no action.** `ananicy-cpp -v` prints `No action requested!` and exits 1
+  (`main.cpp:173-176`). `ananicy-rs -v` prints its help and exits 0, matching its own bare-invocation
+  behaviour (matrix row 12). Verified. This is the one of the nine where the reference is stricter and
+  arguably better: exiting 0 after being handed a flag and told nothing is a shell script's idea of
+  success.
+- **`--benchmark-count` and `--bpf-min-us` are `u32` here and wider in the reference** — `uint32_t`
+  and `uint64_t` respectively (`main.cpp:66-76`). `--benchmark-count 5000000000` is accepted by the
+  reference and rejected by this daemon with `number too large to fit in target type`, exit 2.
+  Verified for `--benchmark-count`; the `--bpf-min-us` half could not be tested because the
+  verification build of the reference has no eBPF support and rejects the flag before parsing it.
+  Rejecting the value is the better answer — the reference silently narrows it — but a unit file
+  that worked will not start.
+- **A configuration file with CRLF line endings.** The kernel is not involved; this is the
+  reference's own `trim` stripping `' '` and not `'\r'` (`config.cpp:28-35`), so every value keeps
+  the carriage return. The stored value is literally `"true\r"` — visible as `^M` in `Config::show`,
+  which prints the raw map (`config.cpp:98-102`) — and `check_rule`'s `== "true"`
+  (`config.hpp:24-29`) then fails, so **every `apply_*` flag in the file is silently disabled**.
+  Verified through `loglevel`, which takes the same path: `loglevel = debug` produces 22 debug lines
+  in the reference, and the same file with CRLF produces 0. This daemon handles CRLF and is unaffected.
+  This is the worst of the nine, because a configuration edited on Windows loses every application
+  flag and nothing says so.
+- **A failed `latency_nice` write.** The reference clears `errno` before its own check and returns
+  the error, so `set_latnice` reports success for a call the kernel refused
+  (`syscalls.h:126-130`, `priority.cpp:72-76`) and the applied-rule line is logged. This daemon
+  reports the error. Narrow — it needs a kernel where the support probe on pid 0 succeeds but a
+  specific thread's `sched_setattr` returns `EINVAL`. Not verified; no such kernel here.
+- **The X3D driver mode is written later in this daemon.** The reference writes it before the action
+  dispatch, so `dump` and `debug` — which only print state — would change a persistent kernel setting
+  and return without restoring it. This daemon detects topology before the dispatch but only writes
+  after the root and singleton checks (`src/main.rs:144-146`). Not verified; needs X3D hardware.
+- **Process names are kept as raw bytes by the reference and lossily decoded here.** A `name_regex`
+  is therefore matched against different bytes for a process whose `argv[0]` is not valid UTF-8, since
+  this daemon substitutes U+FFFD (`procfs.rs:46`). The reference also reads `/proc/<pid>/cmdline`
+  with `std::getline`, which **stops at the first newline**, so an `argv[0]` containing one is
+  truncated there and kept whole here. The Rust half is verified — a process with `argv[0]` of
+  `name\nwith-newline` reports `cmd` as the full string — and the reference's half is source reading
+  (`process_helpers.hpp:10-21`). Decoding lossily is the more robust of the two: a name that cannot
+  round-trip is still matched against consistently, whereas raw bytes can make a `name_regex` match
+  or miss depending on the encoding the rule file happens to be in.
+- **`--reload` creates a missing configuration file here, and does not in the reference.** This daemon writes a
+  default configuration as a side effect, then exits 1 for want of a running instance; the reference
+  exits 1 and leaves the filesystem alone. Verified
+  through `ANANICY_CPP_CONF`, which is how the reference's path is set. A control command that has
+  the side effect of creating a file is worth knowing about before a packaging script runs it.
+
+
+## 6. Compatibility Requirements Kept on Purpose
+
+The following behaviours are *not* differences — `ananicy-rs` reproduces them so
+that configuration files and rule sets written for the C++ daemon keep working.
+They are part of the contract, not accidents, and each is pinned by a test:
+
+| Behaviour | Test |
+| --- | --- |
+| A rule line may be followed by a `#` comment, and CRLF files are accepted. | `ananicy-core/tests/rules.rs` |
+| A rule is the text between the first `{` and the last `}` of the line. | `ananicy-core/tests/rules.rs` |
+| `name_regex` accepts PCRE2 syntax, including lookarounds. | `ananicy-core/tests/rules.rs`, `tests/worker_rules.rs` |
+| The configuration key for cgroup application is `apply_cgroup`. | `ananicy-core/tests/config.rs` |
+| `loglevel` accepts `critical` and the legacy `fatal` alias, case-insensitively. | `ananicy-core/src/config.rs` |
+| Rules are read from `*.rules`, `*.types` and `*.cgroups`; other extensions are ignored. | `ananicy-core/tests/rules.rs` |
+| `apply_ioclass` is accepted, reported, and inert: a rule's `ioclass` is gated by `apply_ionice` alone, as in `ananicy-cpp`. | `ananicy-core/tests/worker_rules.rs` |
+| One capacity source is chosen for the whole machine, the first that both reports a value and tells two CPUs apart. | `ananicy-platform/tests/topology.rs` |
+| `ioclass: "none"` writes nothing: the class is a reading, not a value. | `ananicy-platform/tests/ioprio.rs` |
+| An unrecognised `ioclass` is dropped and the rest of the rule still applies. | `ananicy-core/tests/worker_rules.rs` |
+| A task counts as realtime by its static priority, not by its policy. | `ananicy-platform/tests/procfs.rs` |
+| stdout carries the answer, stderr carries the log, so `dump` output parses. | `tests/cli.rs` |
+| `--verbose` is one step more verbose than the configured `loglevel`, clamped at `trace`. | `src/startup.rs` |
+| `llc-N` aliases are numbered by ascending CPU id, so `llc-0` is the LLC containing CPU 0. | `ananicy-platform/tests/topology.rs` |
+| An X3D single-CCD part is recognised by its die count, so both aliases exist even with no readable L3. | `ananicy-platform/src/x3d.rs` |
+| `dump proc`'s `cmd` is the name the rule engine matched on, and `cmdline` is an array of the arguments. | `tests/cli.rs` |
+| A failed `--force-remove-semaphore` exits 1; only a successful unlink exits 0. | `tests/cli.rs` |
+| An attribute that fails does not prevent the rule's remaining attributes from being applied. | `ananicy-core/tests/worker_rules.rs` |
+| Skipping a realtime process' cgroup, or a `cpuset` alias that resolves empty, is not a failure. | `ananicy-core/tests/worker_rules.rs` |
+| The `nice` → `cpu.weight` mirror cannot overflow, whatever `nice` a rule carries. | `ananicy-core/tests/worker_rules.rs` |
+
+Two historical leniencies were deliberately *not* reproduced, because accepting
+malformed input silently is worse than rejecting it:
+
+- `0-a` is rejected instead of being read as the range `0-0`
+  (`ananicy-core/tests/cpuset.rs`).
+- Booleans must be spelled `true`; `1`, `yes` and `True` are false
+  (`ananicy-core/tests/config.rs`).
+
