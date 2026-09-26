@@ -61,7 +61,8 @@ fn main() {
             exit(1);
         }
     };
-    let log_level_override = startup::log_level_override(args.verbose, force_trace);
+    let log_level_override =
+        startup::log_level_override(&config.get().loglevel, args.verbose, force_trace);
 
     debug!("Systemd integration: {}", systemd_status);
 
