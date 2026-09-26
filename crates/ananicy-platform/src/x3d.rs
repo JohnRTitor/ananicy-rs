@@ -138,22 +138,42 @@ fn detect_x3d_topology_impl(sys_root: &Path, proc_root: &Path) -> Option<X3DTopo
         }
     }
 
-    if die_to_cache.is_empty() {
-        warn!("detect_x3d_topology: Could not find any cache sizes");
-        return None;
-    }
-
-    if die_to_cache.len() == 1 {
-        // Single-CCD X3D part (like 7800X3D)
-        let Some(only_die) = die_to_cores.values().next() else {
-            warn!("detect_x3d_topology: cache information found without any CPU topology");
+    // Single-CCD part, like a 7800X3D or 9800X3D: both aliases are every core.
+    //
+    // The reference decides this on the number of *dies*, not on how many of them
+    // reported a cache size, and it does not require a readable L3 to call a part
+    // single-CCD — it just maps both aliases to `0-(N-1)`
+    // (`x3d.cpp:164-170`, `die_map.size() < 2`). Bailing out when no cache size
+    // could be read therefore left a single-CCD machine with no `x3d-*` alias at
+    // all, where the reference still had both, and a two-die machine with only
+    // one readable L3 was treated as single-CCD here and as multi-CCD there.
+    if die_to_cores.len() < 2 {
+        let all_cores: BTreeSet<u32> = die_to_cores.values().flatten().copied().collect();
+        if all_cores.is_empty() {
+            warn!("detect_x3d_topology: no CPU topology to build an alias from");
             return None;
-        };
-        let all_cores_str = format_cpuset(only_die);
+        }
+        if die_to_cache.is_empty() {
+            debug!(
+                "detect_x3d_topology: single-CCD part with no readable L3, \
+                 mapping both aliases to all {} cores",
+                all_cores.len()
+            );
+        }
+        let all_cores_str = format_cpuset(&all_cores);
         return Some(X3DTopology {
             cache_cores_str: all_cores_str.clone(),
             frequency_cores_str: all_cores_str,
         });
+    }
+
+    // More than one die, so the V-Cache CCD has to be identified by its L3, and
+    // without one there is nothing to go on. The reference reaches the same
+    // conclusion by a different route: it picks the die with the largest
+    // readable L3 and returns nothing if there is none (`x3d.cpp:188-192`).
+    if die_to_cache.is_empty() {
+        warn!("detect_x3d_topology: Could not find any cache sizes");
+        return None;
     }
 
     // Find the die with the largest L3 cache
@@ -263,5 +283,98 @@ mod tests {
         let top = result.unwrap();
         assert_eq!(top.cache_cores_str, "0");
         assert_eq!(top.frequency_cores_str, "1");
+    }
+
+    /// A single die with no readable L3 still gets both aliases, covering every
+    /// core.
+    ///
+    /// The reference does not need a cache size to recognise a single-CCD part:
+    /// it counts dies and maps both aliases to `0-(N-1)` regardless
+    /// (`x3d.cpp:164-170`). Requiring a readable L3 meant a part whose
+    /// `cache/index3/size` was not exposed had no `x3d-cache` or `x3d-frequency`
+    /// alias at all, so a rule naming one silently matched nothing.
+    #[test]
+    fn a_single_die_with_no_readable_l3_still_gets_both_aliases() {
+        let root = Path::new("tests/fixtures/x3d/amd-x3d-single-ccd-no-l3");
+        let result = detect_x3d_topology_impl(&root.join("sys"), &root.join("proc"));
+
+        let top = result.expect("a single die needs no L3 to be recognised");
+        assert_eq!(top.cache_cores_str, "0-3");
+        assert_eq!(top.frequency_cores_str, "0-3");
+    }
+
+    /// Two dies with no readable L3 between them cannot be split, because there
+    /// is nothing to identify the V-Cache CCD by.
+    ///
+    /// This is the one multi-CCD case where the answer is "no", and the
+    /// reference reaches it the same way: it picks the die with the largest
+    /// readable L3 and returns nothing if there is none (`x3d.cpp:188-192`). What
+    /// it must not do is quietly treat two dies as one and hand every core to
+    /// both aliases, which is what counting only the dies that reported a
+    /// readable cache size would have done.
+    #[test]
+    fn two_dies_with_no_readable_l3_cannot_be_split() {
+        use std::fs;
+
+        let root = Path::new("tests/fixtures/x3d/amd-x3d-multi-ccd");
+        let tmp = tempfile::tempdir().expect("a temporary fixture");
+        copy_dir(&root.join("sys"), &tmp.path().join("sys"));
+
+        for cpu in ["cpu0", "cpu1"] {
+            fs::remove_file(
+                tmp.path()
+                    .join(format!("sys/devices/system/cpu/{cpu}/cache/index3/size")),
+            )
+            .expect("the fixture has an L3 to remove");
+        }
+
+        let result = detect_x3d_topology_impl(&tmp.path().join("sys"), &root.join("proc"));
+
+        assert!(
+            result.is_none(),
+            "two dies and no L3 to compare identifies no V-Cache CCD: {:?}",
+            result
+        );
+    }
+
+    /// With one die's L3 missing, the readable one is taken as the V-Cache CCD,
+    /// which is what the reference does — it only gives up when *no* die reports
+    /// a size.
+    #[test]
+    fn two_dies_with_one_readable_l3_split_on_the_readable_one() {
+        use std::fs;
+
+        let root = Path::new("tests/fixtures/x3d/amd-x3d-multi-ccd");
+        let tmp = tempfile::tempdir().expect("a temporary fixture");
+        copy_dir(&root.join("sys"), &tmp.path().join("sys"));
+        fs::remove_file(
+            tmp.path()
+                .join("sys/devices/system/cpu/cpu1/cache/index3/size"),
+        )
+        .expect("the fixture has an L3 to remove");
+
+        let result = detect_x3d_topology_impl(&tmp.path().join("sys"), &root.join("proc"));
+
+        let top = result.expect("one readable L3 is enough to name a V-Cache CCD");
+        assert_eq!(
+            top.cache_cores_str, "0",
+            "die 0 is the only one whose L3 could be read"
+        );
+        assert_eq!(top.frequency_cores_str, "1");
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).expect("a directory");
+        for entry in std::fs::read_dir(from)
+            .expect("a readable directory")
+            .flatten()
+        {
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("a file type").is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).expect("a copied file");
+            }
+        }
     }
 }
