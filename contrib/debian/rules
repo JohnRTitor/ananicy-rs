@@ -48,13 +48,23 @@ override_dh_auto_configure:
 	sed -e 's|@VENDOR_DIR@|$(VENDOR_DIR)|' vendor-config.toml \
 	    > "$(CARGO_HOME)/config.toml"
 	# Fail early and legibly if the changelog and the daemon disagree about the
-	# version, rather than shipping a mislabelled package. The pattern has no
-	# trailing `$` anchor on purpose: a bare `$` before a non-`(` character is
-	# passed through by make but is easy to break by accident.
+	# version, rather than shipping a mislabelled package.
+	#
+	# The changelog is read with dpkg-parsechangelog rather than through the
+	# make variable of the same name: that variable is empty when dh runs this
+	# rule, and the changelog is where the answer lives anyway. Its version
+	# carries an optional epoch and always a Debian revision, so the upstream
+	# version is what is left once both are stripped.
+	#
+	# The sed pattern has no trailing `$` anchor on purpose: a bare `$` before a
+	# non-`(` character is passed through by make but is easy to break by
+	# accident.
 	version=$$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
 	    Cargo.toml | head -n1); \
-	if [ "$$version" != "$(DEB_VERSION_UPSTREAM)" ]; then \
-		echo "Cargo.toml says $$version, debian/changelog says $(DEB_VERSION_UPSTREAM)." >&2; \
+	expected=$$(dpkg-parsechangelog -SVersion \
+	    | sed -e 's/^[0-9][0-9]*://' -e 's/-[^-]*$$//'); \
+	if [ "$$version" != "$$expected" ]; then \
+		echo "Cargo.toml says $$version, debian/changelog says $$expected." >&2; \
 		exit 1; \
 	fi
 
