@@ -72,10 +72,6 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     rm -rf $out/bin
     make install DESTDIR= PREFIX=$out CARGO_TARGET_DIR=target/${stdenv.hostPlatform.rust.cargoShortTarget}
-    install -Dm644 -t $out/share/doc/$pname README.md CONTRIBUTING.md
-    install -Dm644 -t $out/share/doc/$pname/docs docs/BUILD.md docs/CLI.md \
-      docs/COMPATIBILITY.md docs/CONFIGURATION.md docs/SYSTEMD.md \
-      docs/TESTING.md docs/TOPOLOGY.md
   ''
   + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
     installShellCompletion --cmd ananicy-rs \

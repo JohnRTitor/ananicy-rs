@@ -63,7 +63,6 @@ container both are available.
 | `/usr/share/bash-completion/completions/ananicy-rs` | `ananicy-rs completions bash` |
 | `/usr/share/fish/vendor_completions.d/ananicy-rs.fish` | `ananicy-rs completions fish` |
 | `/usr/share/zsh/site-functions/_ananicy-rs` | `ananicy-rs completions zsh` |
-| `/usr/share/doc/ananicy-rs/` | `README.md`, `CONTRIBUTING.md`, `docs/*.md` |
 | `/usr/share/licenses/ananicy-rs/LICENSE` | `LICENSE` |
 
 There are no man pages to install: the project has none.

@@ -5,14 +5,15 @@
 # dh_installsystemd.
 maintainer-script-ignores-errors
 
-# The project ships no man page, so this package has none. docs/CLI.md and
-# docs/CONFIGURATION.md are installed under /usr/share/doc/ananicy-rs/ instead,
-# flattened rather than under a docs/ subdirectory, which is what dh_installdeb
-# does with `debian/ananicy-rs.docs`. README.Debian says where they are.
-# Writing a man page inside the packaging would create a second copy of the
-# command-line reference to keep in step with the binary; it belongs upstream,
-# next to the code it documents, and that is a change to propose rather than one
-# to smuggle in via a recipe.
+# The project ships no man page, so this package has none. README.Debian says
+# where the packaging-specific documentation is installed instead, which is
+# /usr/share/doc/ananicy-rs/. The upstream Markdown under docs/ is deliberately
+# not installed at all: it is written for people working on the daemon rather
+# than for people running it, and it stays in the source package. Writing a man
+# page inside the packaging would create a second copy of the command-line
+# reference to keep in step with the binary; it belongs upstream, next to the
+# code it documents, and that is a change to propose rather than one to smuggle
+# in via a recipe.
 no-manual-page
 
 # Expected for a package that has never been uploaded: there is no bug to close

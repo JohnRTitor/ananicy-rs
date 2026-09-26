@@ -100,7 +100,5 @@ package() {
   ./target/release/ananicy-rs completions zsh \
     > "$pkgdir/usr/share/zsh/site-functions/_ananicy-rs"
 
-  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md CONTRIBUTING.md
-  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs" docs/*.md
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
