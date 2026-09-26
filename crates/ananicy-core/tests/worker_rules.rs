@@ -726,3 +726,40 @@ fn an_empty_cpuset_alias_is_a_skip_and_not_a_partial_failure() {
             .contains(tracing::Level::WARN, "partially failed")
     );
 }
+
+/// A `nice` value at the edge of `i64` must not overflow the `cpu.weight`
+/// mirror's exponent.
+///
+/// The mirror used `powi(-nice as i32)`. For `"nice": -2147483648` the negation
+/// overflows: a debug or instrumented build panics the worker thread — and under
+/// `panic = "abort"`, the daemon — while a release build wraps to `i32::MIN` and
+/// gets an infinity from `powi`, which saturates to `u32::MAX` and clamps to
+/// `cpu.weight = 10000`. Neither is worth having, and only a hostile or
+/// mistyped rule file reaches it.
+#[test]
+fn an_extreme_nice_value_does_not_overflow_the_cpu_weight_mirror() {
+    for nice in ["-2147483648", "-9223372036854775808", "2147483647"] {
+        let run = run_worker(
+            ConfigSnapshot {
+                apply_latnice: false,
+                ..all_attributes_enabled()
+            },
+            &format!(r#"{{"name":"worker-test","nice":{nice}}}"#),
+            FakePlatform::cgroup_v2(),
+        );
+
+        let weight = run
+            .platform
+            .calls()
+            .into_iter()
+            .find_map(|call| match call {
+                Call::SetCpuWeight { weight } => Some(weight),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no cpu.weight was written for nice = {nice}"));
+        assert!(
+            (1..=10000).contains(&weight),
+            "nice = {nice} produced a cpu.weight of {weight}, outside the kernel's 1..=10000"
+        );
+    }
+}
