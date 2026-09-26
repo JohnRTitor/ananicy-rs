@@ -22,8 +22,9 @@ runs:
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
-    # Keep this list in sync with `contrib/package.nix`; see that file for why
-    # `libpcre2-dev` is required rather than optional.
+    # Keep this list in sync with `contrib/nixos/package.nix`; see that file for
+    # why `libpcre2-dev` is required rather than optional. The same list appears
+    # again, under two different package managers, in `.github/workflows/ci.yml`.
     - name: Install native dependencies
       run: |
         sudo apt-get update
