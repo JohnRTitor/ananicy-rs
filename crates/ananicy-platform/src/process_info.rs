@@ -21,7 +21,7 @@ pub struct ProcessInfo {
     pub latency_nice: i32,
     pub ionice: Value,
     pub oom_score_adj: i32,
-    pub cmdline: String,
+    pub cmdline: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
 }
@@ -35,11 +35,18 @@ impl ProcessInfo {
             .unwrap_or_default()
             .trim()
             .to_string();
+        // The arguments, as the NUL-separated `/proc/<pid>/cmdline` splits
+        // them. The reference emits this as a JSON array
+        // (`process_info.cpp:243`), and joining them into one string loses the
+        // boundaries — an argument containing a space becomes
+        // indistinguishable from two arguments.
         let cmdline = read_to_string(format!("/proc/{}/cmdline", pid))
             .unwrap_or_default()
-            .replace('\0', " ")
-            .trim()
-            .to_string();
+            .split('\0')
+            .map(str::trim)
+            .filter(|arg| !arg.is_empty())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let oom_score_adj = read_to_string(format!("/proc/{}/oom_score_adj", pid))
             .unwrap_or_default()
             .trim()
@@ -54,7 +61,7 @@ impl ProcessInfo {
         tpid: i32,
         exe: Option<String>,
         cmd: String,
-        cmdline: String,
+        cmdline: Vec<String>,
         oom_score_adj: i32,
         rule: Option<String>,
     ) -> Self {
