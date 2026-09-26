@@ -12,36 +12,35 @@ on:
       - '**Cargo.toml'
       - '**Cargo.lock'
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Scoped to this job on purpose: these containers install sccache via
+    # `.github/actions/setup-rust`. Setting RUSTC_WRAPPER workflow-wide makes
+    # the `matrix-distro` containers below fail with
+    # "could not execute process `sccache rustc -vV`", because sccache is
+    # neither installed nor on PATH there.
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
     strategy:
       matrix:
         toolchain: [stable, nightly]
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ matrix.toolchain }}
-          
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.6
-        
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libsystemd-dev libbpf-dev
-        
       - name: Build
-        run: cargo build --all-targets --all-features
-        
+        run: cargo build --locked --all-targets --all-features
       - name: Test
-        run: sudo -E env "PATH=$PATH" cargo test --all-targets --all-features
+        run: sudo -E env "PATH=$PATH" cargo test --locked --all-targets --all-features
 
   matrix-distro:
     strategy:
@@ -53,24 +52,18 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ${{ matrix.distro }}
+    # No sccache env here on purpose, see the note on the `test` job above.
     steps:
-      - uses: actions/checkout@v4
-      
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install dependencies (Fedora)
         if: contains(matrix.distro, 'fedora')
-        run: dnf install -y gcc gcc-c++ git rust cargo systemd-devel libbpf-devel make
-        
+        run: |
+          dnf install -y gcc gcc-c++ git rust cargo systemd-devel libbpf-devel libpcre2-devel pkgconf-pkg-config clang make
       - name: Install dependencies (Arch Linux)
         if: contains(matrix.distro, 'archlinux')
-        run: pacman -Syu --noconfirm base-devel git rust cargo systemd libbpf
-        
-      # sccache isn't natively available in these bare containers easily without setup, 
-      # so we will use GitHub's native Rust cache action for distro matrices to speed them up.
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-        
+        run: |
+          pacman -Syu --noconfirm base-devel git rust cargo systemd libbpf pcre2 clang
       - name: Build
-        run: cargo build --all-targets --all-features
-        
+        run: cargo build --locked --all-targets --all-features
       - name: Test
-        run: cargo test --all-targets --all-features
+        run: cargo test --locked --all-targets --all-features
