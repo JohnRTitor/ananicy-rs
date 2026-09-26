@@ -39,19 +39,16 @@ At start-up the daemon reads the I/O scheduler of every block device and reports
 not honour the `ioclass` and `ionice` of a rule:
 
 ```
-WARN Disk sda does not use a cfq/bfq scheduler (it is using "none"), so ioclass and ionice will not work for it
+WARN Disk sda is on a scheduler that does not honour ioprio (it is using "none"), so ioclass and ionice will not work for it
 ```
 
-`ioprio_set(2)` is implemented by the CFQ and BFQ family only. Everywhere else it succeeds, the
-daemon logs that it applied the rule, and the I/O priority is unchanged — which is why this is worth
-saying out loud once at start-up rather than leaving each affected disk to be discovered by noticing
-that nothing happened. A device counts as fine when its active scheduler is `cfq`, `bfq` or `bfq-mq`;
-loop, ram and `sr` devices are skipped, as are devices with no scheduler file at all.
+Support for I/O priorities is scheduler-dependent: `Documentation/block/ioprio.rst` names `bfq` and `mq-deadline` as the schedulers that honour it, and `none` (formerly `noop`) and `kyber` as the ones that do not. Everywhere else `ioprio_set(2)` succeeds, the daemon logs that it applied the rule, and the I/O priority is unchanged — which is why this is worth saying out loud once at start-up rather than leaving each affected disk to be discovered by noticing that nothing happened. A device counts as fine when its active scheduler is `mq-deadline`, `bfq`, `bfq-mq` or `cfq`; `cfq` is only ever active on a kernel old enough to still have it, since it was removed with the legacy single-queue block layer, and is kept for those. loop, ram and `sr` devices are skipped, as are devices with no scheduler file at all.
 
 This restores a check from the original Ananicy, which shipped it as `check_disks_schedulers=true`
 in `ananicy.conf`. Neither rewrite had it, and without it the configuration reference's own note that
-`ioclass` needs CFQ or BFQ was true and never checked. It is read-only, and `dump` and `debug` skip
-it — only the running daemon has use for it. Set it to `false` to silence it.
+`ioclass` needs a scheduler that honours I/O priorities was true and never checked. It is read-only,
+and `dump` and `debug` skip it — only the running daemon has use for it. Set it to `false` to
+silence it.
 
 ### `apply_ioclass` has no effect
 
@@ -120,7 +117,7 @@ For instance, to add a rule for GCC, you could do the following:
   - `batch`: Very useful for compilers or other CPU-hungry, non-interactive programs. Improves their performance with almost no cost to the rest of the system.
   - `idle`: Very, very low priority, even lower than a nice value of `19`. Useful for background, low priority tasks like file indexers.
 - `rtprio: [0, 99]`: Sets the static priority of a process. Only relevant if the actual scheduling policy of a process is a realtime one (`fifo` or `rr`). A higher value means a higher priority.
-- `ioclass: {"best-effort", "realtime", "idle", "none"}`: Define the IO scheduling policy. By default, it is `best-effort`. **Only the BFQ/CFQ I/O schedulers fully support `ioclass` and `ionice`**.
+- `ioclass: {"best-effort", "realtime", "idle", "none"}`: Define the IO scheduling policy. By default, it is `best-effort`. **Only the `bfq` and `mq-deadline` I/O schedulers support `ioclass` and `ionice`**; any other scheduler accepts the value and ignores it.
   - `realtime`: Absolute priority above all `best-effort` processes. Can starve other processes.
   - `idle`: Process gets I/O resources after all other processes. Can starve this process. (`ionice` is ignored).
   - `none`: Reset I/O policy to system default, `ionice` must be `0`. `none` is the reading a process
