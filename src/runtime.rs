@@ -79,8 +79,16 @@ pub(crate) fn run(
     }
 
     info!("Initializing cgroups based on rules");
-    if !wait_for_cgroup_hierarchy() || !create_cgroups(&rules) {
-        return;
+    // A cgroup hierarchy is not required for the daemon to be useful. Without
+    // one, a rule's `cgroup` attribute is the only thing that cannot be
+    // honoured; `nice`, `ioclass`, `sched`, `oom_score_adj` and `cpuset` all
+    // still apply, and `ananicy-cpp` makes the same choice — it reports that
+    // cgroups are unavailable and carries on. Stopping here instead would mean a
+    // daemon that exits 0 having applied nothing at all, which a `Type=simple`
+    // systemd unit reports as success, and which leaves an `x3d_mode` change
+    // made at start-up in place because the restore lives on the shutdown path.
+    if wait_for_cgroup_hierarchy() {
+        create_cgroups(&rules);
     }
 
     info!("Spawning worker thread");
@@ -107,8 +115,11 @@ pub(crate) fn run(
         // cgroup manager caches the hierarchy it was built from, so re-creating
         // the cgroups would keep resolving names against the old one.
         ananicy_platform::cgroups::reset_cgroup_detection();
-        if !create_cgroups(&rules) {
-            return;
+        // Asked non-blocking: the bounded wait above has already had its turn,
+        // and a host that had no hierarchy a moment ago is not going to grow one
+        // while the daemon was sleeping.
+        if ananicy_platform::cgroups::has_cgroup_hierarchy() {
+            create_cgroups(&rules);
         }
     }
 
@@ -134,6 +145,9 @@ pub(crate) fn run(
 /// into a short delay instead of a daemon that silently never applies its
 /// cgroup rules. A host with no cgroup support at all is reported and given up
 /// on, because waiting cannot help there.
+///
+/// The answer decides whether the rule cgroups are created. It deliberately does
+/// not decide whether the daemon runs: see the call site.
 fn wait_for_cgroup_hierarchy() -> bool {
     if ananicy_platform::cgroups::has_cgroup_hierarchy() {
         return true;
@@ -170,12 +184,17 @@ fn settings_from_rule(rule: &serde_json::Value) -> CgroupSettings {
     }
 }
 
-fn create_cgroups(rules: &Arc<Rules>) -> bool {
+/// Creates every cgroup a `.cgroups` rule asks for.
+///
+/// Nothing here can fail the daemon. A rule that names a cgroup which cannot be
+/// created is reported by the cgroup manager and skipped; the point of this
+/// function is that running without one of them is still better than not running
+/// at all, so it deliberately has no failure path for a caller to take.
+fn create_cgroups(rules: &Arc<Rules>) {
     for (name, value) in rules.get_cgroups() {
         ananicy_platform::cgroups::create_cgroup(&name.0, settings_from_rule(value));
     }
     info!("Finished creating cgroups");
-    true
 }
 
 fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag: Arc<AtomicBool>) {
