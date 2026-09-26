@@ -24,7 +24,10 @@ export CARGO_NET_OFFLINE := true
 # what it cannot set is the linker's hardening flags.
 export RUSTFLAGS := -C link-arg=-Wl,-z,relro -C link-arg=-Wl,-z,now
 
-VENDOR_ARCHIVE := vendor.tar.xz
+# Relative to the source root, which is where dh runs every rule: the archive
+# ships in the packaging directory, and dh extracts it into the source root, so
+# `vendor/` and `vendor-config.toml` are siblings of the source tree's own files.
+VENDOR_ARCHIVE := debian/vendor.tar.xz
 VENDOR_DIR := $(CURDIR)/vendor
 
 %:
