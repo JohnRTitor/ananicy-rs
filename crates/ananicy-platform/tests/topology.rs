@@ -342,3 +342,109 @@ fn cache_sizes_are_read_in_bytes() {
     assert_eq!(parse_size_string("unknown"), 0);
     assert_eq!(parse_size_string("16X"), 0);
 }
+
+/// `llc-N` is numbered by the order the LLCs are first met, so the order the
+/// `cpu*` directories are walked in decides what the alias names.
+///
+/// `read_dir` returns whatever order the filesystem hands back, which is
+/// ascending on a plain sysfs and is not promised anywhere. The reference walks
+/// CPU ids ascending, so on a machine where the two disagreed a rule naming
+/// `llc-1` would pin to a different set of CPUs under each daemon. Ascending CPU
+/// order is the order that makes the two agree, and it is also the only one that
+/// is reproducible.
+#[test]
+fn llc_aliases_are_numbered_in_ascending_cpu_order() {
+    let topo = big_little();
+
+    // The fixture's two LLCs are {0,1} and {2,3}, so the first one met must be
+    // the one holding CPU 0.
+    let llc0 = topo
+        .llcs
+        .iter()
+        .find(|llc| llc.id == 0)
+        .expect("an llc-0 alias");
+    assert_eq!(
+        llc0.cpu_ids.iter().copied().collect::<BTreeSet<u32>>(),
+        BTreeSet::from([0, 1]),
+        "llc-0 must be the LLC containing CPU 0"
+    );
+    assert_eq!(llc0.cpuset_str, "0-1");
+
+    let llc1 = topo
+        .llcs
+        .iter()
+        .find(|llc| llc.id == 1)
+        .expect("an llc-1 alias");
+    assert_eq!(
+        llc1.cpu_ids.iter().copied().collect::<BTreeSet<u32>>(),
+        BTreeSet::from([2, 3]),
+        "llc-1 must be the LLC containing CPU 2"
+    );
+    assert_eq!(llc1.cpuset_str, "2-3");
+}
+/// The numbering must come from the CPU ids, not from the order the filesystem
+/// happened to list the `cpu*` directories in.
+///
+/// `read_dir` order is not ascending in general — it is whatever the filesystem
+/// returns, which is hash order on tmpfs and on several of the overlay and bind
+/// mount arrangements a container sees. The directory is built with enough CPUs
+/// that the raw order is very unlikely to be ascending, and the test says so
+/// when it is, rather than passing quietly on a filesystem that happens to
+/// agree.
+#[test]
+fn llc_numbering_comes_from_cpu_ids_not_directory_order() {
+    use std::fs;
+
+    // Eight CPUs in two LLCs, {0-3} and {4-7}. Whichever LLC is met first must
+    // be the one holding CPU 0.
+    const CPUS: u32 = 8;
+    let tmp = tempfile::tempdir().expect("a temporary sysfs");
+    let cpu_root = tmp.path().join("devices/system/cpu");
+    fs::create_dir_all(&cpu_root).expect("a cpu directory");
+    for id in 0..CPUS {
+        let base = cpu_root.join(format!("cpu{id}"));
+        fs::create_dir_all(base.join("cache/index3")).expect("a cache directory");
+        fs::write(
+            base.join("cache/index3/shared_cpu_list"),
+            format!("{}-{}", id / 4 * 4, id / 4 * 4 + 3),
+        )
+        .expect("a shared_cpu_list");
+        fs::write(base.join("cache/index3/size"), "8192K").expect("a cache size");
+    }
+
+    let raw: Vec<String> = fs::read_dir(&cpu_root)
+        .expect("a readable directory")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let ascending = {
+        let mut sorted = raw.clone();
+        sorted.sort();
+        sorted == raw
+    };
+    if ascending {
+        eprintln!(
+            "note: this filesystem listed the cpu directories in ascending order, \
+             so the sort is not exercised by this run ({raw:?})"
+        );
+    }
+
+    let topo = detect_topology_impl(tmp.path());
+    let by_id: std::collections::HashMap<i32, String> = topo
+        .llcs
+        .iter()
+        .map(|llc| (llc.id, llc.cpuset_str.clone()))
+        .collect();
+
+    assert_eq!(
+        by_id.get(&0).map(String::as_str),
+        Some("0-3"),
+        "llc-0 must be the LLC containing CPU 0, whatever order the directory \
+         was read in; got {by_id:?}"
+    );
+    assert_eq!(
+        by_id.get(&1).map(String::as_str),
+        Some("4-7"),
+        "llc-1 must be the LLC containing CPU 4; got {by_id:?}"
+    );
+}
