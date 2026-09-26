@@ -1,0 +1,223 @@
+name: Packaging
+
+# Builds the distribution recipes under contrib/ with each distribution's own
+# packaging tools, in that distribution's own container image. The point is to
+# keep the recipes *buildable*, not merely present, so every job below produces
+# the real artefact: an .rpm, a .deb, a .pkg.tar.zst.
+#
+# The Nix recipe is not repeated here: nixos.yml already runs `nix flake check`
+# and `nix build` over contrib/nixos. One job per artefact, no duplicates.
+
+on:
+  pull_request:
+    paths:
+      - '**.rs'
+      - '**Cargo.toml'
+      - '**Cargo.lock'
+      - 'Makefile'
+      - 'data/**'
+      - 'contrib/**'
+      - '.github/workflows/packaging.yml'
+  push:
+    paths:
+      - '**.rs'
+      - '**Cargo.toml'
+      - '**Cargo.lock'
+      - 'Makefile'
+      - 'data/**'
+      - 'contrib/**'
+      - '.github/workflows/packaging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fedora-rpm:
+    name: Fedora RPM
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Downloading the crate registry is most of what the vendoring step costs.
+      # The key changes whenever Cargo.lock does.
+      - name: Cache the cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-fedora-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-fedora-${{ runner.os }}-
+      # One BuildRequires of contrib/fedora/ananicy-rs.spec per package, and
+      # nothing more. `gcc` is absent because pcre2-devel and systemd-devel pull
+      # it in. `clang`, `libbpf-devel` and `rustfmt` are absent because the
+      # recipe does not enable the `bpf` feature and so does not build the eBPF
+      # toolchain.
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            rpm-build make git cargo rust \
+            pkgconf-pkg-config pcre2-devel \
+            systemd-devel systemd-rpm-macros \
+            rpmlint
+      - name: Build the source and binary RPMs
+        run: |
+          set -euxo pipefail
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          # Reproduce the Source0 the spec expects: `git archive` of the release
+          # tag, which is what .github/workflows/release.yml attaches.
+          mkdir -p ~/rpmbuild/SOURCES
+          git archive --format=tar --prefix="ananicy-rs-$version/" HEAD \
+            | gzip -n -9 > ~/rpmbuild/SOURCES/ananicy-rs-$version.tar.gz
+          ./contrib/fedora/make-vendor-archive.sh
+          cp "contrib/fedora/ananicy-rs-$version-vendor.tar.xz" ~/rpmbuild/SOURCES/
+          rpmspec --parse contrib/fedora/ananicy-rs.spec
+          rpmbuild -bs contrib/fedora/ananicy-rs.spec
+          rpmbuild -ba contrib/fedora/ananicy-rs.spec
+      # rpmlint's exit status is its badness count, so warnings alone do not fail
+      # the job. Two are expected and explained in contrib/fedora/README.md:
+      # `no-buildroot-tag`, which is obsolete, and `invalid-url Source1`, because
+      # the vendor archive is generated rather than downloaded.
+      - name: rpmlint
+        run: rpmlint contrib/fedora/ananicy-rs.spec
+      - name: List the package contents
+        run: rpm -qpl ~/rpmbuild/RPMS/*/ananicy-rs-*.rpm
+      - name: Show the source package metadata
+        run: |
+          rpm -qp --requires ~/rpmbuild/SRPMS/ananicy-rs-*.src.rpm
+          rpm -qp --changelog ~/rpmbuild/SRPMS/ananicy-rs-*.src.rpm
+
+  debian-deb:
+    name: Debian .deb
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /home/builder/.cargo/registry
+            /home/builder/.cargo/git
+          key: cargo-debian-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-debian-${{ runner.os }}-
+      # One Build-Depends of contrib/debian/control per package, plus lintian.
+      # No clang, no libbpf-dev, no rustfmt: the `bpf` feature is not enabled.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            debhelper dpkg-dev \
+            cargo rustc \
+            make pkg-config libpcre2-dev libsystemd-dev \
+            git lintian
+      # debian/control declares `Rules-Requires-Root: no`, so build as a plain
+      # user rather than merely claiming it. dpkg-source also wants the tree in a
+      # directory named <source>-<upstream version>.
+      - name: Prepare an unprivileged build tree
+        run: |
+          set -euxo pipefail
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          useradd --create-home --shell /bin/bash builder
+          install -d -o builder -g builder /build
+          cp -a . "/build/ananicy-rs-$version"
+          # The .orig tarball contrib/debian/README.md describes: the same
+          # `git archive` of the tag the release workflow attaches.
+          git archive --format=tar --prefix="ananicy-rs-$version/" HEAD \
+            | gzip -n -9 > "/build/ananicy-rs_$version.orig.tar.gz"
+          chown -R builder:builder /build
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build the source and binary packages
+        run: |
+          set -euxo pipefail
+          cd "/build/ananicy-rs-${{ steps.tree.outputs.version }}"
+          # The only step in the flow that uses the network: it fills
+          # debian/vendor.tar.xz, after which dpkg-buildpackage stays offline.
+          ./contrib/debian/make-vendor.sh
+          cp -r contrib/debian debian
+          # Source *and* binary, so dpkg-source is exercised too: the vendored
+          # archive has to survive being packed into the source package.
+          dpkg-buildpackage -us -uc --no-sign
+      - name: Inspect the .deb
+        run: |
+          dpkg-deb --info /build/ananicy-rs_*.deb
+          dpkg-deb --contents /build/ananicy-rs_*.deb
+      # Advisory: lintian exits 1 when it finds any tag at all, and a new recipe
+      # always has something to discuss. Only an error fails the job, so the
+      # report is always printed for a human to read rather than swallowed.
+      - name: lintian
+        run: |
+          status=0
+          lintian --no-tag-display-limit /build/ananicy-rs_*.changes || status=$?
+          if [ "$status" -ge 2 ]; then
+            echo "::error::lintian exited with $status"
+            exit 1
+          fi
+
+  arch-pkg:
+    name: Arch package
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # base-devel is the group every PKGBUILD `makedepends` entry comes from;
+      # `git` is not in it, and the recipe's source is a git tag. cargo and the
+      # native libraries all come with `base-devel` plus pcre2 and systemd-libs,
+      # which are pulled in by the packages named below.
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git pcre2 systemd-libs namcap
+      - name: Cache the cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /home/builder/.cargo/registry
+            /home/builder/.cargo/git
+          key: cargo-arch-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-arch-${{ runner.os }}-
+      # makepkg refuses to run as root and builds as a plain user, which is also
+      # why the test suite skips its root-requiring cases rather than failing.
+      - name: Prepare an unprivileged build tree
+        run: |
+          set -euxo pipefail
+          version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          useradd --create-home --shell /bin/bash builder
+          # The recipe's source is the released tag, so makepkg needs a remote
+          # that has one. Publish this checkout as a local repository carrying
+          # v<pkgver> and point makepkg at that, so the job builds the tree
+          # under test rather than whatever happens to be published. The PKGBUILD
+          # on disk is untouched: only the copy makepkg reads has the source URL
+          # swapped, and pkgver(), build(), check() and package() are the
+          # recipe's own functions either way.
+          git tag --force "v$version"
+          install -d /mirror
+          git clone --bare --quiet . /mirror/ananicy-rs.git
+          chmod -R a+rX /mirror
+          install -d -o builder -g builder /build
+          cp contrib/archlinux/PKGBUILD contrib/archlinux/ananicy-rs.install /build/
+          chown -R builder:builder /build
+      # --noconfirm because the recipe installs a unit with an [Install] section
+      # and creates /etc/ananicy.d; neither action is interactive, but pacman
+      # still prompts for the former.
+      - name: Build the package
+        run: |
+          cd /build
+          sed -i "s|git+\$url.git|git+file:///mirror/ananicy-rs.git|" PKGBUILD
+          su builder -s /bin/bash -c 'cd /build && makepkg -f --noconfirm'
+      # namcap's exit status is its tag count, so a clean PKGBUILD exits 0. It
+      # has nothing to say about this one; see contrib/archlinux/README.md for
+      # the two findings it did produce, and the fixes.
+      - name: namcap
+        run: namcap /build/PKGBUILD
+      - name: List the package contents and metadata
+        run: |
+          set -euxo pipefail
+          cd /build
+          bsdtar -tf ananicy-rs-*.pkg.tar.zst
+          bsdtar -xOf ananicy-rs-*.pkg.tar.zst .PKGINFO

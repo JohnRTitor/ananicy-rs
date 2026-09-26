@@ -1,0 +1,93 @@
+ananicy-rs for Debian
+====================
+
+This package builds the ananicy-rs daemon with cargo, its default feature set,
+and installs the binary, the daemon's own systemd unit, shell completions and
+the project documentation. The packaging itself lives in `contrib/debian/` in
+the upstream repository; `debian/README.md` there is the maintainer's guide to
+building it. This file is the end user's and the reviewer's.
+
+Building
+--------
+
+The source package is the git tree of the release tag plus a vendored copy of
+every crate in `Cargo.lock`, in `debian/vendor.tar.xz`. That is what makes the
+build reproducible: nothing is fetched from crates.io while the `.deb` is built.
+Regenerate the archive with `contrib/debian/make-vendor.sh` whenever `Cargo.lock`
+changes.
+
+The build needs no network and no root. `Rules-Requires-Root: no` in
+`debian/control` is not aspirational: `cargo build` and `cargo test` are the only
+steps that run code, and neither needs privileges for this package's default
+feature set. The tests in `ananicy-platform` that do need root, or a writable cgroup
+hierarchy, detect that they are unprivileged and skip themselves with a message
+rather than failing.
+
+What is not built
+-----------------
+
+The `bpf` feature is off. It is not upstream's default, it would add `clang`,
+`libbpf` and `rustfmt` to Build-Depends, and it needs `CAP_BPF` and `CAP_PERFMON`
+at run time, which the shipped unit does not grant. The netlink process-event
+source that this package does build is the one the unit's
+`RestrictAddressFamilies=AF_UNIX AF_NETLINK` and `CapabilityBoundingSet` are
+written for.
+
+Rules
+-----
+
+`ananicy-rs` ships no rules. It reads `*.rules`, `*.types` and `*.cgroups` from
+`/etc/ananicy.d`, recursively and sorted by path, and creates that directory and
+a default `ananicy.conf` on its first start if they are missing.
+
+Neither this package nor `debian/control` declares a dependency on a rule set,
+because none is packaged in Debian or its derivatives yet. Install one by hand
+from <https://gitlab.com/ananicy-cpp/ananicy-cpp> or
+<https://github.com/Nefelim4ag/Ananicy> before enabling the service:
+
+    systemctl enable --now ananicy-rs.service
+
+Configuration and upgrades
+--------------------------
+
+Nothing under `/etc` is a conffile, and nothing is added on upgrade. The
+daemon owns the contents of `/etc/ananicy.d` and writes `ananicy.conf` itself;
+packaging that file would both shadow the daemon's own default and make dpkg
+reconcile a file the administrator is meant to own. `/etc/ananicy.d` itself is
+packaged empty so the path exists before the first start.
+
+systemd
+-------
+
+The unit is `/usr/lib/systemd/system/ananicy-rs.service`, generated from the
+project's own `data/ananicy-rs.service.in`. Its hardening, `Nice=-5`,
+`OOMScoreAdjust=-999`, `Delegate=yes` and `CapabilityBoundingSet` are upstream's
+and are unchanged by the packaging. See
+`/usr/share/doc/ananicy-rs/docs/SYSTEMD.md` for what each directive does and why
+the daemon needs it.
+
+Installing this package registers the unit; it does not enable or start it
+(`dh_installsystemd --no-enable --no-start`), which matches the Fedora recipe
+under `contrib/fedora/`. Enabling it is a deliberate act:
+
+    systemctl enable --now ananicy-rs.service
+
+An upgrade stops and restarts the service if it was running, so a running daemon
+picks up the new executable.
+
+No man page
+-----------
+
+The project has no man page, so this package has none, and `docs/CLI.md` plus
+`docs/CONFIGURATION.md` are installed under `/usr/share/doc/ananicy-rs/docs/`
+instead. `lintian` will report `no-manual-page-for-binary` for
+`/usr/bin/ananicy-rs`; that tag is expected here. Writing a man page inside the
+packaging would create a second copy of the command-line reference to keep in
+step with the binary, and it belongs upstream, next to the code it documents.
+
+Before any upload
+-----------------
+
+`debian/control` and `debian/changelog` carry a placeholder
+`ananicy-rs-packaging@example.invalid` address. Replace it with a real
+maintainer address and set `Standards-Version` to the current one.

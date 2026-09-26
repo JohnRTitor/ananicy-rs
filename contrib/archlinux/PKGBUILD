@@ -1,0 +1,106 @@
+# Maintainer: ananicy-rs packagers <ananicy-rs-packaging@example.invalid>
+# Based on the packaging conventions in
+# https://wiki.archlinux.org/title/Packaging_guidelines
+
+pkgname=ananicy-rs
+# The release version. `[workspace.package] version` in Cargo.toml is the single
+# source of truth; the tag is v<pkgver>.
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Auto-nice daemon that applies per-application process priorities'
+arch=('x86_64')
+url='https://github.com/JohnRTitor/ananicy-rs'
+license=('GPL-3.0-only')
+# glibc and libgcc come from the ELF interpreter and libgcc_s.so.1; pcre2 and
+# systemd-libs are the two shared libraries the linker records, libpcre2-8.so.0
+# and libsystemd.so.0. Listed explicitly rather than relied on transitively.
+depends=(
+  glibc
+  libgcc
+  pcre2
+  systemd-libs
+)
+# cargo, git and pkgconf build; make runs the project's own install rule.
+# `git` is here because the source is a repository checkout, not an archive.
+# pcre2 and systemd-libs are deliberately not repeated as makedepends: makepkg
+# installs `depends` before build() runs, and those two are needed at link time
+# as well as at run time. Neither needs a -dev package -- ananicy-rs declares
+# #[link(name = "systemd")] by hand and only ever links pcre2 by soname.
+makedepends=(
+  cargo
+  git
+  make
+  pkgconf
+)
+# The source is the release tag rather than a tarball. release.yml now attaches a
+# source archive, but no release has been tagged yet, so the tag is the only
+# stable source that exists -- and it is the shape the official `bat` and `fd`
+# packages use. Switch to a tarball and a real checksum as soon as there is one;
+# contrib/archlinux/README.md has the exact lines.
+source=("git+$url.git#tag=v$pkgver")
+# Upstream tags releases but signs neither the commits nor the tags, so there is
+# nothing to verify the checkout against.
+b2sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  # An Arch package version cannot carry a hyphen, a git describe suffix or a
+  # dirty marker, so keep the release the checkout came from and drop the rest.
+  git describe --tags --long --dirty |
+    sed -E 's/^v//; s/-[0-9]+-g[0-9a-f]+(-dirty)?$//'
+}
+
+prepare() {
+  cd "$pkgname"
+  # Download every crate in Cargo.lock, including the dev-dependencies check()
+  # needs, so that build() and check() can both run --frozen. This is the only
+  # step in the recipe that uses the network.
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd "$pkgname"
+  # Default features, i.e. netlink plus systemd. The `bpf` feature is not
+  # upstream's default and is not enabled: it would need clang, libbpf and
+  # rustfmt in makedepends, and CAP_BPF plus CAP_PERFMON at run time, which the
+  # shipped unit does not grant.
+  cargo build --release --frozen
+}
+
+check() {
+  cd "$pkgname"
+  # Unprivileged, as makepkg runs it. The cgroup tests in ananicy-platform see
+  # that they are not root and skip themselves with a message; nothing here
+  # needs privileges for the default feature set.
+  cargo test --frozen
+}
+
+package() {
+  cd "$pkgname"
+
+  # The project's own install rule, so the binary, its mode and the systemd unit
+  # are byte-for-byte what `make install` produces for every other recipe under
+  # contrib/. The unit's @bindir@ placeholder resolves to /usr/bin.
+  make install DESTDIR="$pkgdir" PREFIX=/usr
+
+  # Packaged empty on purpose: the daemon creates ananicy.conf here on its first
+  # start, and shipping one would shadow it and become a file pacman then has to
+  # reconcile on upgrade.
+  install -d -m 755 "$pkgdir/etc/ananicy.d"
+
+  # `completions` is dispatched before any configuration is read and needs no
+  # privileges, so generating it from the built binary here is safe.
+  install -d -m 755 "$pkgdir/usr/share/bash-completion/completions"
+  install -d -m 755 "$pkgdir/usr/share/fish/vendor_completions.d"
+  install -d -m 755 "$pkgdir/usr/share/zsh/site-functions"
+  ./target/release/ananicy-rs completions bash \
+    > "$pkgdir/usr/share/bash-completion/completions/ananicy-rs"
+  ./target/release/ananicy-rs completions fish \
+    > "$pkgdir/usr/share/fish/vendor_completions.d/ananicy-rs.fish"
+  ./target/release/ananicy-rs completions zsh \
+    > "$pkgdir/usr/share/zsh/site-functions/_ananicy-rs"
+
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md CONTRIBUTING.md
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname/docs" docs/*.md
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,15 @@
+ananicy-rs (0.1.0-1) unstable; urgency=medium
+
+  * Initial packaging.
+    - Built from the project's own cargo build with its default feature set
+      (netlink process events plus systemd integration), installed through
+      `make install` so the binary, its mode and the shipped systemd unit match
+      every other recipe under contrib/.
+    - Cargo dependencies are vendored into debian/vendor.tar.xz and the build
+      runs with --locked --offline and a CARGO_HOME inside the build directory,
+      so dpkg-buildpackage needs no network access.
+    - Ships no rules. ananicy-rs reads /etc/ananicy.d and writes a default
+      ananicy.conf there on first start; both are left unowned so upgrades never
+      touch an administrator's configuration.
+
+ -- ananicy-rs packagers <ananicy-rs-packaging@example.invalid>  Sat, 26 Sep 2026 00:00:00 +0000

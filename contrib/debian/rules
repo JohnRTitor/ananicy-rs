@@ -1,0 +1,97 @@
+#!/usr/bin/make -f
+# Debian packaging for ananicy-rs.
+#
+# The layout of the build is deliberate:
+#
+#   * `make install` is the project's own install rule, so the binary, its mode
+#     and the generated systemd unit are byte-for-byte what every other recipe
+#     under contrib/ produces. The unit is not copied into debian/; it is
+#     generated into debian/tmp and picked up from there by dh_install, which is
+#     also what lets dh_installsystemd generate the enable/disable code.
+#   * Cargo never touches the network. The vendored crate sources arrive in
+#     vendor.tar.xz (see make-vendor.sh), CARGO_HOME is inside the build
+#     directory, and every cargo invocation passes --locked --offline.
+#   * The build does not need to be root. See Rules-Requires-Root in
+#     debian/control.
+#
+# The `bpf` feature is not enabled, so clang, libbpf and rustfmt are not
+# Build-Depends. See README.Debian.
+
+export CARGO_HOME := $(CURDIR)/.cargo-home
+export CARGO_NET_OFFLINE := true
+# The Rust equivalent of what dpkg-buildflags asks of a C build. The release
+# profile in Cargo.toml already sets opt-level, lto, codegen-units and strip;
+# what it cannot set is the linker's hardening flags.
+export RUSTFLAGS := -C link-arg=-Wl,-z,relro -C link-arg=-Wl,-z,now
+
+VENDOR_ARCHIVE := vendor.tar.xz
+VENDOR_DIR := $(CURDIR)/vendor
+
+%:
+	dh $@
+
+# There is nothing to configure in the usual sense; the only preparation is
+# unpacking the vendored crates and pointing cargo's source replacement at them.
+# A cargo `directory` source has to be an absolute path, so the placeholder in
+# vendor-config.toml is substituted here rather than being baked in by
+# make-vendor.sh.
+override_dh_auto_configure:
+	if [ ! -f "$(VENDOR_ARCHIVE)" ]; then \
+		echo "$(VENDOR_ARCHIVE) is missing; run contrib/debian/make-vendor.sh first." >&2; \
+		exit 1; \
+	fi
+	tar -xf "$(VENDOR_ARCHIVE)"
+	mkdir -p "$(CARGO_HOME)"
+	sed -e 's|@VENDOR_DIR@|$(VENDOR_DIR)|' vendor-config.toml \
+	    > "$(CARGO_HOME)/config.toml"
+	# Fail early and legibly if the changelog and the daemon disagree about the
+	# version, rather than shipping a mislabelled package. The pattern has no
+	# trailing `$` anchor on purpose: a bare `$` before a non-`(` character is
+	# passed through by make but is easy to break by accident.
+	version=$$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' \
+	    Cargo.toml | head -n1); \
+	if [ "$$version" != "$(DEB_VERSION_UPSTREAM)" ]; then \
+		echo "Cargo.toml says $$version, debian/changelog says $(DEB_VERSION_UPSTREAM)." >&2; \
+		exit 1; \
+	fi
+
+override_dh_auto_build:
+	# Default features, i.e. netlink plus systemd. `--locked` keeps cargo from
+	# rewriting Cargo.lock, which CI and every other recipe rely on.
+	cargo build --release --locked --offline --verbose
+
+override_dh_auto_test:
+	cargo test --locked --offline
+
+override_dh_auto_install:
+	rm -rf debian/tmp
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/tmp PREFIX=/usr
+	# `completions` is dispatched before any configuration is read and needs no
+	# privileges, so generating it from the freshly installed binary is safe.
+	install -d debian/tmp/usr/share/bash-completion/completions
+	install -d debian/tmp/usr/share/fish/vendor_completions.d
+	install -d debian/tmp/usr/share/zsh/site-functions
+	debian/tmp/usr/bin/ananicy-rs completions bash \
+	    > debian/tmp/usr/share/bash-completion/completions/ananicy-rs
+	debian/tmp/usr/bin/ananicy-rs completions fish \
+	    > debian/tmp/usr/share/fish/vendor_completions.d/ananicy-rs.fish
+	debian/tmp/usr/bin/ananicy-rs completions zsh \
+	    > debian/tmp/usr/share/zsh/site-functions/_ananicy-rs
+	dh_auto_install
+
+# The unit is the daemon's own, hardening unchanged, and the package adds only
+# registration. `--no-enable --no-start` keeps installing this package from
+# either enabling or starting a privileged daemon that has no rules configured;
+# that matches the Fedora recipe, which only runs `systemctl preset`. Because
+# `--no-start` is given, an upgrade stops and restarts the service, which is what
+# a running daemon needs when its executable is replaced underneath it.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf "$(VENDOR_DIR)" vendor-config.toml "$(CARGO_HOME)"
+
+override_dh_clean:
+	dh_clean
+	rm -rf "$(VENDOR_DIR)" vendor-config.toml "$(CARGO_HOME)"
