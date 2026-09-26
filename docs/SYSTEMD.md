@@ -97,7 +97,7 @@ What it does **not** change:
   identically in both modes.
 * **Build configuration.** Without the `systemd` cargo feature the mode is
   always off and the status reads `disabled (built without the systemd feature)`.
-  `contrib/package.nix` exposes this as `withSystemd`.
+  `contrib/nixos/package.nix` exposes this as `withSystemd`.
 
 The resolved mode is logged at `debug` level and shown by `debug cgroups`, e.g.
 `Systemd integration: enabled (auto-detected from $INVOCATION_ID)`.
@@ -172,7 +172,7 @@ error; the daemon does not silently fall back to defaults.
 
 ## NixOS
 
-`contrib/module.nix` keeps the packaged unit as the single source of truth:
+`contrib/nixos/module.nix` keeps the packaged unit as the single source of truth:
 `Delegate=yes`, hardening, `ExecReload=` and the restart policy live in
 `data/ananicy-rs.service.in`, which the module exposes through
 `systemd.packages`. The module only forces `ExecStart=` so that

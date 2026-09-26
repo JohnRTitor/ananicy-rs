@@ -17,7 +17,11 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     steps:
+      # `fetch-depth: 0` is required, not incidental: the source tarball below is
+      # `git archive` of the pushed tag, and a shallow checkout does not have it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       # `--all-features` builds the `bpf` crate, whose build script needs rustfmt
       # to generate the skeleton. See the note in `.github/workflows/ci.yml`.
       - uses: ./.github/actions/setup-rust
@@ -32,11 +36,27 @@ jobs:
         run: |
           tar -czvf ananicy-rs-linux-x86_64.tar.gz -C target/release ananicy-rs
           sha256sum ananicy-rs-linux-x86_64.tar.gz > ananicy-rs-linux-x86_64.tar.gz.sha256
+      # The source archive downstream distributions build from. `git archive`
+      # of the tag, with a stable prefix and sorted metadata, so the checksum
+      # below means something: contrib/fedora/ananicy-rs.spec and
+      # contrib/debian/README.md both consume it, and neither can fetch from a
+      # repository. `gzip -n` omits the timestamp and the original name from the
+      # gzip header, which is what makes the bytes reproducible.
+      - name: Source tarball
+        run: |
+          set -euxo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          git archive --format=tar --prefix="ananicy-rs-$version/" "$tag" \
+            | gzip -n -9 > "ananicy-rs-$version.tar.gz"
+          sha256sum "ananicy-rs-$version.tar.gz" > "ananicy-rs-$version.tar.gz.sha256"
       - name: Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             ananicy-rs-linux-x86_64.tar.gz
             ananicy-rs-linux-x86_64.tar.gz.sha256
+            ananicy-rs-[0-9]*.tar.gz
+            ananicy-rs-[0-9]*.tar.gz.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,57 @@
+Source: ananicy-rs
+Section: admin
+Priority: optional
+Maintainer: ananicy-rs packagers <ananicy-rs-packaging@example.invalid>
+# Why each build dependency is here is in README.md, under "Build
+# dependencies". In short: ananicy-rs is a cargo workspace whose four crates are
+# all unpublished, so `dh-cargo` and `debcargo` do not apply and this uses
+# Debian's own cargo wrapper instead; rustc 1.85 is the first release that
+# understands edition 2024, which every crate in the workspace uses and which no
+# manifest declares; `make install` places the binary and the systemd unit; and
+# both pcre2-sys and ananicy-platform link a system library that the default
+# feature set needs. clang, libbpf-dev and rustfmt are absent because the `bpf`
+# feature is not enabled.
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc (>= 1.85),
+ make,
+ pkg-config,
+ libpcre2-dev,
+ libsystemd-dev,
+Standards-Version: 4.7.0
+Homepage: https://github.com/JohnRTitor/ananicy-rs
+# The build only runs `cargo build` and `cargo test`, and neither needs
+# privileges for this package's feature set. The tests in ananicy-platform that
+# do need root detect that they are unprivileged and skip themselves with a
+# message, which is the same thing mock and makepkg do by construction.
+Rules-Requires-Root: no
+
+Package: ananicy-rs
+Architecture: linux-any
+# The daemon is built on netlink, cgroups and procfs, and nothing in the tree
+# compiles on another operating system.
+#
+# ${shlibs:Depends} already carries the two libraries the linker records:
+# libsystemd.so.0 and libpcre2-8.so.0. Nothing depends on systemd as the init
+# system, and nothing depends on a rule set: ananicy-rs ships no rules, and no
+# Debian derivative packages ananicy-cpp or the Ananicy rule set, so a
+# Recommends would name a package that cannot exist. See README.md.
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+Description: auto-nice daemon that applies per-application process priorities
+ ananicy-rs is a rewrite of the ananicy daemon in Rust. It watches process
+ creation and automatically applies the nice value, I/O priority, scheduling
+ policy, CPU affinity, OOM score adjustment and cgroup placement that a matching
+ rule asks for.
+ .
+ It reads its rules from /etc/ananicy.d and ships none of its own, so a rule set
+ has to be installed there before the service is useful. On first start the
+ daemon creates /etc/ananicy.d if it is missing and writes a default
+ ananicy.conf into it; neither is owned by this package, so upgrades never touch
+ an administrator's configuration.
+ .
+ This build uses the default features: the netlink process-event source and
+ systemd integration. The optional eBPF event source is not built; see
+ /usr/share/doc/ananicy-rs/README.Debian.

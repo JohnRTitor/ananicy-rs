@@ -1,0 +1,5 @@
+usr/bin/ananicy-rs
+usr/lib/systemd/system/ananicy-rs.service
+usr/share/bash-completion/completions/ananicy-rs
+usr/share/fish/vendor_completions.d/ananicy-rs.fish
+usr/share/zsh/site-functions/_ananicy-rs

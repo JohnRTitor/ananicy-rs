@@ -1,0 +1,13 @@
+# ananicy-rs is installed but not enabled, and it ships no rules.
+#
+# It reads *.rules, *.types and *.cgroups from /etc/ananicy.d, recursively and
+# sorted by path. On its first start it creates that directory if it is missing
+# and writes a default ananicy.conf into it.
+echo "ananicy-rs is installed but not enabled, and it ships no rules."
+echo
+echo "Install a rule set in /etc/ananicy.d before enabling the service:"
+echo "  https://gitlab.com/ananicy-cpp/ananicy-cpp"
+echo "  https://github.com/Nefelim4ag/Ananicy"
+echo
+echo "To start letting ananicy-rs reprioritise processes:"
+echo "  sudo systemctl enable --now ananicy-rs.service"

@@ -7,3 +7,11 @@ target/
 # The fuzz targets are an opt-in development tool, resolved on demand.
 crates/ananicy-platform/fuzz/Cargo.lock
 result
+# `make install` generates the unit from data/ananicy-rs.service.in. It is a
+# build product, in the source tree or not.
+data/ananicy-rs.service
+# Vendored Cargo dependency trees, generated on demand by the contrib packaging
+# recipes. See contrib/README.md; each is a build input of a package, not source.
+contrib/debian/vendor.tar.xz
+contrib/fedora/*-vendor.tar.xz
+contrib/archlinux/vendor/

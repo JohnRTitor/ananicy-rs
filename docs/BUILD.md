@@ -28,19 +28,37 @@ you if you are too old — the error is a parse failure on `edition = "2024"`.
 
 ### Native libraries
 
-Nothing outside the `bpf` feature needs a system library to *compile*. The
-`systemd` feature looks like it might, but it does not: `sd-notify` and
-`tracing-journald` are pure Rust and talk to the daemon over the
-`$NOTIFY_SOCKET` and journald stream sockets. The complete set of crates in
-`Cargo.lock` that link a system library is `libbpf-sys` and `pcre2-sys`
-(`linux-raw-sys`, `core-foundation-sys`, `js-sys`, `web-sys` and `windows-sys`
-are raw syscall bindings and non-Linux targets, and link nothing).
+Three crates in `Cargo.lock` link a system library: `pcre2-sys`, `libbpf-sys`,
+and `ananicy-platform` itself, which declares `#[link(name = "systemd")]` in
+`src/service.rs` under the `systemd` feature (`linux-raw-sys`,
+`core-foundation-sys`, `js-sys`, `web-sys` and `windows-sys` are raw syscall
+bindings and non-Linux targets, and link nothing).
+
+The systemd one is easy to miss. `sd-notify` and `tracing-journald` are pure Rust
+and talk to the daemon over the `$NOTIFY_SOCKET` and journald stream sockets —
+but `systemd` is **on by default**, and it is `ananicy-platform`, not those two
+crates, that links `libsystemd.so`. A default build without libsystemd's
+development files will not link. You can see it in the result:
+
+```console
+$ readelf -d target/release/ananicy-rs | grep NEEDED
+ 0x0000000000000001 (NEEDED)  Shared library: [libsystemd.so.0]
+ 0x0000000000000001 (NEEDED)  Shared library: [libpcre2-8.so.0]
+ 0x0000000000000001 (NEEDED)  Shared library: [libgcc_s.so.1]
+ 0x0000000000000001 (NEEDED)  Shared library: [libm.so.6]
+ 0x0000000000000001 (NEEDED)  Shared library: [libc.so.6]
+```
+
+Only the `bpf` feature's `libbpf-sys` is avoidable, and only by dropping
+`systemd` as well: `--no-default-features --features netlink` needs neither
+`libsystemd` nor the eBPF toolchain, at the cost of `sd_notify` readiness,
+journald logging and the unit-name detection in `src/systemd.rs`.
 
 `pcre2` is worth separating out, because it is the one that is easy to get
 wrong. `pcre2-sys` first asks `pkg-config` for `libpcre2-8`, and only builds its
 own vendored copy if that fails. Both paths work, but they are not the same
 build: the vendored copy is compiled with `SUPPORT_JIT=1` forced and linked
-statically. `contrib/package.nix` puts `pcre2` in `buildInputs`, so `nix build`
+statically. `contrib/nixos/package.nix` puts `pcre2` in `buildInputs`, so `nix build`
 links the shared library, and a host without `libpcre2-8` silently produces a
 binary with a different regex engine than the one that ships. Install the
 development package so that a local build matches the Nix package.
@@ -51,10 +69,12 @@ Package names are not mechanical translations of each other, and the difference
 is where mistakes happen: Debian ends development packages in `-dev` and keeps
 the library's `lib` prefix, while Fedora ends them in `-devel` and moves the
 prefix to the front of the base name — so `libpcre2-dev` is `pcre2-devel`, not
-`libpcre2-devel`. Arch uses the upstream names unchanged.
+`libpcre2-devel`. Arch uses the upstream names unchanged, except for
+`systemd-libs`, which is the package carrying `libsystemd.so.0`.
 
 | Needed for | Debian / Ubuntu | Fedora / RHEL | Arch | Nix |
 | --- | --- | --- | --- | --- |
+| libsystemd (default features) | `libsystemd-dev` | `systemd-devel` | `systemd-libs` | `systemdLibs` |
 | PCRE2 (recommended) | `libpcre2-dev` | `pcre2-devel` | `pcre2` | `pcre2` |
 | libbpf (`bpf` feature) | `libbpf-dev` | `libbpf-devel` | `libbpf` | `libbpf` |
 | BPF toolchain (`bpf` feature) | `clang` | `clang` | `clang` | `llvmPackages.clang` |
@@ -66,17 +86,30 @@ links by name (`-lbpf -lelf -lz`); on Nix those are separate, so the package
 expression lists `elfutils`, `zlib` and `zstd` itself. Arch has no separate
 `rustfmt` package — its `rust` package carries the whole toolchain.
 
-Install everything needed for the `bpf` feature:
+Install everything a default build needs:
 
 ```bash
 # Debian / Ubuntu
-sudo apt-get install clang pkg-config libpcre2-dev libbpf-dev libelf-dev zlib1g-dev
+sudo apt-get install pkg-config libpcre2-dev libsystemd-dev
 
 # Fedora
-sudo dnf install clang pkgconf-pkg-config pcre2-devel libbpf-devel elfutils-libelf-devel zlib-devel
+sudo dnf install pkgconf-pkg-config pcre2-devel systemd-devel
 
 # Arch
-sudo pacman -S clang pkgconf pcre2 libbpf
+sudo pacman -S pkgconf pcre2 systemd-libs
+```
+
+And everything on top of that for the `bpf` feature:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install clang libbpf-dev libelf-dev zlib1g-dev
+
+# Fedora
+sudo dnf install clang libbpf-devel elfutils-libelf-devel zlib-devel
+
+# Arch
+sudo pacman -S clang libbpf
 ```
 
 ## Features
@@ -201,17 +234,16 @@ copies `target/<profile>/ananicy-rs`. `DEBUG=1` selects the debug profile and
 makes the source path match.
 
 `make install` also writes the generated unit to `data/ananicy-rs.service` in
-the source tree before installing it. That file is a build product and is not
-in `.gitignore`, so a local `make install` leaves the tree dirty; delete it or
-ignore it locally.
+the source tree before installing it. That file is a build product, so it is in
+`.gitignore` now; a `make install` from before that change may still have left
+one behind.
 
-
-`contrib/package.nix` installs the same way, via `make install DESTDIR= PREFIX=$out`,
+`contrib/nixos/package.nix` installs the same way, via `make install DESTDIR= PREFIX=$out`,
 and additionally generates shell completions with `installShellCompletion`.
 
 ## Nix
 
-The flake builds the same package from `contrib/package.nix`.
+The flake builds the same package from `contrib/nixos/package.nix`.
 
 ```bash
 nix build                # ./result
@@ -245,7 +277,7 @@ The Nix build differs from a local one in three ways worth knowing:
 
 ### NixOS module
 
-`contrib/module.nix` provides `services.ananicy-rs`:
+`contrib/nixos/module.nix` provides `services.ananicy-rs`:
 
 ```nix
 {
@@ -267,19 +299,62 @@ The Nix build differs from a local one in three ways worth knowing:
 somewhere else. `environment.etc."ananicy.d"` is assembled from that provider
 plus `settings`, `extraRules`, `extraTypes` and `extraCgroups`.
 
-The module generates its own `ExecStart` and sets `Delegate=yes` on the unit;
-see [SYSTEMD.md](./SYSTEMD.md) for what the unit does and why.
+The module does not re-declare the unit. It adds the package to
+`systemd.packages`, so `Delegate=yes`, the hardening, `ExecReload=` and the
+restart policy are all read from `data/ananicy-rs.service.in` by systemd, and the
+module forces only `ExecStart=` so that `extraArgs` can be injected. There is
+one copy of those decisions in the tree. See [SYSTEMD.md](./SYSTEMD.md) for
+what the unit does and why.
+
+## Distribution packaging
+
+`contrib/` holds one native packaging recipe per distribution:
+
+| Distribution | Recipe | Artefact |
+| --- | --- | --- |
+| Fedora | `contrib/fedora/` | RPM, via `rpmbuild` |
+| Debian and derivatives | `contrib/debian/` | `.deb`, via `dpkg-buildpackage` |
+| Arch Linux | `contrib/archlinux/` | `.pkg.tar.zst`, via `makepkg` |
+| Nix and NixOS | `contrib/nixos/` | store path, via `nix build` |
+
+They are **community-maintained recipes**, not packages carried by any of those
+distributions; see [contrib/README.md](../contrib/README.md) for what that does
+and does not claim, and each directory's README for how to build and validate it.
+
+All of them install the binary and the unit by running `make install`, so the
+files a user gets are the ones this project produces, in the same place, with the
+same modes. None of them installs a configuration file, because upstream has none
+and the daemon writes `/etc/ananicy.d/ananicy.conf` itself on first start. None
+of them enables or starts the service on install.
+
+Two things a local build does not have to think about, and the recipes do:
+
+- **The version lives in one place.** `[workspace.package] version` in
+  `Cargo.toml`. The Fedora and Debian recipes read the manifest and fail the
+  build on a mismatch; the Arch recipe derives it from the release tag.
+- **Dependencies must be reachable without a repository.** None of the four
+  workspace crates is on crates.io, so the Fedora and Debian recipes ship a
+  vendored copy of `Cargo.lock` as part of the source package and build
+  `--offline`. The Arch recipe runs `cargo fetch` in `prepare()`; Nix uses
+  `cargoLock.lockFile`.
+
+`contrib/debian/` is the one directory that is not usable in place: Debian
+requires `debian/` to be the top-level directory of a source package, so
+`cp -r contrib/debian debian` before building. See
+[contrib/debian/README.md](../contrib/debian/README.md) for the full flow,
+including the vendoring step.
 
 ## Continuous integration
 
-Four workflows, all under `.github/workflows/`:
+Five workflows, all under `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | `.rs`, `Cargo.toml`, `Cargo.lock` | Builds and tests on stable and nightly; repeats both on Fedora and Arch |
 | `lint.yml` | `.rs`, `Cargo.toml` | `cargo fmt --check` on nightly, `cargo clippy -D warnings` on stable |
-| `nixos.yml` | Rust files, `*.nix`, `flake.lock` | `nix flake check` and `nix build` |
-| `release.yml` | `v*` tags | Builds, strips, tars, and publishes a release |
+| `nixos.yml` | Rust files, `*.nix`, `Makefile`, `contrib/**` | `nix flake check` and `nix build`, which is also what builds `contrib/nixos` |
+| `packaging.yml` | the above plus `data/**`, `contrib/**` | Builds the RPM, the `.deb` and the Arch package in their own container images |
+| `release.yml` | `v*` tags | Builds, strips, tars, and publishes a release, plus a reproducible source tarball |
 
 Every action is pinned to a commit SHA rather than a tag, and Rust setup is
 funnelled through one composite action, `.github/actions/setup-rust`, which
@@ -293,8 +368,17 @@ The distro matrix builds `--all-features` in `fedora:latest` and
 `archlinux:latest`, so it needs clang, pcre2, libbpf and pkg-config in the
 image, under that distribution's own package names.
 
-Note that the path filters do not include `.github/**`, so a change to a
-workflow alone will not trigger a run.
+`packaging.yml` installs only the `BuildRequires` each recipe declares, so a
+recipe that grew an unnecessary dependency, or dropped a necessary one, fails
+the job. The Debian job builds as an unprivileged user, which is what
+`Rules-Requires-Root: no` in `debian/control` claims. The Arch job publishes the
+checkout as a local git remote carrying the release tag and points makepkg at
+that, so it builds the tree under test rather than whatever is published; only
+the source URL differs from the `PKGBUILD` on disk.
+
+Note that the path filters of `ci.yml` and `lint.yml` do not include
+`.github/**`, so a change to one of those two workflows alone will not trigger a
+run. `packaging.yml`, `nixos.yml` and `release.yml` list themselves.
 
 ## Troubleshooting
 

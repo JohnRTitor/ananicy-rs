@@ -22,13 +22,16 @@ rustPlatform.buildRustPackage {
   strictDeps = true;
   __structuredAttrs = true;
 
+  # Only the tree the daemon is built from. `crates/ananicy-platform/fuzz` is
+  # its own cargo workspace and is never built here, and dropping every `.nix`
+  # file keeps this expression from vendoring itself.
   src = lib.fileset.toSource {
-    root = ../.;
-    fileset = lib.fileset.fileFilter ({ hasExt, ... }: !hasExt "nix") ../.;
+    root = ../..;
+    fileset = lib.fileset.fileFilter ({ hasExt, ... }: !hasExt "nix") ../..;
   };
 
   cargoLock = {
-    lockFile = ../Cargo.lock;
+    lockFile = ../../Cargo.lock;
   };
 
   nativeBuildInputs = [
@@ -70,6 +73,10 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     rm -rf $out/bin
     make install DESTDIR= PREFIX=$out CARGO_TARGET_DIR=target/${stdenv.hostPlatform.rust.cargoShortTarget}
+    install -Dm644 -t $out/share/doc/$pname README.md CONTRIBUTING.md
+    install -Dm644 -t $out/share/doc/$pname/docs docs/BUILD.md docs/CLI.md \
+      docs/COMPATIBILITY.md docs/CONFIGURATION.md docs/SYSTEMD.md \
+      docs/TESTING.md docs/TOPOLOGY.md
   '' + lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
     installShellCompletion --cmd ananicy-rs \
       --bash <($out/bin/ananicy-rs completions bash) \

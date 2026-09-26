@@ -1,5 +1,9 @@
 name: NixOS CI
 
+# Also covers the Nix packaging recipe under contrib/nixos: `nix flake check`
+# evaluates the package and the module, and `nix build` produces the derivation.
+# There is deliberately no separate job for it in packaging.yml -- one job per
+# artefact.
 on:
   pull_request:
     paths:
@@ -7,6 +11,9 @@ on:
       - "**Cargo.toml"
       - "**Cargo.lock"
       - "**.nix"
+      - "Makefile"
+      - "data/**"
+      - "contrib/**"
       - "flake.lock"
   push:
     paths:
@@ -14,7 +21,11 @@ on:
       - "**Cargo.toml"
       - "**Cargo.lock"
       - "**.nix"
+      - "Makefile"
+      - "data/**"
+      - "contrib/**"
       - "flake.lock"
+  workflow_dispatch:
 
 permissions:
   contents: read
