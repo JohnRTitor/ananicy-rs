@@ -240,7 +240,7 @@ jobs:
       - name: lintian
         run: |
           status=0
-          lintian --no-tag-display-limit /build/ananicy-rs_*.changes || status=$?
+          lintian --tag-display-limit 0 /build/ananicy-rs_*.changes || status=$?
           if [ "$status" -ge 2 ]; then
             echo "::error::lintian exited with $status"
             exit 1

@@ -66,29 +66,35 @@ checkout with no orig tarball at all.
 
 ```bash
 dpkg-buildpackage -us -uc -b
-lintian --no-tag-display-limit ../ananicy-rs_*.changes
+lintian --tag-display-limit 0 ../ananicy-rs_*.changes
 ```
 
-What *was* run while this recipe was written, and what was not:
+What *was* run locally while this recipe was written, and what was not:
 
-- **Run:** every step of `debian/rules` was executed against a real `git archive`
-  of the tree. `make-vendor.sh` produced a working `vendor.tar.xz`;
-  `override_dh_auto_configure`'s extraction, absolute-path substitution and
-  version check were run as written, in both the matching and the mismatching
-  direction; `cargo build --release --locked --offline` succeeded with the
+- **Run locally:** every step of `debian/rules` was executed against a real
+  `git archive` of the tree. `make-vendor.sh` produced a working
+  `debian/vendor.tar.xz`; `override_dh_auto_configure`'s extraction,
+  absolute-path substitution and version check were run as written, in the
+  matching and the mismatching direction and against three changelog version
+  shapes; `cargo build --release --locked --offline` succeeded with the
   `RUSTFLAGS` `debian/rules` sets and produced a binary with `BIND_NOW` and a
   `GNU_RELRO` segment; `cargo test --locked --offline` passed, 20 test binaries,
   0 failures; `override_dh_auto_install`'s `make install` and the three
   completions produced exactly the file list `debian/ananicy-rs.install`
   declares, and every path in `debian/ananicy-rs.docs` resolved.
-- **Not run:** `dpkg-buildpackage` itself and `lintian`, neither of which
-  exists in the environment this was written in. debhelper's own behaviour
-  (`dh_installsystemd`, `dh_installdeb`'s handling of `.dirs` and `.docs`) is
-  therefore argued from the debhelper documentation, not observed.
+- **Not run locally:** `dpkg-buildpackage` and `lintian` do not exist in the
+  environment this was written in, so debhelper's own behaviour
+  (`dh_installsystemd`, `dh_installdeb`'s handling of `.dirs` and `.docs`) was
+  argued from its documentation rather than observed at the time.
+- **Run in CI since:** a real `dpkg-buildpackage` on `debian:sid`, which is what
+  found the build-depends on `make`, the obsolete `pkg-config`, the maintainer
+  scripts without an interpreter, and the two tags now justified in
+  `debian/ananicy-rs.lintian-overrides`. Those were only ever findings about this
+  recipe, and they are all fixed.
 
 [`.github/workflows/packaging.yml`](../../.github/workflows/packaging.yml) runs
-the real thing — `dpkg-buildpackage` including `dh_auto_test`, then `dpkg-deb
---contents`, then `lintian` — in a `debian:trixie` container, as an
+the real thing on every change — `dpkg-buildpackage` including `dh_auto_test`,
+then `dpkg-deb --contents`, then `lintian` — in a `debian:sid` container, as an
 unprivileged user.
 
 ## Why not `dh-cargo`
@@ -159,13 +165,22 @@ get packaged, the right relationship is a `Recommends` or a separate
 
 ## Build dependencies
 
-`cargo`, `rustc (>= 1.88)`, `make`, `pkg-config`, `libpcre2-dev`,
-`libsystemd-dev`, plus `debhelper-compat (= 13)`.
+`cargo`, `rustc (>= 1.88)`, `pkgconf`, `libpcre2-dev`, `libsystemd-dev`, plus
+`debhelper-compat (= 13)`.
 
-`build-essential` is dpkg's implicit build dependency, so Policy says not to list
-it in `debian/control` — but it is still required, because linking needs a C
-compiler and libc headers, and `dpkg-checkbuilddeps` aborts the build without it.
-The CI job installs it explicitly for that reason.
+`make` is deliberately **not** in the list even though `make install` is what
+places the binary and the unit. It is part of `build-essential`, which dpkg
+treats as an implicit build dependency and checks all the same, and lintian
+objects to naming it: `build-depends-on-build-essential-package-without-using-
+version`.
+
+`build-essential` therefore cannot be listed either — Policy says not to — but it
+is genuinely required, because linking needs a C compiler and libc headers, and
+`dpkg-checkbuilddeps` aborts without it. The CI job installs it explicitly.
+
+`pkgconf` rather than `pkg-config`: the latter has been a transitional package
+since bookworm. It provides the same `pkg-config` binary, which is what
+`pcre2-sys` invokes.
 
 `rustc (>= 1.88)` is the floor, and it is higher than the edition requires.
 Edition 2024 needs 1.85, but the workspace uses let chains — 30 `&& let`
@@ -176,8 +191,7 @@ unstable`. No manifest carries a `rust-version`, so cargo cannot warn you first.
 **Which means this cannot be built against Debian stable.** trixie (13) ships
 rustc 1.85.1, one minor release short. A submission would therefore target
 trixie-backports, which carries 1.88.0, or sid. The CI job uses `debian:sid` for
-the same reason, and that is the one claim in this README that is *not* verified
-by a local build — see "Static validation" above.
+the same reason.
 
 `clang`, `libbpf-dev` and `rustfmt` are **not** build dependencies, because the
 `bpf` feature is not enabled. See the feature section below.
