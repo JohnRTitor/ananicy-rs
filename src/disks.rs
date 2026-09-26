@@ -1,9 +1,12 @@
 //! The I/O schedulers the block devices on this machine are using.
 //!
 //! `ioprio_set(2)` — and therefore a rule's `ioclass` and `ionice` — is honoured
-//! only by the CFQ and BFQ family of schedulers. On anything else the call
-//! succeeds and the value goes nowhere, which is the worst kind of failure: the
-//! daemon reports that it applied a rule, and the I/O priority is unchanged.
+//! only by the schedulers the kernel says it is: `bfq` and `mq-deadline`, per
+//! `Documentation/block/ioprio.rst`. `cfq` went with the legacy single-queue
+//! block layer, so it is only ever the active scheduler on an old kernel and is
+//! kept for those. On anything else the call succeeds and the value goes
+//! nowhere, which is the worst kind of failure: the daemon reports that it
+//! applied a rule, and the I/O priority is unchanged.
 //!
 //! The original Ananicy checked for this at start-up and printed one line per
 //! disk. That check was dropped when the daemon was rewritten — it is in the
@@ -16,8 +19,9 @@ use {
     tracing::warn,
 };
 
-/// The schedulers that honour `ioprio_set(2)`.
-const SUPPORTED: [&str; 3] = ["cfq", "bfq", "bfq-mq"];
+/// The schedulers that honour `ioprio_set(2)`: `bfq` and `mq-deadline`, plus
+/// `cfq` for kernels old enough to still have it.
+const SUPPORTED: [&str; 4] = ["mq-deadline", "bfq", "bfq-mq", "cfq"];
 
 /// Devices whose names contain these are not worth reporting: loop and ram
 /// devices have no I/O scheduler a user cares about, and `sr` is optical media.
@@ -65,8 +69,8 @@ pub(crate) fn check_disk_schedulers(block_class: &Path) -> usize {
         }
 
         warn!(
-            "Disk {name} does not use a cfq/bfq scheduler (it is using {active:?}), \
-             so ioclass and ionice will not work for it"
+            "Disk {name} is on a scheduler that does not honour ioprio (it is using \
+             {active:?}), so ioclass and ionice will not work for it"
         );
         reported += 1;
     }
@@ -115,7 +119,22 @@ mod tests {
 
     #[test]
     fn a_device_on_a_supported_scheduler_is_not_reported() {
-        let root = block_class(&[("sda", Some("[bfq] mq-deadline")), ("sdb", Some("[cfq]"))]);
+        let root = block_class(&[
+            ("sda", Some("[bfq] mq-deadline")),
+            ("sdb", Some("[cfq]")),
+            ("sdc", Some("[mq-deadline] none kyber bfq")),
+        ]);
+        assert_eq!(check_disk_schedulers(root.path()), 0);
+    }
+
+    #[test]
+    fn an_nvme_device_on_mq_deadline_is_not_reported() {
+        // What every NVMe machine since ~4.12 looks like. The kernel honours
+        // ioprio on mq-deadline, so warning about it is a false positive.
+        let root = block_class(&[
+            ("nvme0n1", Some("[mq-deadline] none kyber bfq")),
+            ("nvme1n1", Some("[mq-deadline] none kyber bfq")),
+        ]);
         assert_eq!(check_disk_schedulers(root.path()), 0);
     }
 
@@ -124,12 +143,13 @@ mod tests {
         let root = block_class(&[
             ("sda", Some("[none] mq-deadline")),
             ("sdb", Some("[bfq]")),
+            ("sdc", Some("[mq-deadline] none kyber bfq")),
             ("nvme0n1", Some("[none] kyber")),
         ]);
         assert_eq!(
             check_disk_schedulers(root.path()),
             2,
-            "the bfq device is fine, the other two are not"
+            "the bfq and mq-deadline devices are fine, `none` and kyber are not"
         );
     }
 
