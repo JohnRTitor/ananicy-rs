@@ -110,7 +110,11 @@ jobs:
           # /sys/fs/cgroup may be read-only. The step below runs the same suite,
           # unprivileged, which is how mock and Koji run it. See %check in the
           # spec and contrib/fedora/README.md.
-          rpmbuild -ba --nocheck contrib/fedora/ananicy-rs.spec
+
+          # --noclean because rpmbuild deletes the build directory when it
+          # finishes, and the step below needs the source and vendor tree it
+          # left behind.
+          rpmbuild -ba --nocheck --noclean contrib/fedora/ananicy-rs.spec
       - name: Run the test suite, unprivileged
         run: |
           set -euxo pipefail
@@ -129,8 +133,15 @@ jobs:
       # the vendor archive is generated rather than downloaded.
       - name: rpmlint
         run: rpmlint contrib/fedora/ananicy-rs.spec
+
       - name: List the package contents
-        run: rpm -qpl ~/rpmbuild/RPMS/*/ananicy-rs-*.rpm
+        # One rpm at a time: `rpm -qpl a.rpm b.rpm` would read b.rpm as a package
+        # name, and a future -bpf subpackage would make the glob match two.
+        run: |
+          set -euxo pipefail
+          for rpm in ~/rpmbuild/RPMS/*/ananicy-rs-*.rpm; do
+            rpm -qpl "$rpm"
+          done
       - name: Show the source package metadata
         run: |
           rpm -qp --requires ~/rpmbuild/SRPMS/ananicy-rs-*.src.rpm
@@ -170,8 +181,11 @@ jobs:
             lintian
       # debian/control declares `Rules-Requires-Root: no`, so build as a plain
       # user rather than merely claiming it. dpkg-source also wants the tree in a
-      # directory named <source>-<upstream version>.
+      # directory named <source>-<upstream version>, which is why the version is
+      # an output rather than recomputed: `id: tree` is what makes
+      # `steps.tree.outputs.version` resolve at all.
       - name: Prepare an unprivileged build tree
+        id: tree
         run: |
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
@@ -298,5 +312,13 @@ jobs:
         run: |
           set -euxo pipefail
           cd /build
-          bsdtar -tf ananicy-rs-*.pkg.tar.zst
-          bsdtar -xOf ananicy-rs-*.pkg.tar.zst .PKGINFO
+
+          # One archive at a time. The default makepkg.conf has options=(debug),
+          # so this glob matches ananicy-rs-debug-*.pkg.tar.zst as well, and
+          # `bsdtar -tf a b` would read b as a member name rather than as a
+          # second archive.
+          for pkg in ananicy-rs-*.pkg.tar.zst; do
+            echo "== $pkg"
+            bsdtar -tf "$pkg"
+            bsdtar -xOf "$pkg" .PKGINFO
+          done
