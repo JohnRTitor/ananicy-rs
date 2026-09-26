@@ -13,7 +13,7 @@
 //!
 //! The exact key spelling is part of the on-disk format that is shared with the
 //! historical `ananicy-cpp` configuration, so it is a compatibility requirement
-//! rather than an implementation detail. See `docs/ANANICY_CPP_DIFFERENCES.md`.
+//! rather than an implementation detail. See `docs/COMPATIBILITY.md`.
 
 use {
     ananicy_core::config::{Config, ConfigDiagnostic, ConfigSnapshot, LogLevel},

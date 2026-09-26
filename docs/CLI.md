@@ -165,7 +165,7 @@ Three fields are worth knowing about, because reading them wrong is easy:
   `ananicy-cpp` reads the same file into an `unsigned` and reports
   `4294966396`; anything arithmetic on this field has to cope with that if it is
   parsing both daemons' output. See
-  [`ANANICY_CPP_DIFFERENCES.md`](./ANANICY_CPP_DIFFERENCES.md) §5.1.
+  [`COMPATIBILITY.md`](./COMPATIBILITY.md) §5.1.
 
 Processes with no autogroup — kernel threads, in practice — are absent from
 `dump autogroup` entirely, and report `"autogroup": null` in `dump proc`.

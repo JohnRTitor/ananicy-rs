@@ -111,7 +111,7 @@ Those tests have been re-classified by what they actually verify:
 - Behaviour that `ananicy-rs` deliberately inherits from the C++ daemon to stay
   compatible with existing configuration and rule files is still tested, but the
   test states *why* the behaviour is expected. The list of such requirements is
-  kept in [ANANICY_CPP_DIFFERENCES.md](./ANANICY_CPP_DIFFERENCES.md).
+  kept in [COMPATIBILITY.md](./COMPATIBILITY.md).
 - Behaviour that `ananicy-rs` intentionally does differently is pinned by an
   ordinary test asserting the `ananicy-rs` behaviour, not by "whatever the other
   implementation does".

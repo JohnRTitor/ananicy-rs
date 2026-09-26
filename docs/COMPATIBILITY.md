@@ -1,6 +1,11 @@
-# ananicy-rs vs ananicy-cpp: User-Facing Differences
+# ananicy-rs and ananicy-cpp: Compatibility
 
 While `ananicy-rs` aims for high behavioral compatibility with the reference `ananicy-cpp` implementation, there are several intentional differences you should be aware of when installing, configuring, or running the daemon. This document highlights the changes that affect end users.
+
+It also records the other two directions, because a reader asking "does this daemon do X, and will it
+behave the same?" should not have to infer the answer from a silence. **§1–§6** are the differences,
+**§7** is what was checked and found equivalent, **§8** is what this daemon adds, and **§9** is the
+short list of what it lacks. Only §1–§6 are differences; the rest are the evidence around them.
 
 Where a difference here is a compatibility requirement — behaviour `ananicy-rs` keeps on purpose so that existing configuration and rule files keep working — it is pinned by a test in the component that owns the behaviour. See [TESTING.md](./TESTING.md) for the test layout; the test suite itself never runs `ananicy-cpp`.
 
@@ -262,4 +267,122 @@ malformed input silently is worse than rejecting it:
   (`ananicy-core/tests/cpuset.rs`).
 - Booleans must be spelled `true`; `1`, `yes` and `True` are false
   (`ananicy-core/tests/config.rs`).
+
+## 7. Verified Equivalent
+
+Every row here was checked against `ananicy-cpp` and found to behave the same, so it is *not* a
+difference and belongs in no list above. It is recorded because the absence of a row is
+indistinguishable from never having looked: this table is the evidence of coverage. A row marked
+**EQ** in a previous draft of this file with a note attached is equivalent *except* for the note.
+
+| Capability | `ananicy-cpp` | `ananicy-rs` | Note |
+| --- | --- | --- | --- |
+  | `--verbose` | one step more verbose, clamped at `trace` | same | the debug-verbosity log line still differs, see §5.1 |
+  | `--force-remove-semaphore` error path | exit 1 + message | exit 1 + message |
+  | IPC object permissions | 0600 | 0600 |
+  | Benchmark spin | `sleep` then break | same |
+  | Bare invocation | help, exit 0 | help, exit 0 |
+  | stdout: version banner | yes | yes |
+  | `--version` | `Version: x` | `Version: x` |
+  | `check_freq` default | 60 | 60 |
+  | `apply_cgroup` key name | `apply_cgroup` | `apply_cgroup` |
+  | `x3d_mode` default | `auto` | `auto` |
+  | `x3d_mode` values | `cache`/`frequency` | same |
+  | `apply_ioclass` | inert | inert |
+  | Rule extensions | `.rules`/`.types`/`.cgroups` | same |
+  | `name_regex` engine | PCRE2 + UTF + UCP | same |
+  | CRLF rule files | handled | handled |
+  | Exact vs regex precedence | exact first | exact first |
+  | Type inheritance | single merge | single merge | but see §5.3 |
+  | Rule search order | name → type → cgroup | same |
+  | `cgroup_rules` module | — | deleted (dead code) |
+  | `CPUQuota` write order | quota then period | same |
+  | `CPUQuota` source | same | same |
+  | Realtime detection | `sched_getattr.sched_priority > 0` | same |
+  | Unknown `ioclass` | logged, rule continues | `Skipped`, rule continues |
+  | `ioclass: "none"` | no write | no write |
+  | `latency_nice` fallback | falls back to `nice` | same |
+  | Non-sandboxable errno | `test_errno` → −1 → treated as success | partial failure, rest of the rule applied | see §5.4 |
+  | Empty alias means skip | yes | yes |
+  | `.bpf.c` program | — | byte-identical |
+  | Perf buffer pages | 64 | 64 |
+  | BPF `min_us` | inert (commented out) | inert |
+  | Lost-event callback | stderr | stderr |
+  | `dump rules/types/cgroups` payload | raw / merged | same |
+  | Event-source debug tools | opt-in samples only | not provided |
+  | `sched_getscheduler` | not used | removed |
+  | 1.3× big.LITTLE threshold | `f64` compare | `f64` compare | brute-forced over 400 000 pairs |
+  | Homogeneous → `little-cores` | `""` | `""` |
+  | `llc-N` id order | ascending CPU | ascending CPU | see §5.7 |
+  | `parse_size_string` | K/M/G | K/M/G, shared |
+  | X3D single-CCD alias | `0-(N-1)` always | all enumerated cores | the `die_id`→`cluster_id` fallback still differs, see §5.13 |
+  | `create_cgroup` idempotence | yes | yes |
+  | `cgroup.subtree_control` | `+cpu` | `+cpu` |
+  | `cgroup.procs` vs `tasks` | correct per version | same |
+  | Realtime cgroup target | hierarchy root | hierarchy root |
+  | Kernel-thread detection | computed, unused | absent |
+  | No cgroup hierarchy | starts anyway | starts anyway | see §7.1 |
+  | Panic backtrace | custom handler | panic hook |
+  | Fuzz targets | 3 | 3 |
+  | `sd_notify(Ready)` | subprocess | crate |
+  | BPF test coverage | none | none |
+  | `netlink` `SO_RCVBUF` | default | default |
+  | `monitor::restore_x3d` tested | n/a | no |
+  | Netlink ENOBUFS recovery | n/a | untested |
+  | `panic = "abort"` profile | — | release only |
+  | `-nice` overflow | no counterpart | saturates at the clamp | see §5.14 |
+  | `dump autogroup` | populated | populated | see §7.2 |
+
+## 8. Capabilities `ananicy-rs` Adds
+
+Behaviours this daemon has that the reference does not. Most are strict improvements; the two that
+trade something away say so. None changes what an existing configuration or rule set does, which is
+the test each was held to.
+
+| Capability | `ananicy-cpp` | `ananicy-rs` |
+| --- | --- | --- |
+  | Rule cache | none | 5000-entry LRU |
+  | LRU rule cache sizing | — | `NonZeroUsize::new(5000)` |
+  | `--manualscanning` alias | n/a | parses |
+  | Log level reload | no | yes |
+  | `loglevel` reload | none | on SIGUSR1 |
+  | Config key set | 15 keys | 17 keys (adds `apply_ioclass`, `apply_cpu_weight`, `check_disks_schedulers`) |
+  | `apply_*` gating | 5 flags wired | 7 flags wired |
+  | `cgroup` name `..` | accepted | rejected |
+  | Nested cgroup names | cannot create | `create_dir_all` |
+  | Cgroup name matching | exact only | exact + path |
+  | `CPUWeight` | absent | `CgroupSettings` |
+  | `sched: deadline` fallback | n/a | `warn!` |
+  | `latnice` support probe | on load | on load and reload |
+  | `set_oom_score_adjust` result | unchecked | checked |
+  | `nice` → `cpu.weight` | absent | gated by `apply_cpu_weight` |
+  | `cpuset` alias set | 11 | 12 (adds `all`) |
+  | `move_pid` start-time guard | absent | present |
+  | `move_pid` TGID resolution | absent | present |
+  | `dump` JSON ordering | `unordered_map` | sorted |
+  | `libbpf` print callback | n/a | wired to `--verbose` |
+  | `get_node_id` on bad input | `std::terminate` | 0 |
+  | X3D restore on exit | on listener failure | on every exit path |
+  | `init_cgroups()` | called | called, and retried |
+  | cgroup detection cache | `static optional` | `RwLock<Option<…>>` |
+  | Cgroup re-detection reachable | n/a | yes |
+  | Rule LRU cache | none | present |
+  | LRU capacity | — | 5000 |
+  | `check_disks_schedulers` | absent | restored |
+  | `SIGUSR1` | absent | reload |
+  | `Delegate=yes` in the unit | absent | present |
+  | `flake.nix` | absent | present |
+  | `.foo-wrapped` config support | absent | present |
+  | `apply_cpu_weight` | absent | gates the mirror |
+  | `deadline` scheduler availability | n/a | falls back with a warning |
+
+## 9. Capabilities `ananicy-cpp` Has and This Daemon Does Not
+
+The two rows in the other direction, recorded for completeness. Neither affects a running daemon:
+one is packaging, the other is a build option.
+
+| Capability | `ananicy-cpp` | `ananicy-rs` |
+| --- | --- | --- |
+  | RPM packaging | present | absent |
+  | `crt-static` profile | — | not provided |
 
