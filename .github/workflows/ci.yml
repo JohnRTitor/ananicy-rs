@@ -11,6 +11,10 @@ on:
       - '**.rs'
       - '**Cargo.toml'
       - '**Cargo.lock'
+  # The `paths` filters above mean that a change touching none of them — the
+  # Makefile, `data/`, the workflows themselves — runs nothing at all, and that a
+  # run cancelled by a newer push cannot be repeated. Dispatch bypasses both.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,6 +34,10 @@ jobs:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: "sccache"
     strategy:
+      # Without this the matrix cancels itself on the first failure, so a broken
+      # `stable` silently hides the state of `nightly` and you cannot tell "nightly
+      # is broken too" from "nightly never ran". Matches `matrix-distro` below.
+      fail-fast: false
       matrix:
         toolchain: [stable, nightly]
     steps:

@@ -9,6 +9,15 @@ on:
     paths:
       - '**.rs'
       - '**Cargo.toml'
+      # Both jobs are `--locked`, so the committed lockfile decides what is
+      # actually compiled. A lockfile-only bump can pull in a dependency whose
+      # macros emit different diagnostics, and without this it would be merged
+      # without ever being linted.
+      - '**Cargo.lock'
+  # As in `ci.yml`: the path filters leave changes that touch none of them
+  # unchecked, and provide no way to re-run one that was cancelled by a newer
+  # push.
+  workflow_dispatch:
 
 permissions:
   contents: read
