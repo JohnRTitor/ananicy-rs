@@ -656,11 +656,27 @@ pages per CPU in both — the previous audit's claim that this side used a small
 print callback to `--verbose`, which is the only genuine difference.
 
 
-### 5.18 Netlink receive window — Severity: Informational
+### 5.18 Netlink receive window — Severity: Informational — **no difference; the entry was wrong**
 
-The reference sets `SO_RCVTIMEO` to 500 ms and leaves `SO_RCVBUF` at the default
-(`netlink_program_utils.c:45-49`); this tree sets neither, and both sides reset `prev_pid` per
-`listen()`. Verified as the only behavioural difference in that path.
+An earlier draft of this entry said "this tree sets neither", which is false, and contradicted
+`ANANICY_CPP_DIFFERENCES.md` §5 in the same repository. Verified, both sides:
+
+| | `SO_RCVBUF` | `SO_RCVTIMEO` | how it drains |
+|---|---|---|---|
+| `ananicy-cpp` | default | 500 ms (`netlink_program_utils.c:45-49`) | a blocking `recv` that times out |
+| `ananicy-rs` | 8 MiB, falling back with a warning (`netlink.rs:48-56`) | not set | non-blocking, through `epoll` with a 100 ms tick (`netlink.rs:93-115`) |
+
+The two differ in *which* socket option they set, not in whether they set one. A larger receive
+buffer is the point: `SO_RCVBUF` is what the kernel overruns when a burst of `fork`/`exec` events
+outruns the reader, and the failure mode is `ENOBUFS` and lost events. The reference's 500 ms
+`SO_RCVTIMEO` bounds how long a `recv` may block; it does nothing about the buffer.
+
+Not changed: this daemon's behaviour is the better of the two, so the note stays. The consequence
+to be aware of is a slightly more active loop — 100 ms of `epoll` wakeups against a 500 ms blocking
+read — bought with fewer overruns. Already recorded in `ANANICY_CPP_DIFFERENCES.md` §5; this entry
+now agrees with it.
+
+The `prev_pid` reset difference in the same path is real and documented there.
 
 
 ### 5.19 `get_cgroup_for_pid` ignores `sd_pid_get_cgroup` — Severity: Informational
