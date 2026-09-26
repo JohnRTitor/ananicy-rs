@@ -1,7 +1,7 @@
 # ananicy-rs vs ananicy-cpp — Superset Audit
 
 **Audit date:** 2026-09-26
-**Target:** `/home/masum/Dev-Environment/Rust/ananicy-rs` @ `0d958ee`
+**Target:** `/home/masum/Dev-Environment/Rust/ananicy-rs` @ `de694d4`
 **Reference:** `/home/masum/Dev-Environment/Rust/ananicy-cpp` (source tree as found, no VCS history)
 **Second reference:** `RogueScholar/ananicy` @ `ce7b19b` — the Python original both rewrites descend from
 **Exception list under audit:** `docs/ANANICY_CPP_DIFFERENCES.md`
@@ -15,12 +15,14 @@
 > **This document supersedes the audit written against `e131b18`.** That one is 30 commits out of date:
 > of its 232 citations into this tree, 70 point at lines that have since moved, 32 have been made
 > obsolete by a fix, one is materially false and unrecorded, and its test counts and tallies are
-> wrong. Rather than amend a document whose line numbers are all stale, it has been rebuilt against
-> `0d958ee`. §3 records what survived the re-verification and what did not; §4–§9 are the current
-> state. The remediation history of the 30 intervening commits is §10.
+> wrong. Rather than amend a document whose line numbers are all stale, it has been rebuilt.
+> §3 records what survived the re-verification and what did not; §4–§9 are the current state.
+> The remediation history is §10.
 
-**Verdict: not yet.** Two defects that can be observed on a running daemon remain open, both
-High — see §7 items 1 and 2. Everything the previous audit found has been fixed and recorded.
+**Verdict: not yet, and closer.** The pass found two High defects; both have been fixed
+(`cd77276`, `de694d4`) and each fix carries a test that fails without it. What stands between this
+daemon and a documented superset is now six undocumented Medium differences (§7.3) and the
+`ananicy-cpp` build itself never having been executed here (§9).
 
 ---
 
@@ -30,37 +32,35 @@ High — see §7 items 1 and 2. Everything the previous audit found has been fix
 almost every axis that does not change observable behaviour. The rule engine, the attribute
 surface, the process-discovery ladder, both event backends, the cgroup v1/v2 handling, the topology
 and X3D machinery and the diagnostics all have counterparts with equivalent semantics, and the test
-suite backing that claim is large, hermetic and green: **325 tests across 20 targets, 0 failures.**
+suite backing that claim is large, hermetic and green: **327 tests across 20 targets, 0 failures.**
 
-It is nevertheless not a superset yet, for reasons that have nothing to do with feature coverage:
+It is nevertheless not a superset yet, for reasons that have nothing to do with feature coverage.
+The two High findings of §7 have both been fixed (`cd77276`, `de694d4`); what remains is six
+undocumented Medium differences, two of which change which rule matches a process (§5.7, §5.8), one
+of which silently drops `type`-inherited attributes (§5.3), and one of which aborts the rest of a
+rule when a single syscall fails (§5.4). The most consequential of the six:
 
-1. **`dump autogroup` can never print anything, and `autogroup` is always `null` in `dump proc`**
-   (§7.2). The daemon reads `/proc/<pid>/task/<tid>/autogroup`; the kernel only provides
-   `/proc/<pid>/autogroup`, on the thread-group leader. Confirmed by execution: `dump autogroup`
-   prints `{}` and all 2223 processes on the audit host report `null`.
-2. **With no cgroup hierarchy the daemon exits 0 having applied no rules at all** (§7.1). It waits,
-   warns, and then returns from `main` with success — no worker, no netlink subscription, no
-   `nice`, and an `x3d_mode` change left in place. `ananicy-cpp` starts and applies every
-   non-cgroup attribute. A `Type=simple` unit reports "exited successfully" while nothing ran.
+1. **`llc-N` aliases can name a different physical LLC** (§5.7), and the core-type split puts a
+   capacity tier on the other side of the line at the integer mean (§5.8). A rule naming
+   `little-cores` can therefore pin a process to CPU 0 here and do nothing under `ananicy-cpp`.
 
-Below those, a further **6 behavioural differences of Medium severity** are undocumented (§5.3,
-§5.4, §5.5, §5.7, §5.8, §5.12), two of which change which rule matches a process (§5.7, §5.8) and
-one of which silently drops `type`-inherited attributes (§5.3). One matrix row in the previous audit
-was demonstrably wrong (§3.4) and one §12 non-finding is contradicted (§3.4).
+One matrix row in the previous audit was demonstrably wrong (§3.4) and one §12 non-finding is
+contradicted by it (§3.4).
 
-**Everything the previous audit reported is fixed and recorded** (§10): 30 commits, one finding
+**Everything the previous audit reported is fixed and recorded** (§10): 33 commits, one finding
 each, with the exception of a log-level change (`74793b4`) that fixed a finding without a row.
+This pass added two of its own (§7.1, §7.2), both now fixed.
 
 ### Confidence
 
 * **High** for every finding backed by a citation *and* executed against this host: §7.2 (verified
-  live, 2223/2223 `null`), §7.1 (verified by control-flow trace through `main` → `runtime::run`),
+  live, 2223/2223 `null` before the fix) and §7.1 (reproduced in a mount namespace with no hierarchy),
   §5.2, §5.4, §5.7, §5.8, §5.9, §5.10, §5.11 (all executed).
 * **High** for the C++ side of every finding, by source reading. **The C++ daemon could not be
   built in this environment** — `cmake` is absent and the project fetches its dependencies over the
   network (`CPMAddPackage`) — so no C++ claim rests on execution. The control-flow arguments were
   read end to end rather than sampled.
-* **Medium** for §7.1, §5.5, §5.6, §5.12, §5.13, §5.14, §5.15: the divergence is proven from source
+* **Medium** for §5.5, §5.6, §5.12, §5.13, §5.14, §5.15: the divergence is proven from source
   on both sides but the triggering host (a container with an undelegated `cpu` controller, a hybrid
   v1+v2 host, a multi-LLC machine) is not available here to demonstrate it.
 * **Medium** for the topology findings in general — they need a big.LITTLE machine, and the audit
@@ -181,7 +181,7 @@ Four, beyond the citation errors above. Three are now settled and one is new:
 * **Matrix row 38 — "type inheritance (merge-patch): same result, precomputed — EQ"** is wrong for a
   rule containing an explicit `null`. See §5.3, verified by execution.
 * **Matrix row 68 — "`dump proc` / `dump autogroup`: same fields + `rule`"** describes the field
-  *names*. Three *values* differ, and `autogroup` is always `null`. See §5.1, §5.5, §7.2.
+  *names*. Three *values* differ. `autogroup` was always `null` too — `cd77276` fixed that one; see §5.1, §5.5, §7.2.
 * **Previous audit §12.6 — "Autogroup is not missing… Both rewrites match the original, which reads and never
   writes"** is true of writing and false of the dump the property exists to provide. See §7.2.
 * **Matrix row 4 — `--force-remove-semaphore`: EQ.** The success path agrees; the error path does
@@ -193,10 +193,10 @@ The previous audit's own numbers no longer reconcile, and nothing later correcte
 
 | Claim | Said | Actually |
 |---|---|---|
-| Previous audit §1, §10 | "296 Rust tests pass", "green (296/296)" | **325** |
+| Previous audit §1, §10 | "296 Rust tests pass", "green (296/296)" | **327** |
 | Previous audit §11 Verification | "20 test binaries, all passing" | still correct: **20** targets, all passing — 15 integration binaries + 3 unit-test targets + 2 doc-test targets |
 | Previous audit §6 | "of the 17 entries above, 13 verify exactly, 3 are accurate but incomplete, 1 is inaccurate" | all four now settled; 16/0/0 |
-| Previous audit §1 | "13 undocumented behavioural differences of Medium severity or above" | **8** — 6 Medium (§5) plus the 2 High of §7 |
+| Previous audit §1 | "13 undocumented behavioural differences of Medium severity or above" | **6** — the 2 High of §7 are fixed, leaving the 6 Medium of §5 |
 | Previous audit §1 | "17 behavioural differences are undocumented" | §5 has **19** subsections, 6 of them Medium or worse and **all 6 undocumented** |
 | Previous audit §1 | "§7 — 26 concrete capabilities" | this document's §6 has **32** rows |
 | Previous audit §4.2 | the test pinning the re-detection is in `tests/cgroup_manager.rs` | it is `crates/ananicy-platform/src/cgroups.rs:139-183` |
@@ -279,7 +279,7 @@ C++ citations are corrected per §3.1.
 | 65 | Lost-event callback | stderr | stderr | EQ |
 | 66 | `move_pid` start-time guard | absent | present | SUP |
 | 67 | `move_pid` TGID resolution | absent | present | SUP |
-| 68 | `dump proc` fields | same fields | same + `rule` | DIFF — **see §5.1, §5.5, §7.2** |
+| 68 | `dump proc` fields | same fields | same + `rule` | DIFF — **see §5.1, §5.5, §7.2**; `autogroup` now works |
 | 69 | `dump` JSON ordering | `unordered_map` | sorted | SUP |
 | 70 | `dump rules/types/cgroups` payload | raw / merged | same | EQ |
 | 71 | Event-source debug tools | opt-in samples only | not provided | EQ |
@@ -313,7 +313,7 @@ C++ citations are corrected per §3.1.
 | 99 | LRU capacity | — | 5000 | SUP |
 | 100 | `--reload` semantics | merge into the live map | fresh default snapshot | DIFF |
 | 101 | `--reload` creates a missing config | no | yes | DIFF |
-| 102 | No cgroup hierarchy | starts anyway | exits 0 | DIFF — **see §7.1** |
+| 102 | No cgroup hierarchy | starts anyway | starts anyway | EQ — **see §7.1** |
 | 103 | `check_disks_schedulers` | absent | restored | SUP |
 | 104 | Panic backtrace | custom handler | panic hook | EQ |
 | 105 | Fuzz targets | 3 | 3 | EQ |
@@ -334,7 +334,7 @@ C++ citations are corrected per §3.1.
 | 120 | `panic = "abort"` profile | — | release only | EQ |
 | 121 | `deadline` scheduler availability | n/a | falls back with a warning | SUP |
 | 122 | `-nice` overflow | no counterpart | debug panic / release wrap | DIFF — **see §5.14** |
-| 123 | `dump autogroup` | populated | always `{}` | DIFF — **see §7.2** |
+| 123 | `dump autogroup` | populated | populated | EQ — **see §7.2** |
 
 ---
 
@@ -362,7 +362,7 @@ The field *names* match the reference; three *values* do not, and one is always 
 * `oom_score_adj` is read as `unsigned` in C++ (`process_info.cpp:239-241`) and `i32` in Rust
   (`crates/ananicy-platform/src/process_info.rs:43-47`). Verified: NetworkManager's `-900` prints as
   `4294966396` under the reference and `-900` here.
-* `autogroup` is always `null` here — see §7.2.
+* `autogroup` was always `null` here; `cd77276` fixed it, see §7.2.
 
 ### 5.3 An explicit `null` in a rule deletes the inherited value here, and not in the reference — Severity: Medium
 
@@ -580,11 +580,16 @@ Confirmed still present and still superset, with the caveat from §3.4 where app
 
 ---
 
-## 7. Open defects
+## 7. Defects
 
-The two that decide the verdict, and the Medium set beneath them.
+The two that decided the verdict — both now fixed — and the Medium set that remains.
 
-### 7.1 With no cgroup hierarchy the daemon exits 0 having applied nothing — Severity: High
+> **Both High findings in this section have been fixed since the document was rebuilt:** `cd77276`
+> and `de694d4` respectively. The findings are kept as written, with what the fix was, because they
+> are the two most instructive results of the pass and a future reader should be able to see why the
+> tests exist.
+
+### 7.1 With no cgroup hierarchy the daemon exits 0 having applied nothing — Severity: High — **fixed in `de694d4`**
 
 `src/runtime.rs:82-84`:
 
@@ -610,15 +615,22 @@ applying every attribute except `cgroup`. This divergence was introduced by `80f
 un-called case a successful no-op.
 
 **Affects:** containers whose cgroup2 namespace does not delegate the `cpu` controller; a v1 host
-whose first v1 mount has no `cpu` sibling; kernels without `CONFIG_CGROUP_CPU`. **Not demonstrable
-here** (this host has a hierarchy), so the claim is from the control flow, which is short enough to
-read end to end.
+whose first v1 mount has no `cpu` sibling; kernels without `CONFIG_CGROUP_CPU`.
 
-**Fix direction:** distinguish "no hierarchy and I can still do the non-cgroup work" from "this
-daemon cannot function". The reference's behaviour is the compatible one: warn, skip cgroups, keep
-going, and exit 0 only after having done the rest.
+**Reproduced** after the fact, in a private mount namespace with an empty tmpfs over
+`/sys/fs/cgroup` — which is what `de694d4`'s test does. The daemon waited, warned, and exited 0
+having spawned nothing; after the fix the same run goes on to spawn the worker and process 442
+processes.
 
-### 7.2 `autogroup` is read from a path the kernel does not provide — Severity: High
+**What the fix did:** the wait now decides whether to create the rule cgroups and nothing else
+(`runtime.rs:81-93`). `create_cgroups` returns unit rather than an always-true `bool`, because a
+signature that returns `bool` invites exactly the branch that was there; the realtime workaround's
+copy of that branch became a non-blocking `has_cgroup_hierarchy()` check, so it cannot become a
+second silent exit either. Pinned by
+`test_cli_daemon_still_runs_without_a_cgroup_hierarchy`, which fails without the change with "the
+daemon exited instead of carrying on without cgroups".
+
+### 7.2 `autogroup` is read from a path the kernel does not provide — Severity: High — **fixed in `cd77276`**
 
 `crates/ananicy-platform/src/process_info.rs:72-74`:
 
@@ -645,13 +657,25 @@ $ ananicy-rs dump proc | grep -c '"autogroup": null'
 2223
 ```
 
-Every process on the machine reports `null`, and `dump autogroup` prints the empty object. The two
-unit tests at `process_info.rs:220-244` test the *parser* against synthetic strings, which is why
-this was never caught: the path was never exercised.
+Every process on the machine reports `null`, and `dump autogroup` prints the empty object. The three
+autogroup unit tests test the *parser* against synthetic strings, which is why this was never
+caught: the path was never exercised.
 
-**Fix direction:** read `/proc/<pid>/autogroup`. The `task/<tid>` form appears to be a misreading of
-the kernel's thread-group layout, and the tests should assert against a real `/proc` path, not only
-against literals.
+**What the fix did:** an `autogroup_path()` helper reads `/proc/<pid>/autogroup` and names the
+kernel fact in one place. The new test
+`autogroup_is_read_from_a_path_the_kernel_actually_provides` builds a `ProcessInfo` for the test's
+own pid — so the path is exercised, not just the parser — skips on a kernel without
+`CONFIG_SCHED_AUTOGROUP`, and fails with the old path restored:
+
+```
+the kernel published "/proc/27488/autogroup" but the daemon reported no
+autogroup for its own process: None
+```
+
+It also asserts the per-thread path does *not* exist, with a note to revisit if a kernel ever
+provides one, since it would be a different file. After the fix, 1513 of 1786 processes on this host
+report a real autogroup across 81 groups, and the 273 that remain `null` are exactly the kernel
+threads — which have none, and which the reference also reports as `null`.
 
 ### 7.3 The Medium set, ranked
 
@@ -738,12 +762,12 @@ the double merge); `"nice"` out of range (the kernel clamps rather than returnin
 * **The C++ daemon was never executed.** No `cmake`, and the project fetches dependencies over the
   network. Every claim about its behaviour is source reading, with the control flow read end to end
   rather than sampled. The C++-side claims most worth re-checking when a build is possible are
-  §5.3, §5.4 and §7.1.
+  §5.3 and §5.4, and the C++ half of §7.1 before `de694d4` reproduced it here.
 * **The BPF backend cannot be built here** (no libbpf), so §5.17 is source comparison plus a `diff`.
 * **Nothing requiring a cgroup-v2 delegated-root service was exercised against a real delegated
   subtree.** The owned branch of the cgroup manager is covered only by the simulated hierarchy in
   `crates/ananicy-platform/tests/cgroup_manager.rs`; the root-gated tests in `tests/cgroups.rs` skip
-  in this environment. This is why §7.1 and §5.5 are source findings.
+  in this environment. This is why §5.5 is a source finding.
 * **No big.LITTLE, hybrid, or multi-LLC host was available** (this one: 12 CPUs, 1 LLC, 1 NUMA node,
   homogeneous). §5.7, §5.8 and §5.12 were established by exhaustive search over the two formulas,
   which proves a counter-example *exists* but not that it occurs on shipping hardware.
@@ -754,14 +778,14 @@ the double merge); `"nice"` out of range (the kernel clamps rather than returnin
 
 ## 10. Remediation history
 
-Thirty commits since `e131b18`, one finding each, in the order the previous audit listed them. Kept
-so the fixes are traceable from the findings they answer; the findings themselves are §5, §7 and
+Thirty-three commits since `e131b18`, one finding each, in the order the previous audit listed them.
+Kept so the fixes are traceable from the findings they answer; the findings themselves are §5, §7 and
 `docs/ANANICY_CPP_DIFFERENCES.md` §5.
 
 | Original §9 | Item | Outcome | Commit |
 |---|---|---|---|
 | 1 | `cgroup_realtime_workaround` inert | Fixed — the manager is behind an `RwLock` and no longer dropped with the cache | `274c1c7` |
-| 2 | Startup cgroup retry never called | Fixed, then revised: `0d958ee`'s §7.1 records that the "fixed" path is itself a defect | `80f7169` |
+| 2 | Startup cgroup retry never called | Fixed, then fixed again: the first fix made the never-called case a silent exit 0 (§7.1) | `80f7169`, `de694d4` |
 | 3 | `nice` → `cpu.weight` blast radius | `apply_cpu_weight` added, defaulting to the previous behaviour | `6964fb9` |
 | 4 | Capacity source chosen per CPU | One source for the machine | `b25eaba` |
 | 5 | `little-cores` = all CPUs when homogeneous | Both paths go through `mark_homogeneous` | `998c620` |
@@ -789,6 +813,8 @@ so the fixes are traceable from the findings they answer; the findings themselve
 | — | Sandbox-sensitive deadline test | Made independent of the sandbox | `69e8c1c` |
 | — | `runtime::run` signature | Refactored into `ProcessEvents`/`RunOptions` | `9190fbf` |
 | — | `check_disks_schedulers` missing from both rewrites | Restored from the original | `3386d6d` |
+| — | §7.2 `autogroup` read from a path the kernel lacks | Fixed, with a test that exercises the path | `cd77276` |
+| — | §7.1 no hierarchy meant a silent exit 0 | Fixed; the daemon now carries on without cgroups | `de694d4` |
 
 ### 10.1 Three findings the previous audit got wrong
 
@@ -804,7 +830,7 @@ so the fixes are traceable from the findings they answer; the findings themselve
 
 ### 10.2 Verification at `0d958ee`
 
-* `cargo test` — **325 tests, 0 failures**, across 20 targets: 15 integration binaries, 3 unit-test
+* `cargo test` — **327 tests, 0 failures**, across 20 targets: 15 integration binaries, 3 unit-test
   targets and 2 doc-test targets.
 * `cargo fmt --all -- --config imports_granularity=One,unstable_features=true --check` — clean.
 * `cargo clippy --all-targets` — one warning, `LinuxPlatform` having no `Default`, which predates the
@@ -814,4 +840,5 @@ so the fixes are traceable from the findings they answer; the findings themselve
   root-gated test skips there.
 * The Nix source filters to tracked files, so a new module must be staged before `nix-build` will
   compile it.
-* §7.2 was verified by execution against this host's `/proc`; §7.1 by control-flow trace.
+* §7.2 was verified by execution against this host's `/proc`, and §7.1 was reproduced in a private mount namespace with an
+  empty tmpfs over `/sys/fs/cgroup`.
