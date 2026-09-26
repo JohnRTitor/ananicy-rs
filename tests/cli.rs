@@ -893,7 +893,6 @@ fn test_cli_dump_proc_field_contract() {
         "oom_score_adj",
     ];
 
-    let mut matched = 0;
     for (key, entry) in processes {
         let entry = entry.as_object().expect("an entry is an object");
         for field in ALWAYS {
@@ -910,15 +909,14 @@ fn test_cli_dump_proc_field_contract() {
                 rule.is_string(),
                 "entry {key} has a rule that is not a string: {rule:?}"
             );
-            matched += 1;
         }
     }
 
-    assert!(matched > 0, "no entry on this host matched a rule");
-    assert!(
-        matched < processes.len(),
-        "not every process matched a rule, so the absent case was not exercised"
-    );
+    // Whether *any* process matches a rule depends entirely on the rule set
+    // installed on the host, so the population is not asserted — a build sandbox
+    // with no `/etc/ananicy.d` matches nothing at all, and a workstation matches
+    // hundreds. What holds everywhere is the shape: the fifteen fields are always
+    // present, and `rule` is either a string or missing.
 }
 
 /// `dump autogroup` groups by autogroup number and keeps the group shape.

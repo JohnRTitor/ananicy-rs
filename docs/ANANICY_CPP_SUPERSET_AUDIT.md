@@ -36,14 +36,15 @@ suite backing that claim is large, hermetic and green: **340 tests across 20 tar
 `ananicy-bpf` crate builds and passes under `nix develop`.
 
 It is nevertheless not a superset yet, and the reason is now a category rather than a list. Both
-High findings of §7 are fixed (`cd77276`, `de694d4`), as are nine of the sixteen behavioural
-differences in §5 — one commit each, each with a test that fails without it. What is left are
-**seven differences where matching `ananicy-cpp` would mean reproducing a defect in it**, and they
-are documented in `ANANICY_CPP_DIFFERENCES.md` §5.1 and §5.2 rather than closed:
+High findings of §7 are fixed (`cd77276`, `de694d4`), as are nine of the nineteen entries in §5 —
+one commit each, each with a test that fails without it. Two more (§5.17, §5.18) turned out on
+verification to describe no difference at all and were corrected, and one (§5.19) was real but
+narrower than stated. What is left are **seven differences where matching `ananicy-cpp` would mean
+reproducing a defect in it**, documented in `ANANICY_CPP_DIFFERENCES.md` §5.1 and §5.2:
 
 * `oom_score_adj` is read as `unsigned` by the reference, so `-900` is reported as `4294966396`.
-* A type is merged into a rule *twice*, so an explicit `null` is resurrected and the worker's
-  catch-all then applies nothing at all from that rule.
+* A type is merged into a rule *twice*, so an explicit `null` survives into the finished rule and
+  the worker's catch-all then applies nothing at all from it.
 * The core-type split uses an integer mean, so on capacities `{1, 2}` the capacity-1 core is
   classified *big* and `little-cores` comes out empty.
 * A deleted binary's name keeps a trailing space, so no rule matches it after a package upgrade.
@@ -52,9 +53,11 @@ are documented in `ANANICY_CPP_DIFFERENCES.md` §5.1 and §5.2 rather than close
 * Cgroup detection stops at the first mount rather than the best one.
 
 That is the honest state of a rewrite whose reference has bugs: parity is not the goal, and
-reproducing a defect to achieve it would cost a working rule. The six that remain genuinely open
-are the ones where the reference is right and this daemon is not, and those are §5.3 and §5.5 in
-the register plus the two in §8 that only a build of the reference could settle.
+reproducing a defect to achieve it would cost a working rule. **No entry in §5 now describes a
+known defect in this daemon** — the register is either fixed, corrected, or documented as
+deliberate. What remains is the standing caveat of §9: the C++ daemon has never been executed here,
+so every claim about its behaviour is source reading, and §5.5's hybrid-host case is a real open
+question with no obviously correct answer rather than a bug on either side.
 
 One matrix row in the previous audit was demonstrably wrong (§3.4) and one §12 non-finding is
 contradicted by it (§3.4).
