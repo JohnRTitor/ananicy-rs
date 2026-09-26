@@ -376,17 +376,27 @@ checkout as a local git remote carrying the release tag and points makepkg at
 that, so it builds the tree under test rather than whatever is published; only
 the source URL differs from the `PKGBUILD` on disk.
 
-Each of those three jobs installs `git` **before** `actions/checkout`, and the
-order is load-bearing. `actions/checkout` looks for git 2.18 or newer on `PATH`
-and, not finding it, logs "The repository will be downloaded using the GitHub
-REST API" and extracts a plain working tree with no `.git` at all — silently,
-because the checkout itself succeeds. The Fedora and Debian jobs then fail on
-`git archive` and the Arch job on `git tag`, all with the same unhelpful "not a
-git repository" and exit 128. The dependency step has to come second because
-the jobs install `git` in the image they are already running; putting it in the
-`BuildRequires` list is not enough. The step that uses git re-checks with
-`git rev-parse --git-dir` and names the cause, so a regression says what is
-wrong instead of leaving a 128 to interpret.
+Each of those three jobs runs an `Install git and trust the workspace` step
+**before** `actions/checkout`, and both halves of it are load-bearing:
+
+- **git has to exist when the checkout runs.** `actions/checkout` looks for git
+  2.18 or newer on `PATH` and, not finding it, logs "The repository will be
+  downloaded using the GitHub REST API" — which extracts a plain working tree
+  with no `.git` at all, and reports success doing it. All three images lack
+  git, and listing it among the build dependencies is not enough, because that
+  step runs after the checkout.
+- **The workspace has to be a trusted git directory afterwards.** `/__w` is
+  bind-mounted from the host and owned by the runner user while the container
+  runs as root, so git refuses it as dubious ownership. `actions/checkout` adds
+  its own `safe.directory` entry to a *temporary* `HOME` and then restores
+  `HOME`, so nothing downstream inherits it. The same rule applies to the local
+  mirror the Arch job clones from, which is why that is handed over to the build
+  user rather than just made world-readable.
+
+Both failures look identical from the failing step — "not a git repository" and
+exit 128 — so every step that uses git re-checks with `git rev-parse --git-dir`
+and names the cause in a `::error::` annotation, with git's own message left on
+stderr.
 
 Note that the path filters of `ci.yml` and `lint.yml` do not include
 `.github/**`, so a change to one of those two workflows alone will not trigger a

@@ -43,16 +43,23 @@ jobs:
     container:
       image: fedora:latest
     steps:
-      # git, before the checkout, and that ordering is load-bearing.
-      # actions/checkout checks for git 2.18+ on PATH and, finding none, says
-      # "The repository will be downloaded using the GitHub REST API" -- which
-      # extracts a bare working tree with no .git at all. The build below then
-      # reproduces the release tarball with `git archive`, and every later git
-      # command fails with "not a git repository" and exit 128. fedora:latest
-      # ships no git, and the dependency step below runs after the checkout, so
-      # the checkout has to be preceded by this one.
-      - name: Install git for the checkout
-        run: dnf install -y git
+      # git before the checkout, and both halves of this step are load-bearing.
+      #
+      # Half one: actions/checkout looks for git 2.18 or newer on PATH and,
+      # finding none, logs "The repository will be downloaded using the GitHub
+      # REST API" -- which extracts a working tree with no .git at all, and still
+      # reports success. fedora:latest ships no git, and the dependency step below
+      # runs after the checkout, so git has to be installed first.
+      #
+      # Half two: /__w is bind-mounted from the host and owned by the runner
+      # user, while the container runs as root, so git refuses the workspace as
+      # "dubious ownership" for every step after the checkout. actions/checkout
+      # adds its safe.directory entry to a *temporary* HOME and then restores
+      # HOME, so nothing downstream inherits it.
+      - name: Install git and trust the workspace
+        run: |
+          dnf install -y git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Downloading the crate registry is most of what the vendoring step costs.
       # The key changes whenever Cargo.lock does.
@@ -81,10 +88,11 @@ jobs:
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
           # Name the cause rather than letting `git archive` fail with a bare
-          # exit 128. See the git step above for what a checkout without git on
-          # PATH leaves behind.
-          git rev-parse --git-dir >/dev/null 2>&1 || {
-            echo "::error::the checkout is not a git repository; the 'Install git for the checkout' step must come first" >&2
+          # exit 128. git's own message is left on stderr, because the two ways
+          # this can go wrong look identical otherwise: no git when the checkout
+          # ran, or an untrusted workspace afterwards. See the git step above.
+          git rev-parse --git-dir >/dev/null || {
+            echo "::error::git cannot use the workspace: either the 'Install git and trust the workspace' step has to come before the checkout, or the workspace is still an untrusted safe.directory" >&2
             exit 1
           }
           # Reproduce the Source0 the spec expects: `git archive` of the release
@@ -116,13 +124,16 @@ jobs:
     container:
       image: debian:trixie
     steps:
-      # git, before the checkout, and that ordering is load-bearing. See the note
-      # on the same step in the fedora-rpm job: a checkout that ran without git on
-      # PATH leaves no .git at all, and the .orig tarball below needs one.
-      - name: Install git for the checkout
+      # git before the checkout, and both halves of this step are load-bearing.
+      # See the note on the same step in the fedora-rpm job: without git at
+      # checkout time actions/checkout extracts a tree with no .git, and the
+      # /__w bind mount is owned by the runner user while this container is root,
+      # so git then refuses the workspace as dubious ownership.
+      - name: Install git and trust the workspace
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache the cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -148,9 +159,10 @@ jobs:
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
           # Name the cause rather than letting `git archive` fail with a bare
-          # exit 128. See the git step above.
-          git rev-parse --git-dir >/dev/null 2>&1 || {
-            echo "::error::the checkout is not a git repository; the 'Install git for the checkout' step must come first" >&2
+          # exit 128, and leave git's own message on stderr. See the git step
+          # above.
+          git rev-parse --git-dir >/dev/null || {
+            echo "::error::git cannot use the workspace: either the 'Install git and trust the workspace' step has to come before the checkout, or the workspace is still an untrusted safe.directory" >&2
             exit 1
           }
           useradd --create-home --shell /bin/bash builder
@@ -195,15 +207,16 @@ jobs:
     container:
       image: archlinux:latest
     steps:
-      # git, and the base system, before the checkout. See the note on the same
-      # step in the fedora-rpm job: a checkout that ran without git on PATH
-      # leaves no .git, and the tag below cannot be created without one. The
-      # full `-Syu` has to happen here rather than after, because installing a
-      # single package against a stale sync database is a partial upgrade, and
-      # Arch does not support those; after this, the step below only adds
-      # packages that are already at their latest version.
-      - name: Install git for the checkout
-        run: pacman -Syu --noconfirm --needed git
+      # git before the checkout, and both halves of this step are load-bearing.
+      # See the note on the same step in the fedora-rpm job. The full `-Syu` has
+      # to happen here rather than after, because installing a single package
+      # against a stale sync database is a partial upgrade and Arch does not
+      # support those; after this, the step below only adds packages that are
+      # already at their latest version.
+      - name: Install git and trust the workspace
+        run: |
+          pacman -Syu --noconfirm --needed git
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # base-devel is the group every PKGBUILD `makedepends` entry comes from;
       # `git` came with the step above, because the recipe's source is a git tag.
@@ -225,10 +238,10 @@ jobs:
         run: |
           set -euxo pipefail
           version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
-          # Name the cause rather than letting `git tag` fail with a bare
-          # exit 128. See the git step above.
-          git rev-parse --git-dir >/dev/null 2>&1 || {
-            echo "::error::the checkout is not a git repository; the 'Install git for the checkout' step must come first" >&2
+          # Name the cause rather than letting `git tag` fail with a bare exit
+          # 128, and leave git's own message on stderr. See the git step above.
+          git rev-parse --git-dir >/dev/null || {
+            echo "::error::git cannot use the workspace: either the 'Install git and trust the workspace' step has to come before the checkout, or the workspace is still an untrusted safe.directory" >&2
             exit 1
           }
           useradd --create-home --shell /bin/bash builder
@@ -242,7 +255,11 @@ jobs:
           git tag --force "v$version"
           install -d /mirror
           git clone --bare --quiet . /mirror/ananicy-rs.git
-          chmod -R a+rX /mirror
+          # Hand the mirror to the user makepkg runs as, rather than just making
+          # it world-readable: git checks the ownership of a repository it
+          # clones from, so a root-owned /mirror is "dubious ownership" to
+          # builder for exactly the same reason the workspace was to root.
+          chown -R builder:builder /mirror
           install -d -o builder -g builder /build
           cp contrib/archlinux/PKGBUILD contrib/archlinux/ananicy-rs.install /build/
           chown -R builder:builder /build
