@@ -152,10 +152,11 @@ CARGO_HOME=%{_builddir}/cargo-home \
     cargo test --locked --offline
 
 %files
+# Only the licence is installed. The Markdown under docs/ is written for people
+# working on the daemon rather than for people running it, so it stays in the
+# source tarball where a packager or a contributor can read it, and does not
+# become 100 kB of files in /usr/share/doc that nothing on the system reads.
 %license LICENSE
-%doc README.md CONTRIBUTING.md
-%doc docs/BUILD.md docs/CLI.md docs/COMPATIBILITY.md
-%doc docs/CONFIGURATION.md docs/SYSTEMD.md docs/TESTING.md docs/TOPOLOGY.md
 
 %{_bindir}/ananicy-rs
 # Not a ghost unit and not disabled: the systemd_post macro below makes rpm's

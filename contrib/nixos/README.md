@@ -58,7 +58,6 @@ expression, and it passes.
 | `$out/share/bash-completion/completions/ananicy-rs.bash` | `installShellCompletion` |
 | `$out/share/fish/vendor_completions.d/ananicy-rs.fish` | `installShellCompletion` |
 | `$out/share/zsh/site-functions/_ananicy-rs` | `installShellCompletion` |
-| `$out/share/doc/ananicy-rs/` | `README.md`, `CONTRIBUTING.md`, `docs/*.md` |
 
 The binary and the unit come from `make install DESTDIR= PREFIX=$out`, the same
 rule the Fedora, Debian and Arch recipes use, so all four ship the same bytes.
