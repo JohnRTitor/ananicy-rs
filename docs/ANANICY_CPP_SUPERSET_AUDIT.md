@@ -520,17 +520,23 @@ containing CPU 0, as the reference's ascending walk makes it.
 ### 5.8 Core classification averages — Severity: Medium
 
 The reference computes the threshold as an **integer** mean and compares with an integer `>=`
-(`topology.cpp:95`, `117`); this tree uses `f64` (`crates/ananicy-platform/src/topology.rs:400-417`).
+(`topology.cpp:95`, `:117`); this tree uses `f64` (`topology.rs:431`, `:437`).
 
 Smallest counter-example found by exhaustive search over the two formulas, on a machine both agree is
 heterogeneous: two CPUs with capacities `{1, 2}` (ratio 2.0, above the 1.3× threshold). The
 reference's `avg = 3/2 = 1`, so `1 >= 1` → **Big**, and `little-cores` is `""` — a rule naming it
 does nothing. This tree's `threshold = 1.5`, so `1 < 1.5` → **Little**, and the same rule pins the
-process to CPU 0. The comment at `topology.rs:397-399` ("the average-based split matches the
-reference daemon's") is true everywhere except this boundary.
+process to CPU 0.
 
 The 1.3× heterogeneity test itself was brute-forced over 400 000 integer pairs and does **not**
 diverge — the 1.3 threshold is safe; only the mean is not.
+
+**Left as it is.** An earlier draft of this entry also faulted a comment at `topology.rs:397-399`
+for claiming "the average-based split matches the reference daemon's". That comment was wrong and
+has since been rewritten (`topology.rs:409-419`) to say precisely this: the two formulas agree
+everywhere except a tier landing on the truncated mean, and there the truncation is what makes the
+reference wrong. Nothing else in the code needed changing. Recorded in
+`ANANICY_CPP_DIFFERENCES.md` §5.1.
 
 
 ### 5.9 `--force-remove-semaphore` error path — Severity: Low — **fixed in `c835fc5`**
