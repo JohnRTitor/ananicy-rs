@@ -98,8 +98,23 @@ int handle_fork(struct trace_event_raw_sched_process_fork* ctx)
     static u64 prev_ts;
     struct event *e;
 
-    //u32 pid = ctx->child_pid;
-    u32 pid = bpf_get_current_pid_tgid();
+    /* The child, not the forking task.
+     *
+     * `bpf_get_current_pid_tgid()` in this tracepoint is the process doing the
+     * fork, so naming the event after it attributes every fork to the parent:
+     * the daemon then re-applies the *parent's* rule to the parent, once per
+     * fork, for the life of the daemon. A shell that runs a command a minute
+     * has its rule re-applied sixty times, and each re-application repeats the
+     * cgroup and cpu.weight writes too. `child_pid` is the pid the event is
+     * about, and it is the field the tracepoint carries for exactly this.
+     *
+     * `task` below is still the parent's `comm`, because the tracepoint does
+     * not carry the child's `task_struct` and so its name cannot be read here.
+     * That is harmless: the daemon treats a BPF event's name as unresolved and
+     * reads the name back out of procfs for the pid the event names, which is
+     * the child.
+     */
+    u32 pid = ctx->child_pid;
     e = handle_event(pid, &prev_pid, &prev_ts);
     if (!e) /* can't happen */
         return 0;
