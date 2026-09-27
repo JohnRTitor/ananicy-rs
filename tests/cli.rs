@@ -8,13 +8,19 @@
 
 use {assert_cmd::Command, predicates::prelude::*};
 
+/// The variables a service manager sets for the processes it supervises, and
+/// which the daemon reads to decide whether it is running under one. A test that
+/// reads the daemon's log from a pipe has to take them out of its environment,
+/// or the daemon logs to journald instead and the pipe stays empty.
+const SUPERVISION_VARS: [&str; 3] = ["INVOCATION_ID", "NOTIFY_SOCKET", "JOURNAL_STREAM"];
+
 /// Builds a command with all systemd supervision variables removed, so that
 /// assertions about the logger or the systemd mode do not depend on how the
 /// test runner itself was started (a systemd service, a transient scope, or a
 /// CI container without an init system).
 fn ananicy() -> Command {
     let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
-    for var in ["INVOCATION_ID", "NOTIFY_SOCKET", "JOURNAL_STREAM"] {
+    for var in SUPERVISION_VARS {
         cmd.env_remove(var);
     }
     cmd
@@ -771,7 +777,11 @@ fn test_cli_daemon_still_runs_without_a_cgroup_hierarchy() {
         config = config.display(),
     );
 
-    let mut child = match StdCommand::new("unshare")
+    let mut unshare = StdCommand::new("unshare");
+    for var in SUPERVISION_VARS {
+        unshare.env_remove(var);
+    }
+    let mut child = match unshare
         .args(["--user", "--map-root-user", "--mount", "sh", "-c", &script])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
