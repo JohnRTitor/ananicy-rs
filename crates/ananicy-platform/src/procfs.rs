@@ -12,16 +12,55 @@ use {
     },
 };
 
-static EXE_FAIL_CACHE: OnceLock<Mutex<LruCache<i32, u8>>> = OnceLock::new();
+/// How many times reading `/proc/<pid>/exe` has failed, and whose failures those were.
+///
+/// The start time is what makes the entry mean anything. A pid is reused, and
+/// without it a new process inherits the previous occupant's budget: five
+/// failures recorded against a process that has since exited would stop `/proc/
+/// <pid>/exe` ever being read for whatever now holds that pid, and the name would
+/// silently come from `comm` instead. The reference has a global version of this
+/// cache with no key at all, so any process could suppress any other; this at
+/// least tracks one process, and now only for as long as that process lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExeFailure {
+    start_time: Option<u64>,
+    count: u8,
+}
+
+static EXE_FAIL_CACHE: OnceLock<Mutex<LruCache<i32, ExeFailure>>> = OnceLock::new();
 const COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES: u8 = 5;
 const MAX_EXE_FAIL_CACHE_SIZE: usize = 256;
 
-fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, u8>> {
+fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, ExeFailure>> {
     EXE_FAIL_CACHE.get_or_init(|| {
         Mutex::new(LruCache::new(
             NonZeroUsize::new(MAX_EXE_FAIL_CACHE_SIZE).unwrap(),
         ))
     })
+}
+
+/// How many `exe` read failures to remember for `pid`, which is zero unless the
+/// same process is the one that failed before.
+///
+/// The start time is read only when there is an entry to check, which is the
+/// point of the cache: for a pid with no history there is nothing to validate and
+/// no extra read, and for one that keeps failing the check costs a small `stat`
+/// read instead of the `readlink` it is avoiding.
+fn exe_failures_for(pid: i32) -> u8 {
+    let Ok(mut cache) = get_exe_fail_cache().lock() else {
+        return 0;
+    };
+    let Some(entry) = cache.get(&pid) else {
+        return 0;
+    };
+    if entry.start_time == get_start_time(pid) {
+        entry.count
+    } else {
+        // The pid was recycled. Drop the old entry so its budget is not carried
+        // over, and start again from zero.
+        cache.pop(&pid);
+        0
+    }
 }
 
 /// Strips the kernel's ` (deleted)` marker from an `exe` readlink target.
@@ -78,15 +117,10 @@ pub fn get_command_from_pid(pid: i32) -> String {
     }
 
     // Repeated EACCES usually means `/proc/<pid>/exe` is not readable to us; stop retrying
-    // it to avoid repeated procfs I/O on every event, tracked per-PID via LRU.
+    // it to avoid repeated procfs I/O on every event, tracked per-PID via LRU and
+    // forgotten when the pid is reused.
     // 2. Try exe (if we haven't failed too many times)
-    let exe_failures = if let Ok(mut cache) = get_exe_fail_cache().lock()
-        && let Some(&fails) = cache.get(&pid)
-    {
-        fails
-    } else {
-        0
-    };
+    let exe_failures = exe_failures_for(pid);
 
     if exe_failures < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
         match fs::read_link(format!("{}/exe", proc_dir)) {
@@ -105,7 +139,13 @@ pub fn get_command_from_pid(pid: i32) -> String {
                 if e.kind() == PermissionDenied
                     && let Ok(mut cache) = get_exe_fail_cache().lock()
                 {
-                    cache.put(pid, exe_failures + 1);
+                    cache.put(
+                        pid,
+                        ExeFailure {
+                            start_time: get_start_time(pid),
+                            count: exe_failures + 1,
+                        },
+                    );
                 }
             }
         }
@@ -245,5 +285,86 @@ mod tests {
         assert_eq!(strip_deleted_suffix("foo(deleted)"), "foo(deleted)");
         assert_eq!(strip_deleted_suffix("foo x(deleted)"), "foo x(deleted)");
         assert_eq!(strip_deleted_suffix("foo (deleted)"), "foo");
+    }
+}
+
+#[cfg(test)]
+mod exe_fail_cache {
+    use super::*;
+
+    /// Puts an entry in the cache directly, which is the only way to produce the
+    /// state this is about -- a real `EACCES` on `/proc/<pid>/exe` is not
+    /// reproducible here.
+    fn seed(pid: i32, start_time: Option<u64>, count: u8) {
+        get_exe_fail_cache()
+            .lock()
+            .expect("an uncontended lock")
+            .put(pid, ExeFailure { start_time, count });
+    }
+
+    fn forget(pid: i32) {
+        get_exe_fail_cache()
+            .lock()
+            .expect("an uncontended lock")
+            .pop(&pid);
+    }
+
+    /// The regression: a pid recorded as unreadable is reused, and the new
+    /// process must not inherit the old one's budget. Five failures used to mean
+    /// `/proc/<pid>/exe` was never read again for whatever held that pid, and the
+    /// name silently came from `comm` instead.
+    #[test]
+    fn a_recycled_pid_does_not_inherit_the_previous_budget() {
+        let pid = std::process::id() as i32;
+        let mine = get_start_time(pid);
+        forget(pid);
+
+        seed(pid, mine, COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES);
+        assert_eq!(
+            exe_failures_for(pid),
+            COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES,
+            "the same process keeps its budget, so the cache still suppresses retries"
+        );
+
+        // Same pid, different process: a start time that cannot be ours.
+        seed(
+            pid,
+            mine.map(|t| t.wrapping_add(1)),
+            COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES,
+        );
+        assert_eq!(
+            exe_failures_for(pid),
+            0,
+            "a different process at the same pid starts from zero"
+        );
+
+        // And the stale entry is gone, so it cannot come back.
+        assert_eq!(exe_failures_for(pid), 0);
+        forget(pid);
+    }
+
+    /// A pid with no history costs nothing to look up: no start-time read, since
+    /// there is nothing to validate. `None` for both is the same value, so this
+    /// also covers a process whose start time could not be read.
+    #[test]
+    fn an_unknown_pid_has_no_budget() {
+        let pid = std::process::id() as i32;
+        forget(pid);
+        assert_eq!(exe_failures_for(pid), 0);
+    }
+
+    /// A failure recorded without a usable start time cannot be attributed, so it
+    /// must not be carried forward to the next occupant of the pid either.
+    #[test]
+    fn an_unattributable_failure_is_not_carried_forward() {
+        let pid = std::process::id() as i32;
+        forget(pid);
+        seed(pid, None, COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES);
+        assert_eq!(
+            exe_failures_for(pid),
+            0,
+            "no start time means the entry cannot be trusted to belong to this process"
+        );
+        forget(pid);
     }
 }
