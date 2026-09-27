@@ -113,7 +113,10 @@ impl Worker {
     }
 
     /// Spawns a dedicated thread for the worker loop.
-    pub fn start(self) -> JoinHandle<(usize, Duration)> {
+    ///
+    /// This thread is the daemon's only source of work, so a failure to spawn it
+    /// is reported rather than tolerated: there is nothing left to run.
+    pub fn start(self) -> std::io::Result<JoinHandle<(usize, Duration)>> {
         spawn_named_thread!("ananicy-worker", move || self.work_loop())
     }
 

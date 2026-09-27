@@ -35,9 +35,14 @@ pub(crate) fn run(
                     let tx_clone = tx.clone();
                     let tx_scan = tx.clone();
                     info!("Running initial procfs full scan");
-                    spawn_named_thread!("ananicy-init", move || {
+                    // Not fatal: this is a head start, and the periodic scan
+                    // covers the same ground. Losing it delays tuning by one
+                    // interval, which is a better outcome than refusing to run.
+                    if let Err(e) = spawn_named_thread!("ananicy-init", move || {
                         ProcfsScanner::full_scan(tx_scan);
-                    });
+                    }) {
+                        warn!("{e}");
+                    }
                     bpf.listen(tx_clone, shutdown_flag.clone());
 
                     if shutdown_flag.load(Ordering::SeqCst) {
@@ -72,9 +77,11 @@ pub(crate) fn run(
                         is_first = false;
                         let tx_scan = tx.clone();
                         info!("Running initial procfs full scan");
-                        spawn_named_thread!("ananicy-init", move || {
+                        if let Err(e) = spawn_named_thread!("ananicy-init", move || {
                             ProcfsScanner::full_scan(tx_scan);
-                        });
+                        }) {
+                            warn!("{e}");
+                        }
                     }
 
                     if let Err(e) = nl.listen(tx_clone.clone(), shutdown_flag.clone()) {

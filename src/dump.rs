@@ -50,11 +50,13 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
     }
 }
 
-fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Value> {
+fn get_process_info_map(
+    rules: &Rules,
+) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
     let (tx_dump, rx_dump) = channel();
     spawn_named_thread!("ananicy-dump", move || {
         ProcfsScanner::full_scan(tx_dump);
-    });
+    })?;
 
     let mut process_map = serde_json::Map::new();
 
@@ -124,11 +126,20 @@ fn get_process_info_map(rules: &Rules) -> serde_json::Map<String, serde_json::Va
         }
     }
 
-    process_map
+    Ok(process_map)
 }
 
 fn dump_processes(rules: &Rules) {
-    let process_map = get_process_info_map(rules);
+    let process_map = match get_process_info_map(rules) {
+        Ok(map) => map,
+        Err(e) => {
+            eprintln!("{e}");
+            eprintln!(
+                "Refusing to print an empty dump, which would be indistinguishable from a machine with no processes."
+            );
+            std::process::exit(1);
+        }
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&process_map).unwrap_or_default()
@@ -137,7 +148,16 @@ fn dump_processes(rules: &Rules) {
 
 fn dump_autogroup(rules: &Rules) {
     let mut autogroup_map = serde_json::Map::new();
-    let process_info_map = get_process_info_map(rules);
+    let process_info_map = match get_process_info_map(rules) {
+        Ok(map) => map,
+        Err(e) => {
+            eprintln!("{e}");
+            eprintln!(
+                "Refusing to print an empty dump, which would be indistinguishable from a machine with no processes."
+            );
+            std::process::exit(1);
+        }
+    };
 
     for (tpid, mut process_info) in process_info_map {
         let serde_json::Value::Object(process_info_obj) = &mut process_info else {

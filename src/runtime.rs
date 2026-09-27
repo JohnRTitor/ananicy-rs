@@ -7,7 +7,7 @@ use {
         sync::{atomic::Ordering::SeqCst, mpsc::Sender},
         thread::{sleep, spawn},
     },
-    tracing::{debug, info, warn},
+    tracing::{debug, error, info, warn},
 };
 
 use {
@@ -15,6 +15,7 @@ use {
     ananicy_core::{config::Config, process::Process, rules::Rules, worker::Worker},
     std::{
         collections::HashMap,
+        process::exit,
         sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
         thread,
         time::{Duration, Instant},
@@ -101,7 +102,18 @@ pub(crate) fn run(
         benchmark_count,
         shutdown_flag.clone(),
     );
-    let worker_handle = worker.start();
+    let worker_handle = match worker.start() {
+        Ok(handle) => handle,
+        Err(e) => {
+            error!("{e}");
+            error!(
+                "The worker thread is the daemon's only source of work. This is \
+                 almost always a thread limit: check the process thread count \
+                 against threads-max, and any pids.max on the daemon's cgroup."
+            );
+            exit(1);
+        }
+    };
 
     #[cfg(feature = "systemd")]
     if is_systemd {
@@ -123,8 +135,12 @@ pub(crate) fn run(
         }
     }
 
-    if manual_scanning {
-        start_manual_scanner(config.clone(), tx.clone(), shutdown_flag.clone());
+    if manual_scanning
+        && let Err(e) = start_manual_scanner(config.clone(), tx.clone(), shutdown_flag.clone())
+    {
+        error!("{e}");
+        error!("--manual-scanning has no event source without that thread.");
+        exit(1);
     }
 
     monitor::run(
@@ -197,7 +213,16 @@ fn create_cgroups(rules: &Arc<Rules>) {
     info!("Finished creating cgroups");
 }
 
-fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag: Arc<AtomicBool>) {
+/// Starts the periodic `/proc` walk that `--manual-scanning` asks for.
+///
+/// Without this thread there is no event source at all -- it is the whole point
+/// of the mode -- so a spawn failure is reported rather than swallowed, and the
+/// mode does not pretend to be running.
+fn start_manual_scanner(
+    config: Arc<Config>,
+    tx: Sender<Process>,
+    shutdown_flag: Arc<AtomicBool>,
+) -> std::io::Result<()> {
     spawn_named_thread!("ananicy-scan", move || {
         // Zero is refused at parse time, so there is no sensible value to
         // substitute here: an interval of zero would mean a full `/proc` walk in
@@ -213,7 +238,8 @@ fn start_manual_scanner(config: Arc<Config>, tx: Sender<Process>, shutdown_flag:
                 last_scan = Instant::now();
             }
         }
-    });
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]

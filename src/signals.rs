@@ -74,7 +74,7 @@ pub(crate) fn install(
                 _ => {}
             }
         }
-    });
+    })?;
 
     Ok(())
 }
