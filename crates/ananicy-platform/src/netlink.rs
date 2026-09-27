@@ -30,6 +30,65 @@ use {
 
 use {crate::procfs::get_command_from_pid, ananicy_core::process::Process};
 
+/// What a failed receive on the netlink socket means for the drain loop.
+#[derive(Debug, PartialEq, Eq)]
+enum RecvFailure {
+    /// The kernel dropped messages because the receive buffer overflowed. The
+    /// stream has a gap in it, so the listener has to stop and be rebuilt.
+    BufferOverrun,
+    /// The non-blocking socket has nothing queued. This is the normal end of a
+    /// drain, not a failure.
+    Drained,
+    /// Anything else. The socket is not usable and the caller reconnects.
+    Fatal,
+}
+
+/// The errno behind a socket error, if it carries one.
+///
+/// The netlink library wraps an I/O failure in its own enum, so the errno has to
+/// be dug out of the variant rather than read off the error directly.
+fn errno_of(e: &neli::err::SocketError) -> Option<Errno> {
+    match e {
+        // An `io::Error` built from a custom `ErrorKind` carries no errno, and
+        // that is reported as "no errno" rather than guessed at. It lands in the
+        // fatal arm, which is where an unidentifiable error belongs.
+        neli::err::SocketError::Io(io) => io.raw_os_error().map(Errno::from_raw_os_error),
+        _ => None,
+    }
+}
+
+/// Classifies a receive error by its errno.
+///
+/// This used to render the error to a string and look for "No buffer space
+/// available", "ENOBUFS", "Resource temporarily unavailable", "EAGAIN" and
+/// "WouldBlock" in the result. That couples the control flow to how one library
+/// happens to phrase its errors: a wording change, a different rendering, or any
+/// unrelated error whose text happens to contain one of those tokens would
+/// silently change whether the loop drains or tears the listener down. The errno
+/// is the thing being classified, so it is what is compared.
+///
+/// `EWOULDBLOCK` needs no separate case because on Linux it is `EAGAIN`; the
+/// kernel returns one value under both names.
+fn classify_recv_error(e: &neli::err::SocketError) -> RecvFailure {
+    match errno_of(e) {
+        Some(Errno::NOBUFS) => RecvFailure::BufferOverrun,
+        Some(Errno::AGAIN) => RecvFailure::Drained,
+        _ => RecvFailure::Fatal,
+    }
+}
+
+/// Carries a socket error back as an `io::Error` with its errno intact.
+///
+/// The old code returned `io::Error::other(err_str)`, which keeps the message and
+/// discards the code -- so a caller inspecting `raw_os_error` to decide whether to
+/// retry saw nothing, and could only re-parse the same string.
+fn to_io_error(e: &neli::err::SocketError) -> io::Error {
+    match errno_of(e) {
+        Some(errno) => io::Error::from_raw_os_error(errno.raw_os_error()),
+        None => io::Error::other(e.to_string()),
+    }
+}
+
 pub struct NetlinkMonitor {
     sock: NlSocketHandle,
 }
@@ -225,26 +284,20 @@ impl NetlinkMonitor {
             loop {
                 let iter = match self.sock.recv::<Nlmsg, CnMsg<ProcEventHeader>>() {
                     Ok(msgs) => msgs.0,
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        if err_str.contains("No buffer space available")
-                            || err_str.contains("ENOBUFS")
-                        {
+                    Err(e) => match classify_recv_error(&e) {
+                        RecvFailure::BufferOverrun => {
                             error!(
                                 "Netlink recv error (ENOBUFS): buffer overrun. Stopping listener for recovery."
                             );
-                            return Err(io::Error::other("ENOBUFS"));
+                            return Err(to_io_error(&e));
                         }
-                        // Non-blocking mode returns EAGAIN / WouldBlock when empty
-                        if err_str.contains("Resource temporarily unavailable")
-                            || err_str.contains("EAGAIN")
-                            || err_str.contains("WouldBlock")
-                        {
-                            break; // Done draining
+                        // Non-blocking mode returns EAGAIN once the queue is drained.
+                        RecvFailure::Drained => break,
+                        RecvFailure::Fatal => {
+                            error!("Netlink recv error: {}", e);
+                            return Err(to_io_error(&e));
                         }
-                        error!("Netlink recv error: {}", e);
-                        return Err(io::Error::other(err_str));
-                    }
+                    },
                 };
 
                 for event in iter {
@@ -483,4 +536,101 @@ fn the_identity_is_sixteen_bytes_regardless_of_the_name() {
         16,
         "a fixed-size identity is what bounds the cache"
     );
+}
+
+#[cfg(test)]
+mod recv_classification {
+    use super::{RecvFailure, classify_recv_error, errno_of, to_io_error};
+    use rustix::io::Errno;
+
+    fn socket_error(errno: Errno) -> neli::err::SocketError {
+        neli::err::SocketError::Io(std::sync::Arc::new(std::io::Error::from_raw_os_error(
+            errno.raw_os_error(),
+        )))
+    }
+
+    /// The two the loop branches on. Everything else tears the listener down, so
+    /// a value landing in the wrong arm means either a dropped message or a
+    /// reconnect on every idle pass.
+    #[test]
+    fn an_overrun_and_an_empty_queue_are_told_apart() {
+        assert_eq!(
+            classify_recv_error(&socket_error(Errno::NOBUFS)),
+            RecvFailure::BufferOverrun
+        );
+        assert_eq!(
+            classify_recv_error(&socket_error(Errno::AGAIN)),
+            RecvFailure::Drained
+        );
+    }
+
+    #[test]
+    fn everything_else_is_fatal() {
+        for e in [
+            Errno::INTR,
+            Errno::BADF,
+            Errno::CONNREFUSED,
+            Errno::PERM,
+            Errno::PIPE,
+        ] {
+            assert_eq!(
+                classify_recv_error(&socket_error(e)),
+                RecvFailure::Fatal,
+                "{e:?}"
+            );
+        }
+    }
+
+    /// The old test rendered the error and looked for five substrings. None of
+    /// them is an errno, so each of them now has to classify as fatal: that is
+    /// the whole point, since a message that happens to contain "ENOBUFS" must
+    /// not read as a buffer overrun.
+    #[test]
+    fn the_classification_does_not_depend_on_the_error_text() {
+        for text in [
+            "No buffer space available",
+            "ENOBUFS",
+            "Resource temporarily unavailable",
+            "EAGAIN",
+            "WouldBlock",
+        ] {
+            let e = neli::err::SocketError::Msg(neli::err::MsgError::new(text));
+            assert_eq!(
+                classify_recv_error(&e),
+                RecvFailure::Fatal,
+                "{text:?} must not classify by its wording"
+            );
+        }
+    }
+
+    /// An error carrying no errno at all -- a parse or serialisation failure
+    /// inside the library -- is not a drained queue and must not be read as one.
+    #[test]
+    fn an_error_carrying_no_errno_is_fatal() {
+        let e = neli::err::SocketError::Msg(neli::err::MsgError::new("nope"));
+        assert_eq!(errno_of(&e), None);
+        assert_eq!(classify_recv_error(&e), RecvFailure::Fatal);
+    }
+
+    /// EWOULDBLOCK is the same value as EAGAIN on Linux, so the drained arm
+    /// catches both spellings with one case. That is why the old code listed
+    /// "WouldBlock" as a separate token to look for.
+    #[test]
+    fn ewould_block_is_the_same_value_as_eagain() {
+        assert_eq!(Errno::WOULDBLOCK, Errno::AGAIN);
+        assert_eq!(
+            classify_recv_error(&socket_error(Errno::WOULDBLOCK)),
+            RecvFailure::Drained
+        );
+    }
+
+    /// The errno has to survive the trip back out, so a caller can decide whether
+    /// to retry without re-parsing a message.
+    #[test]
+    fn the_errno_survives_conversion_back_to_an_io_error() {
+        for e in [Errno::NOBUFS, Errno::AGAIN, Errno::CONNREFUSED] {
+            let back = to_io_error(&socket_error(e));
+            assert_eq!(back.raw_os_error(), Some(e.raw_os_error()), "{e:?}");
+        }
+    }
 }
