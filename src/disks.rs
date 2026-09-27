@@ -23,8 +23,13 @@ use {
 /// `cfq` for kernels old enough to still have it.
 const SUPPORTED: [&str; 4] = ["mq-deadline", "bfq", "bfq-mq", "cfq"];
 
-/// Devices whose names contain these are not worth reporting: loop and ram
+/// Devices whose names start with these are not worth reporting: loop and ram
 /// devices have no I/O scheduler a user cares about, and `sr` is optical media.
+///
+/// Matched by prefix, not by substring. Every one of these is a name the kernel
+/// builds as `<prefix><number>`, so a prefix is the exact test. A substring test
+/// also swallowed `zram0`, which is a real block device with a real scheduler
+/// and precisely the kind of thing this check exists to report.
 const IGNORED: [&str; 3] = ["loop", "ram", "sr"];
 
 /// The scheduler a device is using, from the contents of its `queue/scheduler`.
@@ -53,7 +58,7 @@ pub(crate) fn check_disk_schedulers(block_class: &Path) -> usize {
     for device in devices.flatten() {
         let name = device.file_name();
         let name = name.to_string_lossy();
-        if IGNORED.iter().any(|skip| name.contains(skip)) {
+        if IGNORED.iter().any(|skip| name.starts_with(skip)) {
             continue;
         }
 
@@ -103,6 +108,20 @@ mod tests {
             }
         }
         root
+    }
+
+    /// `zram0` is a real block device with a real scheduler, and a substring
+    /// test against "ram" skipped it. Nothing else about the ignore list
+    /// changes: the three real families are still skipped.
+    #[test]
+    fn a_compressed_ram_device_is_still_reported() {
+        let root = block_class(&[
+            ("loop0", Some("[none] mq-deadline")),
+            ("ram0", Some("[none] mq-deadline")),
+            ("sr0", Some("[none] mq-deadline")),
+            ("zram0", Some("[none] mq-deadline")),
+        ]);
+        assert_eq!(check_disk_schedulers(root.path()), 1);
     }
 
     #[test]
