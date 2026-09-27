@@ -117,11 +117,88 @@ fn a_cgroup_v1_mount_without_controller_directories_is_ignored() {
     assert_eq!(info.version, CgroupVersion::None);
 }
 
+/// A `cgroup2` mount point is recognised from its own `cgroup.controllers` and
+/// `cgroup.procs`, with nothing else present and nothing written.
+///
+/// The signature is deliberately the *root* of a unified hierarchy, which is
+/// exactly what a real cgroup2 mount point looks like: `cgroup.controllers`
+/// naming the controllers available to its children, and `cgroup.procs`. The
+/// root has no `cpu.max` of its own — a cgroup only gets controller files once
+/// its parent has the controller enabled — so the detection cannot depend on
+/// one.
+///
+/// It could not depend on creating a directory either. The probe this replaces
+/// did `mkdir`/`rmdir` a throwaway cgroup inside the mount point, which needs
+/// write access to the cgroup root. A read-only cgroupfs mount — the default in
+/// most container runtimes' cgroup namespace, and any `ro` sysfs — gives it to
+/// nobody, so the probe failed and a fully functional hierarchy was reported as
+/// unavailable.
+#[test]
+fn a_cgroup2_root_is_recognised_without_being_written_to() {
+    let hierarchy = tempfile::tempdir().unwrap();
+    std::fs::write(
+        hierarchy.path().join("cgroup.controllers"),
+        "cpuset cpu io memory pids\n",
+    )
+    .unwrap();
+    std::fs::write(hierarchy.path().join("cgroup.procs"), "").unwrap();
+    // The real root of a unified hierarchy has no `cpu.max`; prove the detection
+    // does not go looking for one either.
+    assert!(!hierarchy.path().join("cpu.max").exists());
+
+    let mut info = empty_info();
+    parse_cgroups_from_str(
+        &mount_line("cgroup2", hierarchy.path(), "cgroup2"),
+        &mut info,
+    );
+
+    assert_eq!(
+        info.version,
+        CgroupVersion::V2,
+        "a cgroup2 root offering the cpu controller is a usable hierarchy"
+    );
+    assert_eq!(info.mount_point, hierarchy.path());
+    assert!(
+        !hierarchy.path().join("ananicy_test_cgroup2").exists(),
+        "detection must not leave a probe cgroup behind"
+    );
+    assert_eq!(
+        std::fs::read_dir(hierarchy.path()).unwrap().count(),
+        2,
+        "detection must not add anything to the hierarchy: {:?}",
+        std::fs::read_dir(hierarchy.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The same root without a `cpu` controller is not a hierarchy this daemon can
+/// apply `CPUQuota` to, and saying so is better than detecting it and failing
+/// every cgroup rule later.
+#[test]
+fn a_cgroup2_root_without_the_cpu_controller_is_not_accepted() {
+    let hierarchy = tempfile::tempdir().unwrap();
+    std::fs::write(
+        hierarchy.path().join("cgroup.controllers"),
+        "cpuset memory pids\n",
+    )
+    .unwrap();
+    std::fs::write(hierarchy.path().join("cgroup.procs"), "").unwrap();
+
+    let mut info = empty_info();
+    parse_cgroups_from_str(
+        &mount_line("cgroup2", hierarchy.path(), "cgroup2"),
+        &mut info,
+    );
+
+    assert_eq!(info.version, CgroupVersion::None);
+}
+
+/// A cgroup2 mount point that is not there at all is skipped, and the parser
+/// keeps looking rather than reporting a broken hierarchy.
 #[test]
 fn a_cgroup2_mount_is_not_accepted_for_a_missing_hierarchy() {
-    // The v2 probe creates a throw-away cgroup inside the mount point to find
-    // out whether the cpu controller is usable. When the mount point does not
-    // exist, the probe fails and nothing is reported.
     let directory = tempfile::tempdir().unwrap();
     let mount_point = directory.path().join("not-mounted-here");
     let mut info = empty_info();

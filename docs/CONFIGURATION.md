@@ -29,7 +29,7 @@ The format is `key=value`, one per line.
 | `type_load` | `true` | Load type definitions (`.types` files) |
 | `rule_load` | `true` | Load rule definitions (`.rules` files) |
 | `cgroup_realtime_workaround` | `true` | Enable cgroup realtime workaround |
-| `log_applied_rule` | `false` | Emit an INFO event after a matching rule is applied successfully |
+| `log_applied_rule` | `false` | Emit an INFO event after a matching rule is applied successfully. See [Applied-rule logging](#applied-rule-logging) |
 | `loglevel` | `info` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`, `critical`) |
 | `x3d_mode` | `auto` | AMD X3D driver mode: `auto` (don't touch), `cache`, or `frequency` |
 
@@ -42,31 +42,39 @@ not honour the `ioclass` and `ionice` of a rule:
 WARN Disk sda is on a scheduler that does not honour ioprio (it is using "none"), so ioclass and ionice will not work for it
 ```
 
-Support for I/O priorities is scheduler-dependent: `Documentation/block/ioprio.rst` names `bfq` and `mq-deadline` as the schedulers that honour it, and `none` (formerly `noop`) and `kyber` as the ones that do not. Everywhere else `ioprio_set(2)` succeeds, the daemon logs that it applied the rule, and the I/O priority is unchanged — which is why this is worth saying out loud once at start-up rather than leaving each affected disk to be discovered by noticing that nothing happened. A device counts as fine when its active scheduler is `mq-deadline`, `bfq`, `bfq-mq` or `cfq`; `cfq` is only ever active on a kernel old enough to still have it, since it was removed with the legacy single-queue block layer, and is kept for those. loop, ram and `sr` devices are skipped, as are devices with no scheduler file at all.
+Support for I/O priorities is scheduler-dependent. A device is treated as able to honour
+`ioclass`/`ionice` when its active scheduler is `mq-deadline`, `bfq`, `bfq-mq` or `cfq`;
+any other scheduler accepts the value from `ioprio_set(2)` and ignores it, so the daemon
+reports the rule as applied while the I/O priority is unchanged. `none` and `kyber` are
+the two that do not honour it. (`none` is the current name for what older kernels call
+`noop`, so a log line naming either means the same thing. `cfq` survives only on kernels
+old enough to still have it and is kept for those.) Loop, `ram` and `sr` devices are
+skipped, as are devices with no scheduler file at all.
 
-This restores a check from the original Ananicy, which shipped it as `check_disks_schedulers=true`
-in `ananicy.conf`. Neither rewrite had it, and without it the configuration reference's own note that
-`ioclass` needs a scheduler that honours I/O priorities was true and never checked. It is read-only,
-and `dump` and `debug` skip it — only the running daemon has use for it. Set it to `false` to
-silence it.
+The check is read-only, and `dump` and `debug` skip it — only the running daemon has use
+for it. Set it to `false` to silence it.
+
+The key comes from the original Ananicy, which shipped it with this meaning; the C++ and
+Rust rewrites both dropped it, and it is back here because without it a rule can be
+reported as applied while the disk ignores it.
 
 ### `apply_ioclass` has no effect
 
-The key is accepted, defaulted to `true` and reported at startup, and it changes nothing. A rule's
-`ioclass` is gated by `apply_ionice` alone, as in `ananicy-cpp`.
+The key is accepted, defaulted to `true` and reported at start-up, and it changes nothing. A
+rule's `ioclass` is gated by `apply_ionice` alone.
 
-That is not an oversight in either daemon, it is what the key has always meant. It comes from the
-original Python Ananicy, where it silenced the message the daemon printed when it set an I/O class:
-the `apply_*` flags there are passed to a `print_verbose_msg()` helper and nothing else, so
-`apply_nice=false` did not stop `nice` from being applied either. When the C++ rewrite gave those
-flags teeth it wired them to the syscalls — but a single `ioprio_set(2)` call sets the class and the
-priority together, so there was nothing left for `apply_ioclass` to gate and it was left in the
-configuration map unused.
+**If you are carrying an `ananicy.conf` from the original Ananicy, this matters:** there,
+`apply_ioclass=false` meant "do not log the I/O class I just set", not "do not set an I/O
+class". Here it does not disable I/O classes either — `apply_ionice=false` does. To stop
+`ioclass` being applied, turn off `apply_ionice`, which also stops `ionice`.
 
-Giving it a meaning here would change what an existing `ananicy.conf` does: a configuration that
-carries `apply_ioclass=false` from the original — where it meant "do not log this" — would silently
-stop having any I/O class applied at all. A rewrite that keeps the configuration working is worth
-more than one that finally honours a key nobody knew was inert.
+That is worth knowing about the whole family, not just this key: in the original, *none*
+of the `apply_*` flags gated anything. They were arguments to a logging helper, so
+`apply_nice=false` did not stop `nice` from being applied either. The C++ rewrite wired
+them to the syscalls, which is why they mostly do something now — but a single
+`ioprio_set(2)` sets the class and the priority together, leaving `apply_ioclass` with
+nothing left to gate, and the key has been inert ever since.
+
 `ananicy-core/tests/worker_rules.rs` pins the behaviour in both directions.
 
 ### Applied-rule logging
@@ -89,14 +97,37 @@ therefore of the other tasks in it, not only of the process that matched the rul
 `100 × 1.25⁻ⁿⁱᶜᵉ`, clamped to the kernel's `1..10000` range, so a rule with `nice: 5` sets a weight
 of about `32` for the entire cgroup.
 
-Set `apply_cpu_weight = false` to keep the `nice` value and drop the mirror. The mirror is also
-skipped, at `debug` level, whenever the kernel does not expose a `cpu.weight` (cgroup v2) or
-`cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled there first, and
-`ananicy-rs` never enables it in a cgroup it does not own. `ananicy-cpp` has no equivalent
-behaviour: it only ever calls `setpriority(2)`.
+Set `apply_cpu_weight = false` to keep the `nice` value and drop the mirror. The mirror is
+also skipped whenever the kernel does not expose a `cpu.weight` (cgroup v2) or
+`cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled there
+first, and `ananicy-rs` never enables it in a cgroup it does not own. When the cgroup is
+one the daemon manages and the reason is a missing file, it says so at `warn` level: that
+warning means a `nice` was applied but the bandwidth it implies was not. `ananicy-cpp`
+has no equivalent behaviour — it only ever calls `setpriority(2)`.
+
+### `cgroup_realtime_workaround`
+
+On by default, and relevant only to rules that set a realtime policy (`fifo` or `rr`) on
+cgroup v2. Realtime tasks and cgroup bandwidth control do not currently coexist, so for
+such a process the daemon:
+
+* skips the rule's `cgroup` attribute, and
+* attempts to move the process into the hierarchy root (`/`).
+
+Both are best-effort and neither is reported as a rule failure. The second is refused by
+the ownership check in normal operation, which is the intended outcome — a realtime
+process should not be moved into a cgroup the daemon merely administers. Turning the
+option off applies the rule's `cgroup` attribute to realtime processes as well.
+`ananicy-cpp` has the same workaround and the same default.
+
+### `x3d_mode`
+
+See [AMD X3D Support](./TOPOLOGY.md#amd-x3d-support). `auto` leaves the driver alone;
+`cache` and `frequency` choose which CCD the `amd_x3d_vcache` driver prefers for
+scheduling. It is a no-op on hardware without that driver, and the daemon restores the
+previous mode on `SIGTERM`, so a deliberate stop does not leave the driver switched.
 
 ## Rules (`*.rules`)
-
 Rules are defined in files ending with `.rules` in the configuration directory.
 
 For instance, to add a rule for GCC, you could do the following:
@@ -105,9 +136,39 @@ For instance, to add a rule for GCC, you could do the following:
 2. Create the `/etc/ananicy.d/10-compilers/gcc.rules` file
 3. Add `{"name": "gcc", "nice": 19, "latency_nice": 19, "sched": "batch", "ioclass": "idle"}` to the file.
 
+### How a process is matched, and what happens when two rules collide
+
+Files are loaded in sorted order by path, across the whole directory tree, and a name may
+be defined more than once. Three rules govern the result:
+
+* **A later definition replaces an earlier one outright.** Two rules with the same `name`
+  do not merge: the one loaded last wins in full, and any attribute the earlier rule set
+  and the later one omits is not applied. To split one process's attributes across two
+  files, write them in one place.
+* **An exact `name` always beats a `name_regex`**, whatever the file order.
+* **Between several matching regular expressions, the first in load order wins** — that
+  is, the first by sorted path. This makes the result independent of the order the
+  filesystem happens to return.
+
+`name` is matched literally. `kworker/*` is not a glob: it matches a process whose name is
+the literal text `kworker/*`, which is none. To match by pattern, give the rule a
+`name_regex` (see [Supported Attributes](#supported-attributes)); it is used only when the
+exact name does not match.
+
+A rule is only useful if it has a `name`, a `type` or a `cgroup`; anything else is
+rejected at load with an `error` and skipped, and so is a line that is not valid JSON.
+Loading continues past both, so one bad line does not cost you the rest of the file.
+
 ### Supported Attributes
 
-- `name`: The process name or wildcard to match (e.g., `gcc`, `kworker/*`).
+- `name`: The process name to match, exactly (e.g., `gcc`, `Xorg`). Matched literally —
+  it is not a glob or a pattern. Use `name_regex` for anything else.
+- `name_regex`: An optional regular expression, used when no `name` matches. The `name` is
+  still required and is what identifies the rule, so `{"name": "kworkers", "name_regex":
+  "kworker/.*"}` matches every kernel worker. Patterns are a PCRE-compatible subset rather
+  than full PCRE2; see [COMPATIBILITY §5.4](./COMPATIBILITY.md#54-the-name_regex-engine-is-not-pcre2)
+  for the constructs the engine refuses. A pattern the engine cannot compile is logged as
+  an error and skipped, and the rule still works by its exact `name`.
 - `nice: [-20..19]`: Set the nice value of the process. A process with a higher nice value will be more "polite", and will get less CPU time than processes with a lower nice value.
 - `latency_nice: [-20..19]`: Set the latency_nice value of the process. A process with a lower latency_nice value indicates the task needs lower latency. *(Note: Requires specific kernel patches or newer kernels that support latency_nice)*.
 - `sched: {"fifo", "rr", "normal", "batch", "idle"}`: Set the scheduling policy.
@@ -169,13 +230,17 @@ than an arbitrary amount. Values outside the kernel's range are clamped to it.
 
 ### Cgroups v2 Delegation and Ownership
 
-`ananicy-rs` respects the kernel's cgroup-v2 single-writer model. The systemd unit uses `Delegate=yes`, which delegates the cgroup subtree assigned to `ananicy-rs.service` (normally `/sys/fs/cgroup/system.slice/ananicy-rs.service`). It does not delegate `user.slice`, desktop session scopes, or other systemd units.
+`ananicy-rs` respects the kernel's cgroup-v2 single-writer model. The systemd unit uses `Delegate=yes`. It does not delegate `user.slice`, desktop session scopes, or other systemd units.
+
+**What `Delegate=yes` actually hands over is one level wider than it looks.** `Delegate=yes` gives the service ownership of its own cgroup *and* delegation of that cgroup's subtree, but the daemon discovers its root by taking the parent of `/proc/self/cgroup` — which lands on the unit's parent (`…/system.slice`), not on the unit's own cgroup. The unit's own cgroup contains the daemon process, and the kernel's "no internal process" rule means a cgroup with processes in it cannot have `+cpu` added to its `subtree_control`. So under the shipped unit the daemon is unable to enable the `cpu` controller on the parent, every cgroup it creates below lacks `cpu.max` and `cpu.weight`, and **`CPUQuota` and `CPUWeight` rules and `nice`→`cpu.weight` mirroring are no-ops**. The daemon logs a `warn` for this at start-up rather than skipping silently.
+
+Two changes fix it, either of which is sufficient: add a CPU-bandwidth setting (`CPUWeight=`) to the unit, which makes systemd enable `cpu` in the unit's own `cgroup.subtree_control`; or set `DelegateSubgroup=yes`, which delegates the unit's own cgroup so the daemon's parent is the unit's cgroup and the "no internal process" rule no longer blocks it. Neither is done in the shipped unit.
 
 Within the delegated subtree, `ananicy-rs` may create and configure cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
 
 Outside that subtree, structural changes are refused. In particular, it will not create foreign cgroup directories, enable foreign `cgroup.subtree_control`, write foreign `cpu.max`, or move processes into foreign cgroups.
 
-There is one limited resource-tuning exception: for a foreign cgroup, `ananicy-rs` may attempt to write an already-existing `cpu.weight` or `cpu.shares` file. It does not create that file or enable its controller. If the controller is not enabled, the file is absent, or it is not writable, the optional mirror is skipped at DEBUG level. Process-level `nice` application can still succeed in that case.
+There is one limited resource-tuning exception: for a foreign cgroup, `ananicy-rs` may attempt to write an already-existing `cpu.weight` or `cpu.shares` file. It does not create that file or enable its controller. If the controller is not enabled, the file is absent, or it is not writable, the optional mirror is skipped and — when the reason is a missing `cpu.max` or `cpu.weight` on a cgroup the daemon manages — the reason is logged at `warn` level. Process-level `nice` application can still succeed in that case.
 
 Do not enable controllers in `user.slice` or session scopes merely to satisfy Ananicy; those scopes are managed by systemd. Use a dedicated cgroup under the delegated Ananicy subtree when testing cgroup CPU weighting. See [CLI & Usage](./CLI.md) for the systemd and NixOS service setup.
 

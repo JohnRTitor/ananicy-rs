@@ -18,10 +18,13 @@ Three things, all of them optional:
    fields instead of being plain stderr text.
 2. **Status notifications.** We send `READY=1` after the worker is up and
    `STOPPING=1` on `SIGTERM`.
-3. **A delegated cgroup subtree.** A unit with `Delegate=yes` hands us its own
-   subtree so we can create cgroups and write `cpu.max`/`cpu.weight`. This is
-   the only thing we *need* systemd for — and it is governed by the unit, not by
-   our flag.
+3. **A delegated cgroup subtree.** A unit with `Delegate=yes` delegates the
+   subtree above the unit's own cgroup, so we can create cgroups and write
+   `cpu.max`/`cpu.weight`. This is the only thing we *need* systemd for — and it
+   is governed by the unit, not by our flag. Note the consequence: the daemon
+   cannot enable the `cpu` controller on a parent that holds processes, which the
+   delegated one does, so the unit also needs `CPUWeight=` or `DelegateSubgroup=`
+   for bandwidth rules to have any effect. See the delegation section below.
 
 Everything else we do — applying `nice`, `ionice`, `oom_score_adj`,
 `latency_nice` — is plain process manipulation and does not involve systemd.
@@ -36,7 +39,7 @@ host runs systemd.
 | Variable | Since | Why we read it |
 |----------|-------|----------------|
 | `$INVOCATION_ID` | 232 | Our primary signal. Set for every process of an active unit, for all unit types and all `Type=` values, so it covers the plain `Type=simple` unit we ship |
-| `$NOTIFY_SOCKET` | 229 | Secondary. Only set when `NotifyAccess=` ≠ `none`, so it is absent for our own unit — it helps for `Type=notify` units and for systemd 229–231 |
+| `$NOTIFY_SOCKET` | 229 | Secondary. Only set when `NotifyAccess=` ≠ `none`. The shipped unit sets `NotifyAccess=main`, so it *is* set for our own unit; it is checked only after `$INVOCATION_ID`, so this is a fallback for `Type=notify` units and for systemd 229–231 |
 | `$JOURNAL_STREAM` | 231 | Weakest. Set when our stdio is wired to the journal, which is the precondition for the native protocol we want |
 
 Rules we apply to them:
@@ -109,7 +112,9 @@ exists for us rather than for systemd, so this is the reasoning:
 
 | Setting | Value | What it buys us |
 |---------|-------|-----------------|
-| `Delegate` | `yes` | Hands us this unit's cgroup subtree to manage. Scoped to the unit — it says nothing about `user.slice` or session scopes |
+| `Delegate` | `yes` | Delegates the subtree *above* this unit's cgroup to us, which is what lets us create cgroups and write `cpu.max`/`cpu.weight`. Scoped to the unit — it says nothing about `user.slice` or session scopes. The consequence for `cpu` is in the delegation section below |
+| `NotifyAccess` | `main` | Without it the unit is `Type=simple`, whose default `NotifyAccess=` is `none`, and the manager discards every `sd_notify` we send. With it, `READY=1` and `STOPPING=1` reach the manager. It changes no lifecycle semantics — the unit stays `Type=simple` — it only stops the messages being dropped |
+| `ReadWritePaths` | `/sys/bus/platform/drivers/amd_x3d_vcache` | `ProtectKernelTunables=yes` mounts `/sys` read-only, which includes the AMD X3D driver's `amd_x3d_mode`, so `x3d_mode` could not be applied. systemd applies `ReadWritePaths` before the read-only remount and `MS_RDONLY` is per-mount, so the subdirectory bind survives. Harmless where the driver is absent |
 | `ProtectControlGroups` | `no` | With `yes` the cgroup hierarchies are mounted read-only, which would disable cgroup management entirely |
 | `ProtectProc` | `default` | `default` means *no* restrictions. `invisible` would hide other users' processes, and we exist to tune them |
 | `PrivateUsers` | `no` | User-namespace remapping would make other processes appear as `nobody`/`overflowuid` and break our `/proc` ownership checks |
@@ -130,6 +135,12 @@ delegation discovery behave the same under the shipped hardening as they do
 outside it. `ananicy-rs debug cgroups` prints the resolved mode, the enclosing
 unit name and our cgroup path.
 
+The settings not in the table — `PrivateTmp`, `PrivateDevices`, `ProtectHome`,
+`ProtectSystem`, `ProtectClock`, `ProtectHostname`, `ProtectKernelLogs`,
+`ProtectKernelModules`, `NoNewPrivileges`, `MemoryDenyWriteExecute`,
+`LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID` — are stock hardening with
+no daemon-specific reasoning behind them. They are listed in the unit file itself.
+
 ## Delegation, from the operator's side
 
 `Delegate=yes` in our unit is what enables cgroup support. The daemon then
@@ -142,12 +153,27 @@ mutation outside it. What that means in practice:
   the session's cgroup would mean moving PIDs into cgroups systemd owns.
 * **cgroup v1 hosts have no delegated root** for us (no unified `0::` line), so
   cgroup rules are skipped and process tuning continues.
-* **Controllers must be enabled on the parent.** `Delegate=yes` makes the
-  controllers available, but the parent's `cgroup.subtree_control` decides
-  whether a given leaf gets a `cpu.weight` file at all. The common "rule applied
-  but weight unchanged" case is a leaf whose parent has not enabled `cpu`; we
-  log that as an optional skip at `debug` level, and we never enable controllers
-  on someone else's cgroup to work around it.
+* **Controllers must be enabled on the parent, and the shipped unit does not do
+  it.** `Delegate=yes` hands over the subtree above the unit's own cgroup, but the
+  *parent's* `cgroup.subtree_control` decides whether a given leaf gets a `cpu.weight`
+  file at all, and systemd only enables a controller in a unit's own cgroup when the
+  unit has a resource setting that needs one. The shipped unit sets `Nice=-5` and
+  nothing CPU-bandwidth-related, so its own `cgroup.subtree_control` does not contain
+  `cpu`, and the leaves the daemon creates under it have no `cpu.weight` and no
+  `cpu.max`. Every `CPUWeight` and `CPUQuota` in a `.cgroups` rule, and the `nice` →
+  `cpu.weight` mirroring, are therefore no-ops as shipped, and the daemon warns at
+  start-up when it cannot apply a weight. Either of the following makes it work: add
+  `CPUWeight=` to the unit, or set `DelegateSubgroup=yes` so the unit's own cgroup is
+  delegated and systemd enables `cpu` on it. We never enable controllers on someone
+  else's cgroup to work around it.
+
+  `ananicy-cpp` is not affected, and the reason is worth knowing before copying its
+  approach: its unit carries no `Delegate=` at all. It creates each cgroup directly
+  under the cgroup2 mount point (`/sys/fs/cgroup/<name>`), which works because the
+  hierarchy root already has `cpu` in its `cgroup.subtree_control` and the daemon runs
+  as root with no ownership checks. `ananicy-rs` confines itself to a subtree it has
+  been delegated, and refuses the global root — which is the safer behaviour, and also
+  what puts it behind the no-internal-process rule.
 * **Containers** work: with their own cgroup namespace our path is `/` and a
   writable container root becomes the delegated root.
 
@@ -224,10 +250,10 @@ systemd-run --user --scope --unit=ananicy-detect-scope -- \
 | `disabled (no systemd service manager detected)` in a real unit | Host older than systemd 232, so no `$INVOCATION_ID` is exported | Pass `--systemd` through `extraArgs` |
 | `disabled (member of a transient .scope, not a service)` from a terminal | Manual run inherits the session scope's environment | Run it as a service |
 | `WARN Cgroup v2: Detected manual execution inside a transient .scope` | Manual run; the session cgroup is not delegated to us | Run it as a service with `Delegate=yes` |
-| Rule applied, CPU weight unchanged | The leaf's parent has not enabled the `cpu` controller, so no `cpu.weight` exists | Enable it on the parent, or accept the `debug`-level skip |
+| `Rule applied, CPU weight unchanged` | The `cpu` controller is not in the leaf's parent `cgroup.subtree_control`, so no `cpu.weight` file exists. This is the expected state of the shipped unit — see the delegation section below | Add `CPUWeight=` to the unit, or `DelegateSubgroup=yes`. The daemon warns at `warn` level whenever it hits this |
 | Output never reaches `journalctl` | The mode was off, so we logged to stderr, which the journal only captures if the unit's stdio is connected to it | Check the reported mode; force with `--systemd` |
 | Journal entries have no structured fields | The stderr layer was used because the mode was off or `$JOURNAL_STREAM` was unset | Same as above; then `journalctl -o verbose` shows native-protocol fields |
-| `READY=1` never appears in the journal | It is a notification, not a log line, and our unit is `Type=simple` with the default `NotifyAccess=none`, so systemd discards it | Expected; we are not claiming start-up readiness to anyone |
+| `READY=1` never appears in the journal | It is a notification, not a log line, so it reaches the manager and is not journal output by design. The shipped unit sets `NotifyAccess=main`, so the manager accepts it; `READY=1` is still not something to look for in `journalctl` | Expected; use `systemctl show -p ActiveState` for readiness |
 
 ## Without systemd
 

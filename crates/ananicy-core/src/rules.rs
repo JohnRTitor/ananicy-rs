@@ -88,6 +88,15 @@ pub struct Rules {
     resolved_cache: Mutex<lru::LruCache<String, Option<Arc<Value>>>>,
 }
 
+/// The longest process name the resolved-rule cache will remember.
+///
+/// The kernel caps `/proc/<pid>/comm` at 15 bytes and `Task comm` at 64, but not
+/// `argv[0]`, whose first argument may be up to `MAX_ARG_STRLEN` (128 KiB) — and
+/// `get_command_from_pid` prefers `argv[0]`. A name longer than this is not a
+/// program name: it matches no rule that anybody would write, and caching it
+/// would let a handful of local processes push the daemon past its `MemoryMax`.
+const MAX_CACHEABLE_NAME: usize = 256;
+
 impl Rules {
     pub fn new(config: Arc<Config>) -> Self {
         Self {
@@ -111,6 +120,19 @@ impl Rules {
                 dir
             );
             return;
+        }
+
+        // Start from nothing, so a second load is a replacement and not an
+        // accumulation. Appending would keep every `name_regex` matcher the
+        // first load compiled — a rule deleted from disk stays in force, and a
+        // duplicated one is matched against twice for every process — and would
+        // keep types and cgroups that no longer exist.
+        self.programs.clear();
+        self.types.clear();
+        self.cgroups.clear();
+        self.regex_programs.clear();
+        if let Ok(mut cache) = self.resolved_cache.lock() {
+            cache.clear();
         }
 
         let mut paths: Vec<_> = walkdir::WalkDir::new(dir)
@@ -257,8 +279,15 @@ impl Rules {
 
         let best_match = self.find_best_match(name);
 
-        // Update cache
-        if let Ok(mut cache) = self.resolved_cache.lock() {
+        // The cache is keyed on the process name, and a process name is the
+        // basename of `argv[0]` — which the kernel puts no upper bound on. A
+        // single `execve` with a 128 KiB `argv[0]` therefore produces a 128 KiB
+        // key, and 5000 of them is half a gigabyte, against a `MemoryMax=64M` in
+        // the shipped unit. A name that long is not a program name and no rule
+        // can match it usefully, so it is answered without being remembered. The
+        // lookup itself still happens, so the answer is the same either way.
+        let cacheable = name.len() <= MAX_CACHEABLE_NAME;
+        if cacheable && let Ok(mut cache) = self.resolved_cache.lock() {
             cache.put(name.to_string(), best_match.clone());
         }
 
@@ -298,6 +327,17 @@ impl Rules {
 
     pub fn get_types(&self) -> &HashMap<TypeName, Arc<Value>> {
         &self.types
+    }
+
+    /// How many process names the resolved-rule cache is currently holding.
+    ///
+    /// A test seam and nothing else: the cache is private, and the property that
+    /// matters about it — that a name too long to be a program name does not end
+    /// up in it — is not observable from outside without asking. `doc(hidden)`
+    /// because it is not part of the crate's interface.
+    #[doc(hidden)]
+    pub fn cached_resolution_count(&self) -> usize {
+        self.resolved_cache.lock().map(|c| c.len()).unwrap_or(0)
     }
 }
 

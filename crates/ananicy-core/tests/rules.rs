@@ -734,3 +734,118 @@ fn inheritance_does_not_mutate_the_shared_type() {
         "a program rule must not rewrite the type it inherits from"
     );
 }
+
+/// A second load of the same directory replaces the first, rather than adding to
+/// it.
+///
+/// Loading accumulated: every `name_regex` the first load compiled stayed in the
+/// matcher list, so a rule deleted from disk stayed in force and a rule that was
+/// still there was matched against twice for every process. The `Rules` value is
+/// owned by the worker thread through an `Arc`, so nothing reloads today — which
+/// is exactly why the accumulation was invisible — but the reload path is one
+/// line away and the failure mode is a rule that cannot be taken back.
+#[test]
+fn loading_a_directory_twice_replaces_rather_than_accumulates() {
+    let mut rules = rules();
+    let (directory, path) = rules_dir(&[(
+        "a.rules",
+        "{\"name\": \"kept\", \"nice\": 1}\n{\"name\": \"gone\", \"nice\": 2}\n",
+    )]);
+
+    rules.load_directory(&path);
+    assert!(rules.get_rule("kept").is_some());
+    assert!(rules.get_rule("gone").is_some());
+    assert_eq!(rules.size(), 2);
+
+    // The second load sees a file in which `gone` has been deleted.
+    fs::write(path.join("a.rules"), "{\"name\": \"kept\", \"nice\": 5}\n").unwrap();
+    rules.load_directory(&path);
+
+    assert_eq!(
+        rules.size(),
+        1,
+        "a rule that is no longer on disk must stop being applied: {:?}",
+        rules.get_rules().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(rules.get_rule("gone"), None, "the deleted rule is gone");
+    assert_eq!(rule_of(&rules, "kept")["nice"], 5, "and the edit was taken");
+
+    drop(directory);
+}
+
+/// The same, for a `name_regex`: a matcher compiled by an earlier load must not
+/// survive it, because a rule file is third-party content and its owner has to be
+/// able to withdraw a pattern.
+#[test]
+fn a_regex_matcher_does_not_outlive_the_load_that_compiled_it() {
+    let mut rules = rules();
+    let (directory, path) = rules_dir(&[(
+        "a.rules",
+        "{\"name\": \"browser\", \"name_regex\": \"^chro.*\", \"nice\": 3}\n",
+    )]);
+
+    rules.load_directory(&path);
+    assert_eq!(
+        rule_of(&rules, "chromium")["nice"],
+        3,
+        "the pattern matches"
+    );
+
+    fs::write(
+        path.join("a.rules"),
+        "{\"name\": \"browser\", \"nice\": 3}\n",
+    )
+    .unwrap();
+    rules.load_directory(&path);
+
+    assert_eq!(
+        rules.get_rule("chromium"),
+        None,
+        "the pattern was withdrawn, so a process that only matched it is no \
+         longer classified"
+    );
+    assert_eq!(
+        rule_of(&rules, "browser")["nice"],
+        3,
+        "the exact name still works"
+    );
+
+    drop(directory);
+}
+
+/// The resolved-rule cache is keyed on the process name, and a process name is
+/// the basename of `argv[0]`, which the kernel does not bound. A name long
+/// enough to matter is still answered correctly — it is only not remembered.
+///
+/// Asserting the answer alone would prove nothing: a lookup for a 128 KiB name
+/// returns `None` whether or not it was cached, because no rule matches it. What
+/// has to be pinned is the *cache*, which is why the count is asked for. 5000
+/// such names is 640 MB, against `MemoryMax=64M` in the shipped unit, and any
+/// unprivileged local process can produce them with `execve`.
+#[test]
+fn an_absurdly_long_name_is_answered_but_not_remembered() {
+    let mut rules = rules();
+    let (directory, path) = rules_dir(&[("a.rules", "{\"name\": \"real\", \"nice\": 7}\n")]);
+    rules.load_directory(&path);
+
+    // 128 KiB is `MAX_ARG_STRLEN`, the most a process can put in `argv[0]`.
+    let huge = "z".repeat(128 * 1024);
+    let before = rules.cached_resolution_count();
+    assert_eq!(
+        rules.get_rule(&huge),
+        None,
+        "no rule matches it, as expected"
+    );
+    assert_eq!(
+        rules.cached_resolution_count(),
+        before,
+        "a 128 KiB name must not become a cache key"
+    );
+
+    // A name of ordinary length still is one, so the guard is not simply
+    // disabling the cache.
+    assert_eq!(rule_of(&rules, "real")["nice"], 7);
+    assert_eq!(rules.cached_resolution_count(), before + 1);
+
+    drop(directory);
+}

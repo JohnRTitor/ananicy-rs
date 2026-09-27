@@ -1,9 +1,5 @@
 #![allow(clippy::io_other_error)]
-use {
-    ananicy_core::worker::{PlatformError, PlatformError::Unsupported},
-    std::time::Duration,
-    tracing::debug,
-};
+use {ananicy_core::worker::PlatformError, std::time::Duration};
 
 pub mod abi;
 pub mod cgroup;
@@ -18,6 +14,7 @@ pub mod topology;
 pub mod x3d;
 
 use {
+    abi::affinity,
     ananicy_core::{cgroup::CgroupIdentity, cpuset::CpuSet, worker::PlatformActions},
     cgroup::process::{CgroupProcessResolver, LinuxCgroupResolver},
     mounts::{CgroupVersion, get_cgroup_info},
@@ -98,8 +95,14 @@ impl PlatformActions for LinuxPlatform {
         priority::set_latency_nice(pid, tids, lat_nice)
     }
 
-    fn set_sched(&self, pid: i32, sched: &str, rtprio: u32) -> Result<(), PlatformError> {
-        priority::set_sched(pid, sched, rtprio)
+    fn set_sched(
+        &self,
+        pid: i32,
+        tids: &[i32],
+        sched: &str,
+        rtprio: u32,
+    ) -> Result<(), PlatformError> {
+        priority::set_sched(pid, tids, sched, rtprio)
     }
 
     fn set_io_priority(&self, pid: i32, ioclass: &str, ionice: i32) -> Result<(), PlatformError> {
@@ -125,12 +128,14 @@ impl PlatformActions for LinuxPlatform {
     }
 
     fn set_affinity(&self, pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError> {
-        if let Err(e) = abi::affinity::set_affinity(pid, tids, cpuset) {
-            debug!("set_affinity failed for pid {}: {}", pid, e);
-            Err(Unsupported)
-        } else {
-            Ok(())
-        }
+        // The errno is already classified by `abi::affinity`, which knows the
+        // difference between "the process is gone", "we may not do that" and
+        // "nothing in the cpuset is available here". Collapsing all three into
+        // `Unsupported` — as this used to — meant a process that exited while
+        // its rule was being applied was logged as a rule failure rather than
+        // as the expected disappearance, and a cpuset that did not fit the
+        // process' allowed CPUs looked like an unsupported kernel.
+        affinity::set_affinity(pid, tids, cpuset)
     }
 
     fn process_cgroup(&self, pid: i32) -> Option<CgroupIdentity> {

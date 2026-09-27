@@ -283,7 +283,13 @@ impl PlatformActions for FakePlatform {
         self.record("set_latency_nice", Call::SetLatencyNice { value: lat_nice })
     }
 
-    fn set_sched(&self, _pid: i32, sched: &str, rtprio: u32) -> Result<(), PlatformError> {
+    fn set_sched(
+        &self,
+        _pid: i32,
+        _tids: &[i32],
+        sched: &str,
+        rtprio: u32,
+    ) -> Result<(), PlatformError> {
         self.record(
             "set_sched",
             Call::SetSched {

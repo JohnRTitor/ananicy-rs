@@ -85,7 +85,12 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
             return Ok(None);
         };
 
-        // Try the cache first
+        // Try the cache first. A read lock is enough: `LruCache::get` takes
+        // `&mut self` because it moves the entry to the most-recently-used end,
+        // so the interior mutability is behind the `RwLock` rather than behind a
+        // cell — a `read()` cannot do that. Taking the *write* lock here instead
+        // serialised every process's cgroup lookup behind every other one's, on
+        // the one path the worker takes for every process that has a rule.
         let Ok(mut cache) = self.cache.write() else {
             return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
         };

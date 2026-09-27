@@ -11,8 +11,22 @@ Nice=-5
 SuccessExitStatus=143
 OOMScoreAdjust=-999
 
-# Delegate only the service's cgroup subtree to ananicy-rs.
-# This does not grant control over user.slice, session scopes, or other units.
+# The daemon announces readiness and shutdown with `sd_notify`. Without this the
+# unit is `Type=simple`, whose default `NotifyAccess=` is `none`, so both
+# notifications are discarded by the manager and the calls do nothing at all.
+NotifyAccess=main
+
+# Delegate the subtree above this unit's cgroup. This does not grant control over
+# user.slice, session scopes, or other units.
+#
+# It also does not, by itself, make CPU bandwidth rules work. `Delegate=yes` alone
+# hands over the *parent* (system.slice), which holds processes, so the kernel
+# refuses `+cpu` on it ("no internal process"), and every cgroup we create below
+# ends up with no cpu.max and no cpu.weight. Adding `CPUWeight=100` below makes
+# systemd enable `cpu` in the unit's own cgroup.subtree_control, which is what
+# makes CPUQuota/CPUWeight rules and nice-mirroring take effect. Not set here: it
+# is a policy choice about this unit's own share of the machine, and the daemon
+# logs a warning when it cannot apply a weight.
 Delegate=yes
 
 Restart=always
@@ -30,6 +44,13 @@ ProtectClock=yes
 ProtectKernelLogs=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
+
+# `ProtectKernelTunables=yes` mounts `/sys` read-only, which includes the AMD X3D
+# driver's `amd_x3d_mode` attribute — so `x3d_mode` in ananicy.conf could never be
+# applied, and the failure was only visible as one warning at start-up.
+# `ReadWritePaths=` is applied before the read-only remount and is the documented
+# way to carve a subdirectory back out of one.
+ReadWritePaths=/sys/bus/platform/drivers/amd_x3d_vcache
 
 CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_RESOURCE CAP_DAC_READ_SEARCH CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 ProcSubset=pid

@@ -72,7 +72,13 @@ pub trait PlatformActions: Send + Sync {
 
     fn set_priority(&self, pid: i32, tids: &[i32], nice: i32) -> Result<(), PlatformError>;
     fn set_latency_nice(&self, pid: i32, tids: &[i32], lat_nice: i32) -> Result<(), PlatformError>;
-    fn set_sched(&self, pid: i32, sched: &str, rtprio: u32) -> Result<(), PlatformError>;
+    fn set_sched(
+        &self,
+        pid: i32,
+        tids: &[i32],
+        sched: &str,
+        rtprio: u32,
+    ) -> Result<(), PlatformError>;
     fn set_io_priority(&self, pid: i32, ioclass: &str, ionice: i32) -> Result<(), PlatformError>;
     fn set_oom_score_adj(&self, pid: i32, oom_score_adj: i32) -> Result<(), PlatformError>;
     fn add_pid_to_cgroup(&self, pid: i32, cgroup: &str) -> Result<(), PlatformError>;
@@ -385,7 +391,10 @@ impl Worker {
                 "Setting scheduler of {}({}) to {}",
                 p.name, p.identity.pid.0, sched
             );
-            match self.platform.set_sched(p.identity.pid.0, sched, rtprio) {
+            match self
+                .platform
+                .set_sched(p.identity.pid.0, tids, sched, rtprio)
+            {
                 Ok(()) => applied_any = true,
                 Err(e) if e.is_skippable() => {
                     partial_failure.get_or_insert(e);

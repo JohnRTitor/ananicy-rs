@@ -34,6 +34,102 @@ pub struct NetlinkMonitor {
     sock: NlSocketHandle,
 }
 
+/// A process' identity as the filter remembers it: a length and a digest, never
+/// the name.
+///
+/// The bound that matters here is the *size* of an entry, not the count of them.
+/// The process name is the basename of `argv[0]`, which the kernel does not
+/// upper-bound — `MAX_ARG_STRLEN` is 128 KiB — and storing it verbatim at
+/// `REPORTED_NAMES_CAPACITY` entries would let any unprivileged local process
+/// make this cache cost a gigabyte against a `MemoryMax=64M`. Storing a digest
+/// fixes the size at 16 bytes per entry, so the whole cache is bounded at about
+/// 128 KiB no matter what names pass through it.
+///
+/// This is the same reasoning as `Rules::MAX_CACHEABLE_NAME`, arrived at the
+/// second time; the first time it was applied to the rule cache and missed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Identity {
+    len: u32,
+    digest: u64,
+}
+
+impl Identity {
+    /// FNV-1a. Not chosen for cryptographic strength: it only has to tell one
+    /// process' name from another's, and the cost of a collision is one process
+    /// not being re-reported, not a security property.
+    fn of(name: &str) -> Self {
+        let mut digest = 0xcbf2_9ce4_8422_2325u64;
+        for byte in name.as_bytes() {
+            digest ^= u64::from(*byte);
+            digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Self {
+            len: name.len() as u32,
+            digest,
+        }
+    }
+}
+
+/// Decides which proc-connector events turn into work for the rule engine.
+///
+/// The proc connector delivers at least two, and often three, events for the
+/// ordinary way a program starts:
+///
+/// ```text
+/// FORK(p)   the child exists, but has not exec'd: /proc/p/* is the parent's
+/// EXEC(p)   p has exec'd: this is the first event that carries p's real name
+/// COMM(p)   p's `comm` was set, which exec also does
+/// ```
+///
+/// A `FORK(p)` immediately followed by an `EXEC(p)` is the norm, not the
+/// exception: it is what `posix_spawn`, `system(3)`, `sh -c` and the Go/Java
+/// runtimes all do. Reporting only the first of them classifies every
+/// `fork`+`exec`'d process under *its parent*, and the one event that would
+/// have corrected that is the one a "same pid as last time" filter throws away.
+///
+/// So the filter is per process and name-based rather than positional: a pid is
+/// reported when it is seen for the first time, or when the name resolved for it
+/// now differs from the name it was last reported under. That keeps the
+/// `COMM`-after-`EXEC` pair from being processed twice — the two resolve to the
+/// same name — while letting a process that really did change its identity
+/// through `execve` be reclassified.
+///
+/// Bounded so a long-running daemon under process churn cannot grow it without
+/// limit; eviction only costs a redundant report of a still-live pid.
+struct ReportedNames {
+    seen: lru::LruCache<i32, Identity>,
+}
+
+/// How many pids' last-reported identities are remembered. Comfortably above the
+/// number of concurrently live processes on a large machine, and small enough
+/// that the bookkeeping is free. At 16 bytes of identity per entry the whole
+/// cache is ~128 KiB at this size.
+const REPORTED_NAMES_CAPACITY: usize = 8192;
+
+impl ReportedNames {
+    fn new() -> Self {
+        Self {
+            seen: lru::LruCache::new(
+                std::num::NonZeroUsize::new(REPORTED_NAMES_CAPACITY)
+                    .unwrap_or(std::num::NonZeroUsize::MIN),
+            ),
+        }
+    }
+
+    /// Records `name` as `pid`'s reported identity and answers whether the
+    /// caller should hand the process to the worker.
+    fn should_report(&mut self, pid: i32, name: &str) -> bool {
+        let identity = Identity::of(name);
+        match self.seen.get(&pid) {
+            Some(previous) if *previous == identity => false,
+            _ => {
+                self.seen.put(pid, identity);
+                true
+            }
+        }
+    }
+}
+
 impl NetlinkMonitor {
     pub fn new() -> Result<Self, io::Error> {
         let pid = id();
@@ -99,7 +195,7 @@ impl NetlinkMonitor {
         )?;
 
         let mut event_list: Vec<epoll::Event> = Vec::with_capacity(1);
-        let mut prev_pid = 0;
+        let mut reported = ReportedNames::new();
 
         info!("Starting epoll-based Netlink event loop");
 
@@ -164,36 +260,56 @@ impl NetlinkMonitor {
                         continue;
                     };
 
-                    // Exec/Fork/Comm are handled identically: report the pid if it differs
-                    // from the last one we saw (`get_command_from_pid` does the slow
-                    // procfs lookup; `prev_pid` avoids repeating it for the same process).
-                    let reported_pid = match payload.payload().event {
+                    // A `Fork` event and the `Exec` that follows it name the *same*
+                    // pid, and they do not carry the same thing. At `Fork` time the
+                    // child has not run `execve` yet, so its `mm` — and therefore
+                    // its `/proc/<pid>/cmdline`, `/proc/<pid>/exe` and
+                    // `/proc/<pid>/comm` — is still a copy of the parent's, and
+                    // `get_command_from_pid` answers with the *parent's* name. The
+                    // `Exec` event is the first and only notification that carries
+                    // the name the rule engine is meant to match on.
+                    //
+                    // De-duplicating on "the pid differs from the previous one"
+                    // therefore threw the `Exec` away in exactly the case it
+                    // mattered: a `fork()` immediately followed by an `execve()`
+                    // produces `FORK(p)` then `EXEC(p)`, and the second is dropped
+                    // because the first has just set the marker. A shell that runs
+                    // a single command gets the *shell's* rule applied and the
+                    // command's own rule never runs. `ReportedNames` is the filter
+                    // that replaces it.
+                    let pid = match payload.payload().event {
                         ProcEvent::Exec { process_pid, .. }
-                        | ProcEvent::Comm { process_pid, .. } => Some(process_pid),
-                        ProcEvent::Fork { child_pid, .. } => Some(child_pid),
-                        // We can send Exit if needed in the future
-                        ProcEvent::Exit { .. } => None,
-                        _ => None,
+                        | ProcEvent::Comm { process_pid, .. } => process_pid,
+                        ProcEvent::Fork { child_pid, .. } => child_pid,
+                        // Exit carries nothing to classify. It can be handled
+                        // here if a use for it appears.
+                        ProcEvent::Exit { .. } => continue,
+                        _ => continue,
                     };
 
-                    if let Some(pid) = reported_pid
-                        && pid != prev_pid
+                    // The swapper/idle thread is PID 0. It is not a process, and
+                    // matching a rule against it is never what anyone meant.
+                    if pid == 0 {
+                        continue;
+                    }
+
+                    let name = get_command_from_pid(pid);
+                    if !reported.should_report(pid, &name) {
+                        continue;
+                    }
+
+                    if tx
+                        .send(Process::new(Pid(pid), name).with_authoritative_name())
+                        .is_err()
                     {
-                        prev_pid = pid;
-                        let name = get_command_from_pid(pid);
-                        if tx
-                            .send(Process::new(Pid(pid), name).with_authoritative_name())
-                            .is_err()
-                        {
-                            // The receiver is gone, which means the worker has
-                            // stopped and nothing is left to apply rules to.
-                            // Tearing the monitor down lets the caller join the
-                            // worker and shut down; panicking here would take
-                            // the whole daemon down on the main thread instead.
-                            warn!("Worker thread is gone, stopping the netlink listener");
-                            shutdown_flag.store(true, Ordering::SeqCst);
-                            return Ok(());
-                        }
+                        // The receiver is gone, which means the worker has
+                        // stopped and nothing is left to apply rules to.
+                        // Tearing the monitor down lets the caller join the
+                        // worker and shut down; panicking here would take the
+                        // whole daemon down on the main thread instead.
+                        warn!("Worker thread is gone, stopping the netlink listener");
+                        shutdown_flag.store(true, Ordering::SeqCst);
+                        return Ok(());
                     }
                 }
             }
@@ -222,4 +338,149 @@ impl Drop for NetlinkMonitor {
             debug!("Netlink monitor unsubscribed successfully");
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bug this filter exists to prevent, reproduced from a real event
+    /// stream: a child is forked, sleeps, and only then execs.
+    ///
+    /// `/proc/<child>/cmdline` at the `Fork` event is the parent's copy, because
+    /// `fork(2)` gives the child the parent's `mm` and the `execve(2)` has not
+    /// run yet. `get_command_from_pid` therefore answers `slowexec`. The `Exec`
+    /// that follows is the only event that ever says `sleep`.
+    #[test]
+    fn the_exec_that_follows_a_fork_is_not_thrown_away() {
+        let mut reported = ReportedNames::new();
+
+        assert!(
+            reported.should_report(4242, "slowexec"),
+            "the fork is reported, under the name visible at that moment"
+        );
+        assert!(
+            reported.should_report(4242, "sleep"),
+            "the exec that renames the process must be reported too, or the \
+             process is tuned with its parent's rule for the rest of its life"
+        );
+    }
+
+    /// The ordinary `fork` → `exec` → `comm` sequence resolves to the same name
+    /// twice, so the third event is a repeat and costs nothing to skip. The
+    /// `comm` the kernel emits after every `execve` would otherwise double the
+    /// `/proc` reads for every single process the system starts.
+    #[test]
+    fn the_comm_after_an_exec_is_a_repeat_and_is_skipped() {
+        let mut reported = ReportedNames::new();
+
+        assert!(
+            reported.should_report(1, "sh"),
+            "fork, under the parent's name"
+        );
+        assert!(
+            reported.should_report(1, "vim"),
+            "exec, under the process' own name"
+        );
+        assert!(
+            !reported.should_report(1, "vim"),
+            "the comm the kernel emits after an execve resolves to the same \
+             name and is a repeat"
+        );
+    }
+
+    /// A process that renames itself with `prctl(PR_SET_NAME)` while keeping its
+    /// `argv[0]`, and therefore while `get_command_from_pid` keeps answering
+    /// with the same string, is not re-reported: the rule engine matched on
+    /// `argv[0]` both times and there is nothing new to apply.
+    #[test]
+    fn an_unchanged_name_is_never_reported_twice() {
+        let mut reported = ReportedNames::new();
+        assert!(reported.should_report(7, "kworker"));
+        for _ in 0..100 {
+            assert!(!reported.should_report(7, "kworker"));
+        }
+    }
+
+    /// The filter is per pid: interleaved processes do not suppress each other.
+    #[test]
+    fn different_pids_do_not_suppress_each_other() {
+        let mut reported = ReportedNames::new();
+        assert!(reported.should_report(100, "sh"));
+        assert!(reported.should_report(200, "sh"));
+        assert!(reported.should_report(100, "sleep"));
+        assert!(reported.should_report(200, "sleep"));
+        assert!(!reported.should_report(100, "sleep"));
+        assert!(!reported.should_report(200, "sleep"));
+    }
+
+    /// A pid is reused by a new process. If the entry has already been evicted
+    /// the new process is reported, as a first sighting. If the pid is *still*
+    /// cached and the new process resolves to the same name, it is not — the
+    /// filter cannot see the difference, because all it knows is a pid and a
+    /// string.
+    ///
+    /// That gap is bounded and worth stating rather than hiding: the entry is
+    /// only reachable while the pid is among the last 8192 processes seen, so
+    /// reuse has to happen inside a burst that recent to be missed, and the
+    /// initial `/proc` walk at start-up reports every process that existed
+    /// before the listener was attached. The alternative — reporting on every
+    /// event — costs one `/proc` read per thread creation for the lifetime of
+    /// the daemon, which is the larger and more certain waste.
+    #[test]
+    fn eviction_lets_a_recycled_pid_be_reported_again() {
+        let mut reported = ReportedNames::new();
+        assert!(reported.should_report(1, "sh"));
+
+        for pid in 2..=(REPORTED_NAMES_CAPACITY as i32 + 8) {
+            assert!(reported.should_report(pid, "sh"));
+        }
+
+        assert!(
+            reported.should_report(1, "sh"),
+            "pid 1 fell out of the cache, so its next sighting is a first sighting"
+        );
+    }
+}
+
+/// The identity is fixed-size, so the cache cannot be made expensive by a long
+/// `argv[0]`. This is the same bound as `Rules::MAX_CACHEABLE_NAME`, and it is
+/// asserted here because the first version of this filter stored the name
+/// verbatim and had exactly the hole BUG-014 describes.
+#[test]
+fn an_absurdly_long_name_does_not_grow_the_cache() {
+    let mut reported = ReportedNames::new();
+
+    // 128 KiB is `MAX_ARG_STRLEN`, the most a process can put in `argv[0]`.
+    let huge = "z".repeat(128 * 1024);
+    assert!(reported.should_report(1, &huge));
+
+    // The point is not the name, it is that two absurd names are still told apart
+    // and that a short name is not confused with a long one — a filter that
+    // stored a truncated prefix would fail the second half of this.
+    assert!(
+        !reported.should_report(1, &huge),
+        "the same absurd name is a repeat"
+    );
+    assert!(
+        reported.should_report(1, &("z".repeat(128 * 1024 - 1) + "y")),
+        "a different name of nearly the same length is not a repeat"
+    );
+    assert!(
+        reported.should_report(2, "sh"),
+        "a short name is not confused with a long one"
+    );
+    assert!(
+        !reported.should_report(2, "sh"),
+        "and is still de-duplicated normally"
+    );
+}
+
+#[test]
+fn the_identity_is_sixteen_bytes_regardless_of_the_name() {
+    assert_eq!(
+        std::mem::size_of::<Identity>(),
+        16,
+        "a fixed-size identity is what bounds the cache"
+    );
 }
