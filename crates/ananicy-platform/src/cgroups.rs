@@ -69,6 +69,17 @@ pub struct CgroupSettings {
     pub cpu_weight: Option<u32>,
 }
 
+/// Creates the cgroup a rule asks for and applies the rule's settings to it.
+///
+/// Returns whether the cgroup was created, not whether the settings took effect.
+/// An existing cgroup is reported as not created but still has the settings
+/// applied, which is the point: a cgroup can already be there because a previous
+/// run made it, because another rule names it, or because it predates the rule
+/// being edited, and in none of those cases is its current configuration
+/// necessarily the one this rule asks for. Skipping the settings for an existing
+/// cgroup meant editing a `.cgroups` file had no effect until the cgroup was
+/// deleted by hand. The reference re-applies them unconditionally for the same
+/// reason.
 pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
     let Some(manager) = get_manager() else {
         debug!(
@@ -78,22 +89,29 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
         return false;
     };
 
-    if manager.cgroup_exists(cgroup_name) {
-        debug!("cgroup {} already exists, ignoring", cgroup_name);
-        return false;
-    }
-
-    let Some(target) = manager.ensure_child(cgroup_name) else {
-        return false;
+    let (target, created) = if manager.cgroup_exists(cgroup_name) {
+        match manager.resolve_target_dir(cgroup_name) {
+            Some(target) => (target, false),
+            None => return false,
+        }
+    } else {
+        match manager.ensure_child(cgroup_name) {
+            Some(target) => (target, true),
+            None => return false,
+        }
     };
 
+    // Applied either way. A failure to write is reported by the manager, which
+    // knows the difference between "the controller is not enabled here" and a
+    // real write error, and says so once per cgroup rather than once per
+    // process.
     if let Some(quota) = settings.cpu_quota {
         manager.set_cpu_max(&target, quota);
     }
     if let Some(weight) = settings.cpu_weight {
         manager.set_cpu_weight(&target, weight);
     }
-    true
+    created
 }
 
 pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformError> {
@@ -129,7 +147,7 @@ mod tests {
     use {
         super::*,
         crate::{cgroup::CgroupVersion, mounts::CgroupInfo},
-        std::path::PathBuf,
+        std::{fs, path::PathBuf},
     };
 
     /// The manager currently cached, and the hierarchy it was built from.
@@ -140,10 +158,83 @@ mod tests {
             .and_then(|guard| guard.as_ref().map(|manager| manager.info().clone()))
     }
 
+    /// `MANAGER` is process-global and these tests replace it wholesale, so they
+    /// have to take turns. Every test that injects a hierarchy holds this.
+    static MANAGER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The regression: a `.cgroups` rule edited while its cgroup already exists
+    /// had no effect, because the early return on "it exists" happened before the
+    /// settings were written. The reference re-applies them, which is what makes
+    /// editing the file work.
+    ///
+    /// The cgroup is created here, the controller files are put inside it by hand
+    /// -- they would be created by the kernel in a real hierarchy -- and the rule
+    /// is then applied again with a different value.
+    #[test]
+    fn a_rule_is_reapplied_to_a_cgroup_that_already_exists() {
+        let _guard = MANAGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let hierarchy = tempfile::tempdir().expect("a temporary hierarchy");
+        let mount = hierarchy.path().to_path_buf();
+
+        *MANAGER.write().expect("an uncontended lock") =
+            Some(Arc::new(CgroupManager::new(CgroupInfo {
+                version: CgroupVersion::V1,
+                mount_point: mount.clone(),
+            })));
+
+        assert!(
+            create_cgroup(
+                "reapply",
+                CgroupSettings {
+                    cpu_quota: Some(90),
+                    ..Default::default()
+                }
+            ),
+            "the first call creates it"
+        );
+
+        let dir = mount.join("cpu/reapply");
+        let period_file = dir.join("cpu.cfs_period_us");
+        let quota_file = dir.join("cpu.cfs_quota_us");
+        let shares_file = dir.join("cpu.shares");
+        // All three, as the kernel would provide them. The v1 path writes the
+        // period before the quota and gives up if it cannot, so a partial set
+        // here would test nothing.
+        fs::write(&period_file, "1000000\n").expect("a period file");
+        fs::write(&quota_file, "0\n").expect("a quota file");
+        fs::write(&shares_file, "1024\n").expect("a shares file");
+
+        // Second call: not created, but the settings must be written.
+        assert!(
+            !create_cgroup(
+                "reapply",
+                CgroupSettings {
+                    cpu_quota: Some(50),
+                    cpu_weight: Some(256),
+                },
+            ),
+            "an existing cgroup is reported as not created"
+        );
+
+        let quota = fs::read_to_string(&quota_file).expect("read back the quota");
+        let shares = fs::read_to_string(&shares_file).expect("read back the shares");
+        assert_ne!(
+            quota.trim(),
+            "0",
+            "the quota must be re-applied to an existing cgroup, not left at what it was"
+        );
+        assert_ne!(
+            shares.trim(),
+            "1024",
+            "the weight must be re-applied to an existing cgroup too"
+        );
+    }
+
     /// A single test drives the cache: `MANAGER` is process-global, so two tests
     /// mutating it would race.
     #[test]
     fn a_re_detection_reaches_the_cgroup_operations() {
+        let _guard = MANAGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let hierarchy = tempfile::tempdir().expect("a temporary hierarchy");
 
         // Pretend the daemon detected this cgroup v1 hierarchy.

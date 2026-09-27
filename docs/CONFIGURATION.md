@@ -229,6 +229,11 @@ Example:
 An attribute whose value is not a number is ignored, so a malformed rule configures nothing rather
 than an arbitrary amount. Values outside the kernel's range are clamped to it.
 
+These settings are applied every time the cgroup is prepared at start-up, whether
+the daemon created the cgroup or it was already there. Editing a `.cgroups` file
+therefore takes effect on the next start without the cgroup having to be deleted
+first.
+
 ### Cgroups v2 Delegation and Ownership
 
 `ananicy-rs` respects the kernel's cgroup-v2 single-writer model. The systemd unit uses `Delegate=yes`. It does not delegate `user.slice`, desktop session scopes, or other systemd units.
