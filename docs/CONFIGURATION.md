@@ -100,10 +100,11 @@ of about `32` for the entire cgroup.
 Set `apply_cpu_weight = false` to keep the `nice` value and drop the mirror. The mirror is
 also skipped whenever the kernel does not expose a `cpu.weight` (cgroup v2) or
 `cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled there
-first, and `ananicy-rs` never enables it in a cgroup it does not own. When the cgroup is
-one the daemon manages and the reason is a missing file, it says so at `warn` level: that
-warning means a `nice` was applied but the bandwidth it implies was not. `ananicy-cpp`
-has no equivalent behaviour — it only ever calls `setpriority(2)`.
+first, and `ananicy-rs` never enables it in a cgroup it does not own. When that happens
+to a cgroup the daemon manages, it says so at `warn` level, **once per cgroup**: the
+warning means the `nice` value was applied but the bandwidth it implies was not, and it
+names the cgroup and the file that is missing. `ananicy-cpp` has no equivalent behaviour
+— it only ever calls `setpriority(2)`.
 
 ### `cgroup_realtime_workaround`
 

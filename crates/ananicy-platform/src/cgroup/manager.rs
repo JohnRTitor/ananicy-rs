@@ -1,10 +1,14 @@
-use std::{path::PathBuf, thread::available_parallelism};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    thread::available_parallelism,
+};
 
 use {
     std::{
         fs::{self, OpenOptions},
         io::Write,
-        path::Path,
     },
     tracing::{debug, error, warn},
 };
@@ -48,6 +52,11 @@ fn bandwidth_us(cores: u64, quota: u32, period: u64) -> u64 {
 pub struct CgroupManager {
     info: CgroupInfo,
     delegated_root: Option<PathBuf>,
+    /// Cgroups already reported as having no bandwidth control file.
+    ///
+    /// Behind an `Arc` because the manager lives in a process-global and is
+    /// cloned to reach it, so the memory has to be shared rather than per-clone.
+    reported_weightless: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl CgroupManager {
@@ -70,6 +79,7 @@ impl CgroupManager {
         Self {
             info,
             delegated_root,
+            reported_weightless: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -79,11 +89,41 @@ impl CgroupManager {
         Self {
             info,
             delegated_root,
+            reported_weightless: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     pub fn info(&self) -> &CgroupInfo {
         &self.info
+    }
+
+    /// Reports a cgroup that has no bandwidth control file, once per cgroup.
+    ///
+    /// A missing `cpu.weight` is a property of the cgroup, not of the process: it
+    /// means `cpu` is not in the parent cgroup's `cgroup.subtree_control`. The
+    /// process's `nice` was applied either way, so nothing is wrong, but the
+    /// bandwidth that `nice` implies on cgroup v2 was not. This was a `debug`
+    /// line, which on a machine where no leaf has the file meant one line per
+    /// process per rule and nothing at all at the default log level.
+    ///
+    /// Once per path rather than once per process, because the condition repeats
+    /// for every process in that cgroup and saying it again adds nothing.
+    fn report_weightless(&self, target: &Path, file: &Path) {
+        let Ok(mut seen) = self.reported_weightless.lock() else {
+            return;
+        };
+        if !seen.insert(target.to_path_buf()) {
+            return;
+        }
+        warn!(
+            "Cgroup {} has no {}, so the cpu weight implied by a rule's nice value \
+             cannot be applied to it. The nice value itself was applied. The cgroup \
+             needs the cpu controller in its parent's cgroup.subtree_control; if it is \
+             one of ours, that is the unit's delegation at fault, and restarting the \
+             daemon will not fix it.",
+            target.display(),
+            file.file_name().unwrap_or_default().to_string_lossy(),
+        );
     }
 
     /// Helper to resolve the target directory based on the cgroup name and version.
@@ -421,6 +461,7 @@ impl CgroupController for CgroupManager {
             let weight_val = weight.clamp(1, 10000);
             let weight_file = target.join("cpu.weight");
             let Ok(mut f) = OpenOptions::new().write(true).open(&weight_file) else {
+                self.report_weightless(target, &weight_file);
                 debug!("set_cpu_weight: Failed to open {:?}", weight_file);
                 return false;
             };
@@ -434,6 +475,7 @@ impl CgroupController for CgroupManager {
             let shares = shares.clamp(2, 262144);
             let shares_file = target.join("cpu.shares");
             let Ok(mut f) = OpenOptions::new().write(true).open(&shares_file) else {
+                self.report_weightless(target, &shares_file);
                 debug!("set_cpu_weight: Failed to open {:?}", shares_file);
                 return false;
             };
@@ -502,13 +544,13 @@ mod tests {
     /// A `Manager` without a hierarchy resolves nothing.
     #[test]
     fn a_manager_without_a_hierarchy_resolves_nothing() {
-        let manager = CgroupManager {
-            info: CgroupInfo {
+        let manager = CgroupManager::new_with_root(
+            CgroupInfo {
                 mount_point: PathBuf::new(),
                 version: CgroupVersion::None,
             },
-            delegated_root: None,
-        };
+            None,
+        );
 
         assert_eq!(manager.resolve_target_dir("anything"), None);
         assert!(!manager.cgroup_exists("anything"));
@@ -516,15 +558,91 @@ mod tests {
 
     #[test]
     fn info_is_reported_back() {
-        let manager = CgroupManager {
-            info: CgroupInfo {
+        let manager = CgroupManager::new_with_root(
+            CgroupInfo {
                 mount_point: PathBuf::from("/sys/fs/cgroup"),
                 version: CgroupVersion::V2,
             },
-            delegated_root: None,
-        };
+            None,
+        );
 
         assert_eq!(manager.info().version, CgroupVersion::V2);
         assert_eq!(manager.info().mount_point, PathBuf::from("/sys/fs/cgroup"));
+    }
+}
+
+#[cfg(test)]
+mod weightless_reporting {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts what the logger was actually handed, so "warns once" is measured
+    /// rather than assumed. `tracing` has no capture harness here, so the set the
+    /// helper maintains is inspected directly instead -- it is the thing that
+    /// decides whether the second call logs.
+    fn manager() -> CgroupManager {
+        CgroupManager::new_with_root(
+            CgroupInfo {
+                mount_point: PathBuf::from("/sys/fs/cgroup"),
+                version: CgroupVersion::V2,
+            },
+            Some(PathBuf::from("/sys/fs/cgroup/delegated")),
+        )
+    }
+
+    #[test]
+    fn a_cgroup_is_reported_once_and_a_second_one_still_is_reported() {
+        let m = manager();
+        let a = Path::new("/sys/fs/cgroup/delegated/a");
+        let b = Path::new("/sys/fs/cgroup/delegated/b");
+        let f = Path::new("/sys/fs/cgroup/delegated/a/cpu.weight");
+
+        m.report_weightless(a, f);
+        m.report_weightless(a, f);
+        m.report_weightless(b, f);
+
+        let seen = m
+            .reported_weightless
+            .lock()
+            .expect("the set is not poisoned");
+        assert_eq!(seen.len(), 2, "one entry per cgroup, not per call");
+        assert!(seen.contains(a));
+        assert!(seen.contains(b));
+    }
+
+    /// The manager is cloned to reach the process-global, so the memory has to be
+    /// shared. If it were per-clone, a clone would re-report everything.
+    #[test]
+    fn a_clone_does_not_re_report_what_the_original_reported() {
+        let m = manager();
+        let a = Path::new("/sys/fs/cgroup/delegated/a");
+        let f = Path::new("/sys/fs/cgroup/delegated/a/cpu.weight");
+        m.report_weightless(a, f);
+
+        let clone = m.clone();
+        clone.report_weightless(a, f);
+        let seen = clone.reported_weightless.lock().expect("not poisoned");
+        assert_eq!(seen.len(), 1, "the set must be shared across clones");
+    }
+
+    /// A poisoned lock must not take the daemon down: the worst outcome of losing
+    /// the set is a repeated warning, which is what it was before.
+    #[test]
+    fn a_poisoned_lock_is_survivable() {
+        static CALLED: AtomicUsize = AtomicUsize::new(0);
+        let m = manager();
+        m.reported_weightless
+            .lock()
+            .expect("lock it once")
+            .insert(PathBuf::from("/poison"));
+        // Poison it deliberately.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = m.reported_weightless.lock().unwrap();
+            panic!("poison");
+        });
+        CALLED.fetch_add(1, Ordering::SeqCst);
+        // Must not panic even though the lock is now poisoned.
+        m.report_weightless(Path::new("/sys/fs/cgroup/delegated/x"), Path::new("x"));
+        assert_eq!(CALLED.load(Ordering::SeqCst), 1);
     }
 }
