@@ -101,6 +101,62 @@ fn strip_deleted_suffix(name: &str) -> String {
     }
 }
 
+/// The basename of one command-line argument, with the Wine/Proton fix.
+///
+/// A Windows-style path is only rewritten when it ends in `.exe`, because that
+/// is the case where a backslash is a separator rather than a legal character
+/// in a Unix file name.
+fn arg_basename(arg: &str) -> String {
+    let name = if arg.ends_with(".exe") {
+        arg.replace('\\', "/")
+    } else {
+        arg.to_string()
+    };
+
+    match name.rfind('/') {
+        Some(slash_idx) => name[slash_idx + 1..].to_string(),
+        None => name,
+    }
+}
+
+/// The name to match a process under, from its command line and `comm`.
+///
+/// `script` is the second argument when there is one and `comm` the kernel's
+/// name for the process, which the caller reads only when a second argument
+/// exists because that is the only case where it changes the answer.
+///
+/// A `#!` script is exec'd with the *interpreter* in `argv[0]` and the script in
+/// `argv[1]`, so the name every rule in every rule set is written against would
+/// be the interpreter's — a wrapped program is matched as `bash`, and given the
+/// `bash` rule. That is not a hypothetical: `bin/foo` is a `#!` script for
+/// essentially every program on NixOS, and it cost 285 rule applications to 16
+/// processes named `bash` in 25 minutes on an otherwise idle machine.
+///
+/// The shape is told from a program that merely rewrote its `argv[0]`, which
+/// looks similar and must keep resolving to `argv[0]`: the kernel sets `comm` to
+/// what is being exec'd, so in the shebang case `comm` names the script in
+/// `argv[1]`, truncated to 15 bytes — hence a prefix test rather than equality.
+/// A rewritten `argv[0]` has an ordinary second argument, which `comm` does not
+/// name, so it falls through to `argv[0]` as before.
+///
+/// One behaviour does change, and it is a correction rather than a regression:
+/// `sh /path/script` is now matched as `script` rather than as `sh`. The program
+/// being run is the script, and the interpreter is not what a rule names.
+fn resolve_argv_name(argv0: &str, script: Option<&str>, comm: Option<&str>) -> String {
+    let name = arg_basename(argv0);
+
+    let (Some(script), Some(comm)) = (script, comm) else {
+        return name;
+    };
+
+    let comm = comm.trim();
+    if !comm.is_empty() && comm != name && arg_basename(script).starts_with(comm) {
+        return arg_basename(script);
+    }
+
+    name
+}
+
 /// Tries to determine the effective process name exactly as C++ ananicy did:
 /// 1. `/proc/<pid>/cmdline` (argv[0] basename)
 /// 2. `/proc/<pid>/exe` (readlink basename, trimming ` (deleted)`)
@@ -112,27 +168,27 @@ pub fn get_command_from_pid(pid: i32) -> String {
     if let Ok(cmdline_bytes) = fs::read(format!("{}/cmdline", proc_dir))
         && !cmdline_bytes.is_empty()
     {
-        // Find the first non-empty argument. A process that rewrote its argv[0]
+        // The first two non-empty arguments. A process that rewrote its argv[0]
         // to "" still has a name in `exe` or `comm`, so an empty first argument
         // must not win over them.
-        let argv0_bytes = cmdline_bytes
+        let mut args = cmdline_bytes
             .split(|&b| b == 0)
-            .find(|arg| !arg.is_empty())
-            .unwrap_or(&[]);
-        if !argv0_bytes.is_empty() {
-            let argv0_str = String::from_utf8_lossy(argv0_bytes);
-            let mut name = argv0_str.to_string();
+            .filter(|arg| !arg.is_empty())
+            .take(2);
 
-            // If the name ends with .exe, it might be a Wine/Proton game with backslashes
-            if name.ends_with(".exe") {
-                name = name.replace('\\', "/");
-            }
+        if let Some(argv0_bytes) = args.next()
+            && !argv0_bytes.is_empty()
+        {
+            // `comm` is only worth reading when a second argument exists, since
+            // that is the only case where it can change the answer. Most
+            // processes have a one-argument command line and never pay for it.
+            let argv0 = String::from_utf8_lossy(argv0_bytes);
+            let script = args.next().map(String::from_utf8_lossy);
+            let comm = script
+                .as_ref()
+                .map(|_| fs::read_to_string(format!("{}/comm", proc_dir)).unwrap_or_default());
 
-            // Get the basename
-            if let Some(slash_idx) = name.rfind('/') {
-                return name[slash_idx + 1..].to_string();
-            }
-            return name;
+            return resolve_argv_name(&argv0, script.as_deref(), comm.as_deref());
         }
     }
 
@@ -372,4 +428,84 @@ mod exe_fail_cache {
             Some(0)
         );
     }
+}
+
+/// A `#!` script is exec'd as `interpreter script …`, so a rule written against
+/// the program's own name missed it and the interpreter's name was matched
+/// instead. On NixOS every `bin/foo` is such a script, so this was the common
+/// case rather than an edge one: 285 rule applications went to 16 processes
+/// named `bash` in 25 minutes on an otherwise idle machine.
+#[test]
+fn a_shebang_script_is_matched_as_the_script_and_not_as_the_interpreter() {
+    assert_eq!(
+        resolve_argv_name(
+            "/usr/bin/bash",
+            Some("/nix/store/x/bin/gvfsd"),
+            Some("gvfsd\n")
+        ),
+        "gvfsd"
+    );
+}
+
+/// `comm` is capped at 15 bytes, so a script with a longer name arrives
+/// truncated and a test for equality would miss it — which is most of them on
+/// NixOS, where `bin/foo` wrappers are the norm.
+#[test]
+fn a_truncated_comm_still_identifies_the_script() {
+    assert_eq!(
+        resolve_argv_name(
+            "/usr/bin/bash",
+            Some("/run/current-system/sw/bin/xdg-desktop-portal"),
+            Some("xdg-desktop-po\n")
+        ),
+        "xdg-desktop-portal"
+    );
+}
+
+/// The shape that must *not* change: a program that rewrote `argv[0]` still
+/// resolves to `argv[0]`, because that is what the documented contract and
+/// every rule set in existence is written against. Here `comm` names the real
+/// binary and the second argument is an ordinary argument it does not name.
+#[test]
+fn a_rewritten_argv_still_wins_over_comm() {
+    assert_eq!(
+        resolve_argv_name("pretend-name", Some("--config"), Some("bash")),
+        "pretend-name"
+    );
+}
+
+/// A one-argument command line cannot be a shebang, and `comm` is not even read
+/// for one, so the answer is `argv[0]` whatever `comm` says.
+#[test]
+fn a_single_argument_resolves_to_argv0() {
+    assert_eq!(resolve_argv_name("/usr/bin/firefox", None, None), "firefox");
+    assert_eq!(
+        resolve_argv_name("/usr/bin/firefox", None, Some("something-else")),
+        "firefox"
+    );
+}
+
+/// `comm` is empty for a process that has none, and an empty `comm` is a prefix
+/// of every string — so it must not be allowed to select the second argument.
+#[test]
+fn an_empty_comm_selects_nothing() {
+    assert_eq!(
+        resolve_argv_name("/usr/bin/bash", Some("/tmp/script.sh"), Some("\n")),
+        "bash"
+    );
+}
+
+/// A Wine or Proton game is invoked with a Windows path, and the existing
+/// behaviour is that a backslash is a separator only for a `.exe` argument. It
+/// is on the path this change refactors, so it is pinned here.
+#[test]
+fn a_windows_path_is_only_resplit_for_an_exe() {
+    assert_eq!(
+        resolve_argv_name("C:\\games\\Thing.exe", None, None),
+        "Thing.exe"
+    );
+    assert_eq!(
+        resolve_argv_name("C:\\games\\Thing", None, None),
+        "C:\\games\\Thing"
+    );
 }
