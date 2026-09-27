@@ -350,14 +350,13 @@ including the vendoring step.
 
 ## Continuous integration
 
-Five workflows, all under `.github/workflows/`:
+Four workflows, all under `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | `.rs`, `Cargo.toml`, `Cargo.lock` | Builds and tests on stable and nightly; repeats both on Fedora and Arch |
 | `lint.yml` | `.rs`, `Cargo.toml` | `cargo fmt --check` on nightly, `cargo clippy -D warnings` on stable |
-| `nixos.yml` | Rust files, `*.nix`, `Makefile`, `contrib/**` | `nix flake check` and `nix build`, which is also what builds `contrib/nixos` |
-| `packaging.yml` | the above plus `data/**`, `contrib/**` | Builds the RPM, the `.deb` and the Arch package in their own container images |
+| `packaging.yml` | `.rs`, `Cargo.toml`, `Cargo.lock`, `*.nix`, `Makefile`, `data/**`, `contrib/**`, `flake.lock` | Builds the RPM, the `.deb` and the Arch package in their own container images, and `contrib/nixos` with `nix flake check` and `nix build` |
 | `release.yml` | `v*` tags | Builds, strips, tars, and publishes a release, plus a reproducible source tarball |
 
 Every action is pinned to a commit SHA rather than a tag, and Rust setup is
@@ -380,8 +379,14 @@ checkout as a local git remote carrying the release tag and points makepkg at
 that, so it builds the tree under test rather than whatever is published; only
 the source URL differs from the `PKGBUILD` on disk.
 
-Each of those three jobs runs an `Install git and trust the workspace` step
-**before** `actions/checkout`, and both halves of it are load-bearing:
+The Nix job is the exception to all of that: it runs on the runner rather than
+in a container, because the pinned `determinate-nix-action` installs Nix itself
+rather than needing a distribution image. `nix flake check` evaluates the
+package and the NixOS module together, so that one command covers what
+`contrib/nixos` declares.
+
+Each of those three container jobs runs an `Install git and trust the workspace`
+step **before** `actions/checkout`, and both halves of it are load-bearing:
 
 - **git has to exist when the checkout runs.** `actions/checkout` looks for git
   2.18 or newer on `PATH` and, not finding it, logs "The repository will be
@@ -413,7 +418,7 @@ an unprivileged user.
 
 Note that the path filters of `ci.yml` and `lint.yml` do not include
 `.github/**`, so a change to one of those two workflows alone will not trigger a
-run. `packaging.yml`, `nixos.yml` and `release.yml` list themselves.
+run. `packaging.yml` and `release.yml` list themselves.
 
 ## Troubleshooting
 

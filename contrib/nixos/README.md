@@ -38,9 +38,10 @@ nixfmt --check contrib/nixos/*.nix flake.nix default.nix
 ```
 
 `nix build` and `nix flake check` were both run while this recipe was moved and
-the documentation installed, and both pass. They were already wired into
-[`.github/workflows/nixos.yml`](../../.github/workflows/nixos.yml); that
-workflow's path filters now include `contrib/**`, so a change here triggers it.
+the documentation installed, and both pass. They are already wired into
+[`.github/workflows/packaging.yml`](../../.github/workflows/packaging.yml), as
+its `Nix` job; that workflow's path filters include `contrib/**` and `**.nix`,
+so a change here triggers it.
 
 `nixfmt --check` reports `contrib/nixos/module.nix` and
 `contrib/nixos/package.nix` as unformatted. Both were already unformatted before

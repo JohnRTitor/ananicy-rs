@@ -3,30 +3,31 @@ name: Packaging
 # Builds the distribution recipes under contrib/ with each distribution's own
 # packaging tools, in that distribution's own container image. The point is to
 # keep the recipes *buildable*, not merely present, so every job below produces
-# the real artefact: an .rpm, a .deb, a .pkg.tar.zst.
-#
-# The Nix recipe is not repeated here: nixos.yml already runs `nix flake check`
-# and `nix build` over contrib/nixos. One job per artefact, no duplicates.
+# the real artifact: an .rpm, a .deb, a .pkg.tar.zst.
 
 on:
   pull_request:
     paths:
-      - '**.rs'
-      - '**Cargo.toml'
-      - '**Cargo.lock'
-      - 'Makefile'
-      - 'data/**'
-      - 'contrib/**'
-      - '.github/workflows/packaging.yml'
+      - "**.rs"
+      - "**Cargo.toml"
+      - "**Cargo.lock"
+      - "**.nix"
+      - "Makefile"
+      - "data/**"
+      - "contrib/**"
+      - "flake.lock"
+      - ".github/workflows/packaging.yml"
   push:
     paths:
-      - '**.rs'
-      - '**Cargo.toml'
-      - '**Cargo.lock'
-      - 'Makefile'
-      - 'data/**'
-      - 'contrib/**'
-      - '.github/workflows/packaging.yml'
+      - "**.rs"
+      - "**Cargo.toml"
+      - "**Cargo.lock"
+      - "**.nix"
+      - "Makefile"
+      - "data/**"
+      - "contrib/**"
+      - "flake.lock"
+      - ".github/workflows/packaging.yml"
   workflow_dispatch:
 
 permissions:
@@ -338,3 +339,19 @@ jobs:
             bsdtar -tf "$pkg"
             bsdtar -xOf "$pkg" .PKGINFO
           done
+
+  nix:
+    name: Nix
+    runs-on: ubuntu-latest
+    # No container, unlike the three jobs above: the action below installs Nix
+    # onto the runner image, so there is no distribution image to pin and
+    # nothing to install by hand first.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install and Setup Nix
+        uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
+
+      - name: Check Flake
+        run: nix flake check
+      - name: Build
+        run: nix build
