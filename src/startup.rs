@@ -144,11 +144,19 @@ pub(crate) fn log_config(
     for diagnostic in diagnostics {
         diagnostic.emit();
     }
+    // Reported whatever became of the configuration, because a rule carrying
+    // `latency_nice` is inert on such a kernel and nothing else says so. This used
+    // to sit inside the error branch, so a configuration that parsed cleanly --
+    // the normal case -- produced no mention of it at all, which is the same
+    // "accepted and silently ignored" shape as a rule attribute that does nothing.
+    if !latnice_supported {
+        warn!(
+            "latency_nice is not supported by this kernel, so apply_latnice has been \
+             forced off and any latency_nice in a rule is ignored"
+        );
+    }
     if let Some(e) = err {
         error!("{}", e);
-        if !latnice_supported {
-            warn!("latency_nice is not supported by the kernel, disabling it");
-        }
     } else {
         let snap = config.get();
         info!("Config apply_nice: {}", snap.apply_nice);
@@ -436,6 +444,87 @@ mod tests {
         assert!(
             apply_x3d_mode_in(root.path(), &config_with_x3d_mode("cache")).is_none(),
             "there is no mode to save, so nothing is written"
+        );
+    }
+}
+
+#[cfg(test)]
+mod latnice_reporting {
+    use {
+        super::*,
+        std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        tracing::{Event, Subscriber},
+        tracing_subscriber::{
+            layer::{Context, Layer},
+            prelude::*,
+        },
+    };
+
+    /// Counts events at or above `WARN`, so the test can ask "was anything said"
+    /// without matching on a rendered message.
+    struct WarnCount(Arc<AtomicUsize>);
+
+    impl<S> Layer<S> for WarnCount
+    where
+        S: Subscriber,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let meta = event.metadata();
+            if *meta.level() <= tracing::Level::WARN {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn warnings_from<F: FnOnce()>(f: F) -> usize {
+        let count = Arc::new(AtomicUsize::new(0));
+        let layer = WarnCount(count.clone());
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::LevelFilter::WARN)
+            .with(layer);
+        tracing::subscriber::with_default(subscriber, f);
+        count.load(Ordering::SeqCst)
+    }
+
+    /// The defect: the notice that `latency_nice` was turned off was nested
+    /// inside the branch that reports a configuration error, so the normal case --
+    /// a configuration that parsed -- said nothing at all. A user who wrote
+    /// `latency_nice` in a rule had no way to learn it was being ignored.
+    #[test]
+    fn a_cleanly_parsed_configuration_still_says_latency_nice_is_off() {
+        let config = Arc::new(Config::new(ConfigSnapshot::default()));
+        let warned = warnings_from(|| log_config(&config, None, &[], false));
+        assert!(
+            warned > 0,
+            "with a clean parse and no kernel support, the operator must still be told"
+        );
+    }
+
+    /// A configuration error is reported in its own right, and the notice about
+    /// `latency_nice` must not be what is standing in for it.
+    #[test]
+    fn a_broken_configuration_is_reported_separately() {
+        let config = Arc::new(Config::new(ConfigSnapshot::default()));
+        let warned =
+            warnings_from(|| log_config(&config, Some("cannot read the file".into()), &[], false));
+        assert!(
+            warned > 0,
+            "the error itself is an error-level event and must still be reported"
+        );
+    }
+
+    /// On a kernel that does support it, nothing is said -- the feature is
+    /// available, so a warning would be noise.
+    #[test]
+    fn a_supporting_kernel_is_not_warned_about() {
+        let config = Arc::new(Config::new(ConfigSnapshot::default()));
+        let warned = warnings_from(|| log_config(&config, None, &[], true));
+        assert_eq!(
+            warned, 0,
+            "nothing should be said when the kernel supports the feature"
         );
     }
 }
