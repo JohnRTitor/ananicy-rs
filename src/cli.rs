@@ -103,8 +103,8 @@ pub enum Commands {
         )]
         sub_action: DumpTarget,
     },
-    #[bpaf(command("debug"), hide)]
-    /// The undocumented `debug` action.
+    #[bpaf(command("debug"))]
+    /// Dump diagnostics about the system's cgroup mounts
     Debug {
         #[bpaf(
             positional::<String>("SUB_ACTION"),

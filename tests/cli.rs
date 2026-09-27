@@ -301,14 +301,35 @@ fn test_cli_debug_unknown_sub_action_is_silent_success() {
 }
 
 #[test]
-fn test_cli_help_does_not_mention_debug() {
-    // The `debug` action is intentionally undocumented (only "dump [sub-action]"
-    // and "start" are listed), so it must stay out of --help here too.
+fn test_cli_help_documents_debug() {
+    // The `debug` action is in `--help` and in the action-word completion, not
+    // only in `docs/CLI.md`: it is a diagnostic the daemon can answer, and
+    // knowing it exists is what makes it usable when something has to be
+    // reported. The reference keeps it to itself (`main.cpp:197`, where it
+    // prints the evidence for a specific issue report), which is a reason not
+    // to copy that.
     let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("debug").not());
+        .stdout(predicate::str::contains("debug"))
+        .stdout(predicate::str::contains("cgroup mounts"));
+}
+
+/// The same, for the shell: the action word has to be offered, or a completion
+/// that skips it is worse than one that never had it. bpaf pads the candidate
+/// against its description, so this matches the opening of the candidate rather
+/// than a quoted whole word.
+#[test]
+fn test_cli_completion_offers_the_debug_action() {
+    let mut cmd = Command::cargo_bin("ananicy-rs").unwrap();
+    // bpaf reports completion requests on stdout with a non-zero status.
+    cmd.arg("--bpaf-complete-rev=8")
+        .arg("")
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("COMPREPLY+=('debug "))
+        .stdout(predicate::str::contains("COMPREPLY+=('dump "));
 }
 
 #[test]
