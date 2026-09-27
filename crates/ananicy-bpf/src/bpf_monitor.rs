@@ -32,6 +32,26 @@ struct Event {
     task: [u8; 16],
 }
 
+/// Whether an event names a process the daemon can do anything about.
+///
+/// PID 0 is the swapper, which the kernel names on every CPU, and it is not a
+/// process: there is nothing to renice and a rule read out of it would be a
+/// coincidence.
+///
+/// The `prev_pid` comparison that used to sit here is gone, and must not come
+/// back. `prev_pid` is the pid of the previous event *on the same CPU*, so the
+/// test discarded the second of any two events that named the same process —
+/// and two events in a row is the shape of every Nix-wrapped program, whose
+/// `bin/foo` script execs `.foo-wrapped` a moment later. The name that second
+/// event carries is the only one that names the program rather than its
+/// interpreter, so discarding it is how a `#!/bin/bash` wrapper came to be
+/// matched as `bash` and given the `bash` rule. It turned actively wrong once
+/// fork events named the child instead of the parent: a fork and the child's
+/// exec then share a pid, and the filter ate the exec.
+fn is_reportable(event: &Event) -> bool {
+    event.pid != 0
+}
+
 pub struct BpfMonitor {
     // We must keep the skeleton alive so the BPF program stays attached.
     #[allow(dead_code)]
@@ -100,9 +120,8 @@ impl BpfMonitor {
                 // the alignment required for `Event`, which would trigger UB on some archs.
                 let event = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const Event) };
 
-                // Ignore PID 0 (swapper/idle thread) to prevent warning floods,
-                // and ignore duplicate events for the same pid
-                if event.pid == 0 || event.pid == event.prev_pid {
+                // Ignore PID 0 (swapper/idle thread) to prevent warning floods
+                if !is_reportable(&event) {
                     return;
                 }
 
@@ -141,5 +160,42 @@ impl BpfMonitor {
                 error!("Error polling BPF perf buffer: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(pid: i32, prev_pid: i32) -> Event {
+        Event {
+            pid,
+            prev_pid,
+            delta_us: 0,
+            task: [0; 16],
+        }
+    }
+
+    /// A process that execs twice in a row is the ordinary case on NixOS, where
+    /// every program is a wrapper script that execs the real binary. Both events
+    /// have to reach the worker: the second one is the only event whose name
+    /// names the program rather than its interpreter.
+    #[test]
+    fn a_second_event_for_the_same_process_is_still_reported() {
+        assert!(is_reportable(&event(4143, 4143)));
+        assert!(is_reportable(&event(4143, 2898)));
+    }
+
+    /// A fork and the exec that follows it name the same pid now, which is the
+    /// other half of why the same-pid test had to go.
+    #[test]
+    fn a_fork_and_the_exec_after_it_are_both_reported() {
+        assert!(is_reportable(&event(4143, 2898)));
+        assert!(is_reportable(&event(4143, 4143)));
+    }
+
+    #[test]
+    fn the_swapper_is_not_reported() {
+        assert!(!is_reportable(&event(0, 0)));
     }
 }
