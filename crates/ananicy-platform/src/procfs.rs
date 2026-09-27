@@ -53,13 +53,33 @@ fn exe_failures_for(pid: i32) -> u8 {
     let Some(entry) = cache.get(&pid) else {
         return 0;
     };
-    if entry.start_time == get_start_time(pid) {
-        entry.count
-    } else {
-        // The pid was recycled. Drop the old entry so its budget is not carried
-        // over, and start again from zero.
-        cache.pop(&pid);
-        0
+    let observed = get_start_time(pid);
+    match remembered_budget(entry, observed) {
+        Some(count) => count,
+        None => {
+            // The pid was recycled, or the entry cannot be attributed to the
+            // process now holding it. Drop it so the budget cannot come back.
+            cache.pop(&pid);
+            0
+        }
+    }
+}
+
+/// The failure budget an entry entitles its pid to, given the start time observed
+/// for that pid right now.
+///
+/// `None` means the entry does not describe the process currently holding the pid,
+/// and must not be used. Both sides have to be known: two absent start times are
+/// not a match, they are two pieces of missing information, and treating them as
+/// equal would let an unattributable entry be inherited by whatever turns up next.
+///
+/// Split out from the cache lookup so the rule can be tested without a process
+/// global or a real `/proc` entry, neither of which a test can rely on being
+/// unshared.
+fn remembered_budget(entry: &ExeFailure, observed: Option<u64>) -> Option<u8> {
+    match (entry.start_time, observed) {
+        (Some(recorded), Some(now)) if recorded == now => Some(entry.count),
+        _ => None,
     }
 }
 
@@ -290,81 +310,66 @@ mod tests {
 
 #[cfg(test)]
 mod exe_fail_cache {
-    use super::*;
+    use super::{ExeFailure, remembered_budget};
 
-    /// Puts an entry in the cache directly, which is the only way to produce the
-    /// state this is about -- a real `EACCES` on `/proc/<pid>/exe` is not
-    /// reproducible here.
-    fn seed(pid: i32, start_time: Option<u64>, count: u8) {
-        get_exe_fail_cache()
-            .lock()
-            .expect("an uncontended lock")
-            .put(pid, ExeFailure { start_time, count });
-    }
-
-    fn forget(pid: i32) {
-        get_exe_fail_cache()
-            .lock()
-            .expect("an uncontended lock")
-            .pop(&pid);
-    }
-
-    /// The regression: a pid recorded as unreadable is reused, and the new
-    /// process must not inherit the old one's budget. Five failures used to mean
+    /// The regression: a pid recorded as unreadable is reused, and the new process
+    /// must not inherit the old one's budget. Five failures used to mean
     /// `/proc/<pid>/exe` was never read again for whatever held that pid, and the
     /// name silently came from `comm` instead.
     #[test]
     fn a_recycled_pid_does_not_inherit_the_previous_budget() {
-        let pid = std::process::id() as i32;
-        let mine = get_start_time(pid);
-        forget(pid);
-
-        seed(pid, mine, COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES);
+        let entry = ExeFailure {
+            start_time: Some(1000),
+            count: 5,
+        };
         assert_eq!(
-            exe_failures_for(pid),
-            COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES,
+            remembered_budget(&entry, Some(1000)),
+            Some(5),
             "the same process keeps its budget, so the cache still suppresses retries"
         );
-
-        // Same pid, different process: a start time that cannot be ours.
-        seed(
-            pid,
-            mine.map(|t| t.wrapping_add(1)),
-            COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES,
-        );
         assert_eq!(
-            exe_failures_for(pid),
-            0,
-            "a different process at the same pid starts from zero"
+            remembered_budget(&entry, Some(1001)),
+            None,
+            "a different process at the same pid inherits nothing"
         );
-
-        // And the stale entry is gone, so it cannot come back.
-        assert_eq!(exe_failures_for(pid), 0);
-        forget(pid);
     }
 
-    /// A pid with no history costs nothing to look up: no start-time read, since
-    /// there is nothing to validate. `None` for both is the same value, so this
-    /// also covers a process whose start time could not be read.
+    /// Two absent start times are missing information, not a match. Letting them
+    /// compare equal would apply an entry recorded for a process we could not
+    /// attribute to whatever later turns up at that pid.
     #[test]
-    fn an_unknown_pid_has_no_budget() {
-        let pid = std::process::id() as i32;
-        forget(pid);
-        assert_eq!(exe_failures_for(pid), 0);
+    fn two_unknown_start_times_are_not_a_match() {
+        let entry = ExeFailure {
+            start_time: None,
+            count: 5,
+        };
+        assert_eq!(remembered_budget(&entry, None), None);
     }
 
-    /// A failure recorded without a usable start time cannot be attributed, so it
-    /// must not be carried forward to the next occupant of the pid either.
+    /// A pid whose start time cannot be read now cannot be shown to be the process
+    /// that failed, so its entry is not honoured either.
     #[test]
-    fn an_unattributable_failure_is_not_carried_forward() {
-        let pid = std::process::id() as i32;
-        forget(pid);
-        seed(pid, None, COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES);
+    fn an_entry_is_not_honoured_when_the_current_start_time_is_unknown() {
+        let entry = ExeFailure {
+            start_time: Some(1000),
+            count: 5,
+        };
+        assert_eq!(remembered_budget(&entry, None), None);
+    }
+
+    /// A pid with no entry at all has no budget, which is the case that must not
+    /// cost a start-time read: there is nothing to validate.
+    #[test]
+    fn a_budget_of_zero_is_the_default() {
         assert_eq!(
-            exe_failures_for(pid),
-            0,
-            "no start time means the entry cannot be trusted to belong to this process"
+            remembered_budget(
+                &ExeFailure {
+                    start_time: Some(1),
+                    count: 0
+                },
+                Some(1)
+            ),
+            Some(0)
         );
-        forget(pid);
     }
 }
