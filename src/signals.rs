@@ -9,6 +9,18 @@ use {
     tracing::{error, info},
 };
 
+/// Installs the signal handlers, or reports why it could not.
+///
+/// Failing to install them is not something to shrug at. These three signals
+/// are the daemon's only control channel: `SIGUSR1` is what `--reload` sends,
+/// and `SIGINT`/`SIGTERM` are how it is stopped. The default disposition of all
+/// three is to terminate the process, so a daemon that started without these
+/// handlers would answer `systemctl reload` by dying, and would skip the
+/// graceful shutdown that saves the X3D mode and sends `STOPPING=1`.
+///
+/// `Signals::new` fails when the signal mask cannot be set up, which is a
+/// process or resource limit rather than anything an operator can retry by
+/// waiting, so the caller is expected to refuse to start.
 pub(crate) fn install(
     config: Arc<Config>,
     config_path: String,
@@ -17,14 +29,12 @@ pub(crate) fn install(
     tx: Sender<Process>,
     log_reload_handle: crate::startup::LogReloadHandle,
     log_level_override: Option<tracing::Level>,
-) {
-    let Ok(mut signals) = signal_hook::iterator::Signals::new([
+) -> std::io::Result<()> {
+    let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGUSR1,
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGTERM,
-    ]) else {
-        return;
-    };
+    ])?;
 
     spawn_named_thread!("ananicy-signal", move || {
         for sig in signals.forever() {
@@ -65,4 +75,6 @@ pub(crate) fn install(
             }
         }
     });
+
+    Ok(())
 }

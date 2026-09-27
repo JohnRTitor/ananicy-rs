@@ -126,7 +126,7 @@ fn main() {
     let platform = Arc::new(LinuxPlatform::new());
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-    signals::install(
+    if let Err(e) = signals::install(
         config.clone(),
         config_path,
         is_systemd,
@@ -134,7 +134,14 @@ fn main() {
         tx.clone(),
         log_reload_handle,
         log_level_override,
-    );
+    ) {
+        error!("Failed to install signal handlers: {}", e);
+        error!(
+            "Without them `systemctl reload` would terminate this daemon, and a \
+             stop would skip the clean shutdown. Refusing to start."
+        );
+        exit(1);
+    }
 
     if args.manual_scanning {
         info!("Manual scanning enabled! Increasing Ananicy Nice value to prevent lag.");
