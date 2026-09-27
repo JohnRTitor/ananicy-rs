@@ -162,10 +162,20 @@ mutation outside it. What that means in practice:
   `cpu`, and the leaves the daemon creates under it have no `cpu.weight` and no
   `cpu.max`. Every `CPUWeight` and `CPUQuota` in a `.cgroups` rule, and the `nice` →
   `cpu.weight` mirroring, are therefore no-ops as shipped, and the daemon warns at
-  start-up when it cannot apply a weight. Either of the following makes it work: add
-  `CPUWeight=` to the unit, or set `DelegateSubgroup=yes` so the unit's own cgroup is
-  delegated and systemd enables `cpu` on it. We never enable controllers on someone
-  else's cgroup to work around it.
+  start-up when it cannot apply a weight. The fix is `DelegateSubgroup=<name>` on the
+  unit: it makes systemd place this process in a sub-cgroup of the unit, which leaves
+  the unit's own cgroup with no processes in it, which is what the no-internal-process
+  rule requires before `+cpu` can be enabled there. It takes a name, not a boolean —
+  `DelegateSubgroup=yes` would create a cgroup called `yes`.
+
+  `CPUWeight=` on the unit would *not* fix it, and it is worth saying why because it is
+  the obvious thing to try. A unit's `cgroup.subtree_control` is enabled from what the
+  unit's children need, and a leaf service has no children, so it stays empty however
+  the unit's own weight is set. `CPUWeight=` writes a value into the unit's own
+  `cpu.weight`; it does not enable anything underneath. What is needed is an empty cgroup
+  to be the parent, not a weight on the populated one.
+
+  We never enable controllers on someone else's cgroup to work around it.
 
   `ananicy-cpp` is not affected, and the reason is worth knowing before copying its
   approach: its unit carries no `Delegate=` at all. It creates each cgroup directly
@@ -250,7 +260,7 @@ systemd-run --user --scope --unit=ananicy-detect-scope -- \
 | `disabled (no systemd service manager detected)` in a real unit | Host older than systemd 232, so no `$INVOCATION_ID` is exported | Pass `--systemd` through `extraArgs` |
 | `disabled (member of a transient .scope, not a service)` from a terminal | Manual run inherits the session scope's environment | Run it as a service |
 | `WARN Cgroup v2: Detected manual execution inside a transient .scope` | Manual run; the session cgroup is not delegated to us | Run it as a service with `Delegate=yes` |
-| `Rule applied, CPU weight unchanged` | The `cpu` controller is not in the leaf's parent `cgroup.subtree_control`, so no `cpu.weight` file exists. This is the expected state of the shipped unit — see the delegation section below | Add `CPUWeight=` to the unit, or `DelegateSubgroup=yes`. The daemon warns at `warn` level whenever it hits this |
+| `Rule applied, CPU weight unchanged` | The `cpu` controller is not in the leaf's parent `cgroup.subtree_control`, so no `cpu.weight` file exists. This is the expected state of the shipped unit — see the delegation section below | `DelegateSubgroup=<name>` on the unit. `CPUWeight=` will not do it; the delegation section explains why. The daemon warns at `warn` level whenever it hits this |
 | Output never reaches `journalctl` | The mode was off, so we logged to stderr, which the journal only captures if the unit's stdio is connected to it | Check the reported mode; force with `--systemd` |
 | Journal entries have no structured fields | The stderr layer was used because the mode was off or `$JOURNAL_STREAM` was unset | Same as above; then `journalctl -o verbose` shows native-protocol fields |
 | `READY=1` never appears in the journal | It is a notification, not a log line, so it reaches the manager and is not journal output by design. The shipped unit sets `NotifyAccess=main`, so the manager accepts it; `READY=1` is still not something to look for in `journalctl` | Expected; use `systemctl show -p ActiveState` for readiness |

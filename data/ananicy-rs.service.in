@@ -22,11 +22,16 @@ NotifyAccess=main
 # It also does not, by itself, make CPU bandwidth rules work. `Delegate=yes` alone
 # hands over the *parent* (system.slice), which holds processes, so the kernel
 # refuses `+cpu` on it ("no internal process"), and every cgroup we create below
-# ends up with no cpu.max and no cpu.weight. Adding `CPUWeight=100` below makes
-# systemd enable `cpu` in the unit's own cgroup.subtree_control, which is what
-# makes CPUQuota/CPUWeight rules and nice-mirroring take effect. Not set here: it
-# is a policy choice about this unit's own share of the machine, and the daemon
-# logs a warning when it cannot apply a weight.
+# ends up with no cpu.max and no cpu.weight. `DelegateSubgroup=` below is what
+# fixes that.
+#
+# Note that `CPUWeight=` would NOT fix it, despite being the obvious thing to
+# reach for: a service's own cgroup.subtree_control is populated from what the
+# unit's *children* require, and a leaf service has no children, so it stays
+# empty however its own weight is set. The parent needs to be an empty cgroup,
+# which is what DelegateSubgroup= arranges by moving this process into a
+# sub-cgroup of the unit.
+#DelegateSubgroup=ananicy
 Delegate=yes
 
 Restart=always

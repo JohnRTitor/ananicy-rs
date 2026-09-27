@@ -240,7 +240,19 @@ first.
 
 **What `Delegate=yes` actually hands over is one level wider than it looks.** `Delegate=yes` gives the service ownership of its own cgroup *and* delegation of that cgroup's subtree, but the daemon discovers its root by taking the parent of `/proc/self/cgroup` — which lands on the unit's parent (`…/system.slice`), not on the unit's own cgroup. The unit's own cgroup contains the daemon process, and the kernel's "no internal process" rule means a cgroup with processes in it cannot have `+cpu` added to its `subtree_control`. So under the shipped unit the daemon is unable to enable the `cpu` controller on the parent, every cgroup it creates below lacks `cpu.max` and `cpu.weight`, and **`CPUQuota` and `CPUWeight` rules and `nice`→`cpu.weight` mirroring are no-ops**. The daemon logs a `warn` for this at start-up rather than skipping silently.
 
-Two changes fix it, either of which is sufficient: add a CPU-bandwidth setting (`CPUWeight=`) to the unit, which makes systemd enable `cpu` in the unit's own `cgroup.subtree_control`; or set `DelegateSubgroup=yes`, which delegates the unit's own cgroup so the daemon's parent is the unit's cgroup and the "no internal process" rule no longer blocks it. Neither is done in the shipped unit.
+Two changes would fix it. The one that works is `DelegateSubgroup=` on the unit, which
+takes the *name* of a sub-cgroup for systemd to put this daemon's process in — so the
+unit's own cgroup is left with no processes in it, the kernel's no-internal-process rule
+stops blocking `+cpu` there, and the cgroups the daemon creates below it get a
+`cpu.max` and a `cpu.weight`. Note it takes a name, not a boolean: `DelegateSubgroup=yes`
+would create a cgroup literally called `yes`.
+
+The one that does *not* work is `CPUWeight=` on the unit, which is the obvious thing to
+reach for. A unit's `cgroup.subtree_control` is populated from what the unit's *children*
+require, and a leaf service has no children, so it stays empty however the unit's own
+weight is set. `CPUWeight=` writes a value into the unit's own `cpu.weight`; it does not
+cause anything to be enabled underneath it. Neither is set in the shipped unit, so CPU
+bandwidth rules remain inert as shipped and the daemon warns about it at start-up.
 
 Within the delegated subtree, `ananicy-rs` may create and configure cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
 
