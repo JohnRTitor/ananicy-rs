@@ -379,9 +379,13 @@ fn a_realtime_process_is_not_moved_into_a_rule_cgroup() {
             .any(|call| matches!(call, Call::AddPidToCgroup { cgroup } if cgroup == "lowlatency")),
         "the rule's cgroup must not be applied to a realtime process"
     );
-    assert!(run.platform.calls().contains(&Call::AddPidToCgroup {
-        cgroup: "/".to_string()
-    }));
+    assert!(
+        !run.platform
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::AddPidToCgroup { .. })),
+        "and the process must not be moved to a cgroup of the option's choosing either"
+    );
     assert!(
         !run.events
             .contains(tracing::Level::WARN, "partially failed")
@@ -403,18 +407,28 @@ fn a_realtime_process_on_cgroup_v1_still_gets_its_cgroup() {
 }
 
 #[test]
-fn the_realtime_workaround_targets_the_hierarchy_root() {
-    // A realtime process on cgroup v2 is moved to "/" — not to "", which in cgroup
-    // v2 would resolve to our own delegated subtree and hijack the process.
+fn a_realtime_process_on_cgroup_v2_is_not_moved_at_all() {
+    // The reference moves a realtime process to the hierarchy root, where no
+    // bandwidth limit applies. That is not something this daemon can do: the
+    // ownership check classifies the root as foreign in every configuration, so
+    // the write is refused before it reaches the kernel. Asserting that *no*
+    // cgroup write is attempted is what protects the process -- the earlier
+    // hazard this test covered was a relative target resolving into our own
+    // delegated subtree and hijacking the process into our service cgroup, and
+    // "no move at all" rules that out as well as the root write did.
     let run = run_worker(
         snapshot(false),
         r#"{"name":"worker-test","nice":1}"#,
         FakePlatform::realtime_on_cgroup_v2(),
     );
 
-    assert!(run.platform.calls().contains(&Call::AddPidToCgroup {
-        cgroup: "/".to_string()
-    }));
+    assert!(
+        !run.platform
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::AddPidToCgroup { .. })),
+        "a realtime process on cgroup v2 must not be moved between cgroups"
+    );
 }
 
 #[test]

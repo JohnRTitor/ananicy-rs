@@ -108,17 +108,17 @@ has no equivalent behaviour — it only ever calls `setpriority(2)`.
 ### `cgroup_realtime_workaround`
 
 On by default, and relevant only to rules that set a realtime policy (`fifo` or `rr`) on
-cgroup v2. Realtime tasks and cgroup bandwidth control do not currently coexist, so for
-such a process the daemon:
+cgroup v2. Bandwidth control and realtime scheduling do not currently coexist, so for such
+a process the daemon leaves the rule's `cgroup` attribute unapplied: the task stays in
+the cgroup it is already in rather than being moved into a bandwidth-limited one it could
+not be served from. That is the whole of what this option does.
 
-* skips the rule's `cgroup` attribute, and
-* attempts to move the process into the hierarchy root (`/`).
-
-Both are best-effort and neither is reported as a rule failure. The second is refused by
-the ownership check in normal operation, which is the intended outcome — a realtime
-process should not be moved into a cgroup the daemon merely administers. Turning the
-option off applies the rule's `cgroup` attribute to realtime processes as well.
-`ananicy-cpp` has the same workaround and the same default.
+It is not reported as a rule failure, and nothing is logged per process. `ananicy-cpp`
+carries the same option with the same default, but there it additionally moves the process
+to the hierarchy root; that move is not possible here, because a cgroup this daemon may
+write to is never the hierarchy root, so an attempt would be refused before reaching the
+kernel. Setting this to `false` applies the rule's `cgroup` attribute to realtime processes
+like any other.
 
 ### `x3d_mode`
 

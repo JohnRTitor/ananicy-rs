@@ -243,27 +243,29 @@ impl Worker {
                 }
             }
 
-            // Realtime cgroup workaround
+            // Realtime cgroup workaround.
+            //
+            // The reference moves a realtime process up to the hierarchy root, where
+            // no bandwidth limit applies. That move is not possible here, and this
+            // used to attempt it anyway: the target was the literal path "/", and the
+            // ownership check classifies "/" as Foreign in every configuration --
+            // a discovered delegated root is the cgroup mount point or deeper, never
+            // "/", and with no root discovered the classification falls through to
+            // Foreign as well. So the write was refused on every realtime process on
+            // every host, at debug level, and the comment above it claimed a case
+            // where it could succeed.
+            //
+            // What is left, and what the option actually does, is the `cgroup`
+            // attribute skip in `apply_rule` below: a realtime task is left where it
+            // is rather than moved into a bandwidth-limited cgroup it could not be
+            // served from. That part works, so the option keeps its name.
             let cfg = self.config.get();
             if is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
                 debug!(
-                    "Moving realtime process {}({}) to root cgroup",
+                    "Leaving realtime process {}({}) in its current cgroup; a realtime \
+                     task cannot be served from a bandwidth-limited one",
                     p.name, p.identity.pid.0
                 );
-                // CRITICAL: We must use "/" instead of "" for the target cgroup here.
-                // In Cgroup V2, "" is treated as a relative path and resolves to our delegated root
-                // (e.g. /system.slice/ananicy-rs.service). If we used "", this workaround would
-                // mistakenly hijack realtime processes (like Hyprland) into our own systemd service.
-                // Using "/" explicitly targets the global root, which safely fails (due to Foreign ownership protection)
-                // or succeeds if we genuinely have access, without polluting our own service cgroup.
-                if let Err(e) = self.platform.add_pid_to_cgroup(p.identity.pid.0, "/") {
-                    debug!(
-                        ?e,
-                        "Failed to add realtime process {}({}) to root cgroup",
-                        p.name,
-                        p.identity.pid.0
-                    );
-                }
             }
         }
 
@@ -421,15 +423,15 @@ impl Worker {
         }
 
         if is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
-            debug!(
-                "Cgroups are not compatible with realtime scheduling for now (linux limitation)"
-            );
-            // The rule's `cgroup` is deliberately not applied here, and that is
-            // the workaround working rather than something going wrong. The
-            // reference logs the same line at debug and moves on; recording a
-            // failure would warn on every realtime process on every cgroup-v2
-            // host, and would suppress the applied-rule line that the reference
-            // still prints.
+            // The rule's `cgroup` is deliberately not applied here, and that is the
+            // option working rather than something going wrong. This is the part of
+            // it that does something: a realtime task is left where it is instead of
+            // being moved into a cgroup with a bandwidth limit it could never be
+            // served from, which is the case the reference's root-cgroup move exists
+            // to avoid. The reference logs the same line at debug and moves on;
+            // recording a failure would warn on every realtime process on every
+            // cgroup-v2 host, and would suppress the applied-rule line that the
+            // reference still prints.
             if cfg.apply_cgroups && rule.get("cgroup").and_then(|v| v.as_str()).is_some() {
                 debug!("Skipping cgroup for realtime process {}", p.name);
             }
