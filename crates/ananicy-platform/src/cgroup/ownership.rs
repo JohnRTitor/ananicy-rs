@@ -1,6 +1,6 @@
 use {
     std::fs::{OpenOptions, read_to_string},
-    tracing::warn,
+    tracing::{debug, warn},
 };
 
 use std::path::{Path, PathBuf};
@@ -50,6 +50,60 @@ impl CgroupOwnership {
     }
 }
 
+/// Moves the delegated root up one level when that is the only level at which a
+/// controller can be enabled.
+///
+/// The root is the parent of wherever this process sits. That is the right
+/// answer for a plain `Delegate=yes` unit, where the daemon is the only thing in
+/// the unit's cgroup and the unit's cgroup is therefore the boundary systemd
+/// delegated. It is the wrong answer when the unit also sets `DelegateSubgroup=`,
+/// because then the daemon sits one level lower and the delegated boundary is the
+/// unit's cgroup, not the sub-cgroup.
+///
+/// The distinction is not something the daemon can read from its environment, so
+/// it is discovered from the shape of the tree instead: a cgroup that still holds
+/// processes cannot have a domain controller enabled underneath it
+/// (`cgroup_vet_subtree_control_enable()` returns `-EBUSY` when
+/// `cgroup_has_tasks()`), so a root we hold processes in is a root we cannot use,
+/// while an empty parent is exactly what we need.
+///
+/// The step up is bounded to one level and requires the parent to be empty, which
+/// is what keeps this from walking out of the delegated subtree: the hierarchy
+/// root always holds PID 1, so it can never qualify, and a container's root
+/// usually does not exist inside its own mount. A root we cannot improve is
+/// returned unchanged, and the caller reports the `-EBUSY` it gets.
+fn usable_root(root: PathBuf) -> PathBuf {
+    let Some(parent) = root.parent() else {
+        return root;
+    };
+    if !has_tasks(&root) {
+        // Already empty: this is the unit's own cgroup and it is usable as it is.
+        return root;
+    }
+    if parent.join("cgroup.procs").exists() && !has_tasks(parent) {
+        debug!(
+            "Cgroup v2: Delegated root {} still holds processes, so a controller cannot \
+             be enabled in it; using its parent {} instead.",
+            root.display(),
+            parent.display()
+        );
+        return parent.to_path_buf();
+    }
+    root
+}
+
+/// Whether a cgroup currently holds any process.
+///
+/// `cgroup.procs` lists one pid per line, so an empty file is a cgroup with no
+/// processes in it. A file that cannot be read is reported as holding tasks, so an
+/// unreadable cgroup is never mistaken for an empty one.
+fn has_tasks(cgroup: &Path) -> bool {
+    match read_to_string(cgroup.join("cgroup.procs")) {
+        Ok(list) => !list.trim().is_empty(),
+        Err(_) => true,
+    }
+}
+
 /// Helper to determine the delegated root by inspecting our own process's cgroup.
 /// For systemd services, this is typically something like `/sys/fs/cgroup/system.slice/ananicy.service`.
 pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
@@ -83,7 +137,7 @@ pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
             // Check if we actually have write access to it.
             // A good heuristic for delegation is if we can write to cgroup.procs
             if is_writable(&full_path.join("cgroup.procs")) {
-                return Some(full_path);
+                return Some(usable_root(full_path));
             }
         }
     }
@@ -146,6 +200,105 @@ mod tests {
                 true
             ),
             CgroupOwnership::Owned
+        );
+    }
+}
+
+#[cfg(test)]
+mod usable_root_tests {
+    use super::usable_root;
+    use std::path::Path;
+
+    fn cgroup(dir: &Path, pids: &[u32]) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).expect("a cgroup directory");
+        std::fs::write(
+            dir.join("cgroup.procs"),
+            pids.iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .expect("cgroup.procs");
+        dir.to_path_buf()
+    }
+
+    /// The case that made CPU bandwidth rules inert. The unit sets
+    /// DelegateSubgroup=, so the daemon sits one level below the cgroup systemd
+    /// actually delegated, and the sub-cgroup it sits in cannot have `cpu` enabled
+    /// underneath it because it holds the daemon. The parent is empty, so it is
+    /// the usable root.
+    #[test]
+    fn a_populated_root_with_an_empty_parent_steps_up_one_level() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let unit = cgroup(&dir.path().join("ananicy-rs.service"), &[]);
+        let sub = cgroup(&unit.join("delegated"), &[4242]);
+
+        assert_eq!(
+            usable_root(sub),
+            unit,
+            "the sub-cgroup holds the daemon, so the unit cgroup is the boundary"
+        );
+    }
+
+    /// A plain Delegate=yes unit: the daemon is the only thing in the unit's own
+    /// cgroup, and that cgroup is empty as far as *other* processes go -- but it
+    /// holds us, so it cannot take a controller. Its parent is the slice, which is
+    /// full of processes, so there is nowhere to step up to and the root stands.
+    #[test]
+    fn a_populated_root_whose_parent_is_also_populated_stays_put() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let slice = cgroup(&dir.path().join("system.slice"), &[1, 2, 3]);
+        let unit = cgroup(&slice.join("ananicy-rs.service"), &[4242]);
+
+        assert_eq!(
+            usable_root(unit),
+            slice.join("ananicy-rs.service"),
+            "system.slice is not empty, so stepping up would leave the delegation"
+        );
+    }
+
+    /// A root with nothing in it is already what a controller needs, and is used
+    /// unchanged -- stepping up would needlessly widen what we may write to.
+    #[test]
+    fn an_empty_root_is_left_alone() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let unit = cgroup(&dir.path().join("ananicy-rs.service"), &[]);
+        cgroup(&unit.join("..").join("system.slice"), &[1]);
+
+        assert_eq!(usable_root(unit.clone()), unit);
+    }
+
+    /// A container's root is the mount point, so it has no parent to step up to
+    /// inside the mount, and the hierarchy root always holds PID 1. Neither can be
+    /// mistaken for an empty delegated parent.
+    #[test]
+    fn a_root_at_the_top_of_its_mount_cannot_step_up() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let root = cgroup(dir.path(), &[1]);
+
+        assert_eq!(usable_root(root.clone()), root);
+    }
+
+    /// A cgroup whose cgroup.procs cannot be read is treated as populated. That
+    /// matters for the *candidate parent*: the cost of treating an unreadable
+    /// parent as empty is adopting a cgroup as ours that we know nothing about,
+    /// which is the mistake the whole ownership check exists to prevent. The cost
+    /// of the opposite is one refused write.
+    #[test]
+    fn an_unreadable_parent_is_never_treated_as_an_empty_one() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let unit = dir.path().join("unit");
+        std::fs::create_dir_all(&unit).expect("a cgroup directory");
+        // A parent that exists but whose cgroup.procs we cannot read: the
+        // directory is there, the file is not.
+        let sub = unit.join("delegated");
+        std::fs::create_dir_all(&sub).expect("a cgroup directory");
+        std::fs::write(sub.join("cgroup.procs"), "4242\n").expect("cgroup.procs");
+
+        assert_eq!(
+            usable_root(sub.clone()),
+            sub,
+            "an unreadable parent must not qualify as an empty one to step up into"
         );
     }
 }

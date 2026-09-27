@@ -99,12 +99,22 @@ of about `32` for the entire cgroup.
 
 Set `apply_cpu_weight = false` to keep the `nice` value and drop the mirror. The mirror is
 also skipped whenever the kernel does not expose a `cpu.weight` (cgroup v2) or
-`cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled there
-first, and `ananicy-rs` never enables it in a cgroup it does not own. When that happens
-to a cgroup the daemon manages, it says so at `warn` level, **once per cgroup**: the
-warning means the `nice` value was applied but the bandwidth it implies was not, and it
-names the cgroup and the file that is missing. `ananicy-cpp` has no equivalent behaviour
-— it only ever calls `setpriority(2)`.
+`cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled in the
+cgroup's *parent* first, and `ananicy-rs` never enables it in a cgroup it does not own.
+When that happens to a cgroup the daemon manages, it says so at `warn` level, **once per
+cgroup**: the warning means the `nice` value was applied but the bandwidth it implies was
+not, and it names the cgroup and the file that is missing.
+
+That covers two different situations, and they have different fixes. A cgroup the daemon
+created from a `.cgroups` rule gets a `cpu.weight` once the unit delegates correctly —
+see the delegation section below. An ordinary desktop application's scope does not,
+because `cpu` has to be enabled in that scope's parent all the way down from the root,
+and systemd only does that where a unit under it asks for a weight. On such a host
+`app.slice` typically has no `cpu` in its `cgroup.subtree_control`, so no scope beneath it
+has a `cpu.weight` file at all. That is the host's unit configuration rather than
+anything `ananicy-rs` controls, and the daemon will not enable a controller in someone
+else's populated cgroup to work around it — the same reason it refuses to touch
+`user.slice`.
 
 ### `cgroup_realtime_workaround`
 
@@ -240,19 +250,27 @@ first.
 
 **What `Delegate=yes` actually hands over is one level wider than it looks.** `Delegate=yes` gives the service ownership of its own cgroup *and* delegation of that cgroup's subtree, but the daemon discovers its root by taking the parent of `/proc/self/cgroup` — which lands on the unit's parent (`…/system.slice`), not on the unit's own cgroup. The unit's own cgroup contains the daemon process, and the kernel's "no internal process" rule means a cgroup with processes in it cannot have `+cpu` added to its `subtree_control`. So under the shipped unit the daemon is unable to enable the `cpu` controller on the parent, every cgroup it creates below lacks `cpu.max` and `cpu.weight`, and **`CPUQuota` and `CPUWeight` rules and `nice`→`cpu.weight` mirroring are no-ops**. The daemon logs a `warn` for this at start-up rather than skipping silently.
 
-Two changes would fix it. The one that works is `DelegateSubgroup=` on the unit, which
-takes the *name* of a sub-cgroup for systemd to put this daemon's process in — so the
-unit's own cgroup is left with no processes in it, the kernel's no-internal-process rule
-stops blocking `+cpu` there, and the cgroups the daemon creates below it get a
-`cpu.max` and a `cpu.weight`. Note it takes a name, not a boolean: `DelegateSubgroup=yes`
-would create a cgroup literally called `yes`.
+Two changes fix it, and the shipped unit makes both. `DelegateSubgroup=delegated` on the
+unit makes systemd start the daemon in a sub-cgroup of the unit, which leaves the unit's
+own cgroup with no processes in it — and an empty cgroup is what the kernel requires
+before a domain controller can be enabled underneath it. Note it takes a name, not a
+boolean: `DelegateSubgroup=yes` would create a cgroup literally called `yes`.
 
-The one that does *not* work is `CPUWeight=` on the unit, which is the obvious thing to
-reach for. A unit's `cgroup.subtree_control` is populated from what the unit's *children*
-require, and a leaf service has no children, so it stays empty however the unit's own
-weight is set. `CPUWeight=` writes a value into the unit's own `cpu.weight`; it does not
-cause anything to be enabled underneath it. Neither is set in the shipped unit, so CPU
-bandwidth rules remain inert as shipped and the daemon warns about it at start-up.
+The daemon does the other half. Because systemd puts it in the sub-cgroup, the cgroup it
+would naturally manage from is the sub-cgroup — and that one holds the daemon itself, so
+it can never take a controller. At start-up it therefore checks whether the cgroup it
+discovered still holds processes and whether its parent is empty, and if so manages from
+the parent instead. That step up is bounded to one level and requires the parent to be
+genuinely empty, so it cannot leave the delegated subtree: the hierarchy root always
+holds PID 1 and so can never qualify, and a container's root has no parent inside its
+own mount.
+
+What does *not* work is `CPUWeight=` on the unit, which is the obvious thing to reach for.
+A unit's `cgroup.subtree_control` is populated from what the unit's *children* require,
+and a leaf service has no children, so it stays empty however the unit's own weight is
+set. `CPUWeight=` writes a value into the unit's own `cpu.weight`; it does not cause
+anything to be enabled underneath it. What is needed is an empty cgroup to be the parent,
+not a weight on the populated one.
 
 Within the delegated subtree, `ananicy-rs` may create and configure cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
 

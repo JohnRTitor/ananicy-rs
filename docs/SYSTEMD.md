@@ -19,12 +19,12 @@ Three things, all of them optional:
 2. **Status notifications.** We send `READY=1` after the worker is up and
    `STOPPING=1` on `SIGTERM`.
 3. **A delegated cgroup subtree.** A unit with `Delegate=yes` delegates the
-   subtree above the unit's own cgroup, so we can create cgroups and write
-   `cpu.max`/`cpu.weight`. This is the only thing we *need* systemd for — and it
-   is governed by the unit, not by our flag. Note the consequence: the daemon
-   cannot enable the `cpu` controller on a parent that holds processes, which the
-   delegated one does, so the unit also needs `CPUWeight=` or `DelegateSubgroup=`
-   for bandwidth rules to have any effect. See the delegation section below.
+   subtree *above* the unit's own cgroup, which is what lets us create cgroups and
+   write `cpu.max`/`cpu.weight`. This is the only thing we *need* systemd for — and
+   it is governed by the unit, not by our flag. The unit also sets
+   `DelegateSubgroup=` and needs to, for bandwidth rules to have any effect; see
+   the delegation section below for why the obvious alternative does not work.
+
 
 Everything else we do — applying `nice`, `ionice`, `oom_score_adj`,
 `latency_nice` — is plain process manipulation and does not involve systemd.
@@ -112,7 +112,8 @@ exists for us rather than for systemd, so this is the reasoning:
 
 | Setting | Value | What it buys us |
 |---------|-------|-----------------|
-| `Delegate` | `yes` | Delegates the subtree *above* this unit's cgroup to us, which is what lets us create cgroups and write `cpu.max`/`cpu.weight`. Scoped to the unit — it says nothing about `user.slice` or session scopes. The consequence for `cpu` is in the delegation section below |
+| `Delegate` | `yes` | Delegates the subtree *above* this unit's cgroup, which is what lets us create cgroups and write `cpu.max`/`cpu.weight`. Scoped to the unit — it says nothing about `user.slice` or session scopes. The consequence for `cpu` is in the delegation section below |
+| `DelegateSubgroup` | `delegated` | Starts this process in a sub-cgroup of the unit, which leaves the unit's own cgroup with no processes in it — the precondition for enabling `cpu` there. Without it every cgroup we create has no `cpu.max` and no `cpu.weight`. Takes a cgroup name, not a boolean. See the delegation section below |
 | `NotifyAccess` | `main` | Without it the unit is `Type=simple`, whose default `NotifyAccess=` is `none`, and the manager discards every `sd_notify` we send. With it, `READY=1` and `STOPPING=1` reach the manager. It changes no lifecycle semantics — the unit stays `Type=simple` — it only stops the messages being dropped |
 | `ReadWritePaths` | `/sys/bus/platform/drivers/amd_x3d_vcache` | `ProtectKernelTunables=yes` mounts `/sys` read-only, which includes the AMD X3D driver's `amd_x3d_mode`, so `x3d_mode` could not be applied. systemd applies `ReadWritePaths` before the read-only remount and `MS_RDONLY` is per-mount, so the subdirectory bind survives. Harmless where the driver is absent |
 | `ProtectControlGroups` | `no` | With `yes` the cgroup hierarchies are mounted read-only, which would disable cgroup management entirely |
@@ -159,21 +160,35 @@ mutation outside it. What that means in practice:
   file at all, and systemd only enables a controller in a unit's own cgroup when the
   unit has a resource setting that needs one. The shipped unit sets `Nice=-5` and
   nothing CPU-bandwidth-related, so its own `cgroup.subtree_control` does not contain
-  `cpu`, and the leaves the daemon creates under it have no `cpu.weight` and no
-  `cpu.max`. Every `CPUWeight` and `CPUQuota` in a `.cgroups` rule, and the `nice` →
-  `cpu.weight` mirroring, are therefore no-ops as shipped, and the daemon warns at
-  start-up when it cannot apply a weight. The fix is `DelegateSubgroup=<name>` on the
-  unit: it makes systemd place this process in a sub-cgroup of the unit, which leaves
-  the unit's own cgroup with no processes in it, which is what the no-internal-process
-  rule requires before `+cpu` can be enabled there. It takes a name, not a boolean —
-  `DelegateSubgroup=yes` would create a cgroup called `yes`.
+  `cpu` on its own account, and the leaves the daemon creates have no `cpu.weight` and
+  no `cpu.max`. Every `CPUWeight` and `CPUQuota` in a `.cgroups` rule, and the `nice` →
+  `cpu.weight` mirroring into cgroups we create, are therefore no-ops unless the unit
+  arranges for the controller to be available. The daemon warns at start-up when it
+  cannot apply a weight.
+
+  **`DelegateSubgroup=delegated` is what arranges it.** systemd starts this process in
+  a sub-cgroup of the unit, which leaves the unit's own cgroup with no processes in
+  it, and an empty cgroup is what the kernel requires before a domain controller can
+  be enabled underneath it (`cgroup_vet_subtree_control_enable()` returns `-EBUSY` when
+  `cgroup_has_tasks()`). It takes a cgroup name, not a boolean — `DelegateSubgroup=yes`
+  would create a cgroup called `yes`.
+
+  **Both halves are needed, and the daemon does the other one.** Because systemd puts
+  us in the sub-cgroup, the cgroup we would naturally manage from is the sub-cgroup —
+  and that one holds this process, so it can never take a controller. The daemon
+  therefore checks, at start-up, whether the cgroup it discovered still holds
+  processes and whether its parent is empty, and if so manages from the parent instead.
+  The step up is bounded to one level and requires the parent to be genuinely empty,
+  which is what keeps it inside the delegated subtree: the hierarchy root always holds
+  PID 1, so it can never qualify, and a container's root has no parent inside its own
+  mount.
 
   `CPUWeight=` on the unit would *not* fix it, and it is worth saying why because it is
   the obvious thing to try. A unit's `cgroup.subtree_control` is enabled from what the
   unit's children need, and a leaf service has no children, so it stays empty however
   the unit's own weight is set. `CPUWeight=` writes a value into the unit's own
-  `cpu.weight`; it does not enable anything underneath. What is needed is an empty cgroup
-  to be the parent, not a weight on the populated one.
+  `cpu.weight`; it does not enable anything underneath. What is needed is an empty
+  cgroup to be the parent, not a weight on the populated one.
 
   We never enable controllers on someone else's cgroup to work around it.
 

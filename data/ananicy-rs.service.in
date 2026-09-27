@@ -22,16 +22,25 @@ NotifyAccess=main
 # It also does not, by itself, make CPU bandwidth rules work. `Delegate=yes` alone
 # hands over the *parent* (system.slice), which holds processes, so the kernel
 # refuses `+cpu` on it ("no internal process"), and every cgroup we create below
-# ends up with no cpu.max and no cpu.weight. `DelegateSubgroup=` below is what
-# fixes that.
+# ends up with no cpu.max and no cpu.weight.
 #
-# Note that `CPUWeight=` would NOT fix it, despite being the obvious thing to
-# reach for: a service's own cgroup.subtree_control is populated from what the
-# unit's *children* require, and a leaf service has no children, so it stays
-# empty however its own weight is set. The parent needs to be an empty cgroup,
-# which is what DelegateSubgroup= arranges by moving this process into a
-# sub-cgroup of the unit.
-#DelegateSubgroup=ananicy
+# `DelegateSubgroup=` is what fixes that, and it is the only thing that does. It
+# takes the name of a sub-cgroup for systemd to start this process in, which
+# leaves the unit's own cgroup with no processes in it -- and an empty cgroup is
+# exactly what the kernel requires before a domain controller can be enabled
+# underneath it. We then discover our root one level up, at the unit cgroup, and
+# `+cpu` succeeds there, so the cgroups we create get cpu.max and cpu.weight.
+#
+# Note `CPUWeight=` would NOT achieve this, despite being the obvious thing to
+# reach for: a unit's cgroup.subtree_control is enabled from what the unit's
+# *children* require, and a leaf service has no children, so it stays empty
+# however the unit's own weight is set.
+#
+# The name is a plain cgroup name -- systemd rejects ones starting with "." or
+# "_" -- and it is not a boolean, so `DelegateSubgroup=yes` would create a cgroup
+# called "yes". Keep it distinct from any name a .cgroups rule might use: a rule
+# that collides with this sub-cgroup would target the daemon's own cgroup.
+DelegateSubgroup=delegated
 Delegate=yes
 
 Restart=always
