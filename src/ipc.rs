@@ -30,12 +30,74 @@ impl Drop for IpcSingletonGuard {
 /// that uses the status to confirm cleanup would otherwise be told the cleanup
 /// worked.
 pub(crate) fn force_remove_semaphore() -> ! {
-    if let Err(errno) = rustix::shm::unlink(IPC_NAME) {
-        error!("Failed to remove semaphore: {errno}");
-        exit(1);
+    match remove_stale_singleton(IPC_NAME, std::path::Path::new("/proc")) {
+        Removed::LiveDaemon(pid) => {
+            eprintln!(
+                "Refusing to remove the singleton object: it belongs to a running \
+                 ananicy-rs (pid {pid})."
+            );
+            eprintln!("Stop it first: systemctl stop ananicy-rs");
+            exit(1);
+        }
+        Removed::Gone => {
+            info!("Semaphore was successfully removed!");
+            exit(0);
+        }
+        Removed::Failed(errno) => {
+            error!("Failed to remove semaphore: {errno}");
+            exit(1);
+        }
     }
-    info!("Semaphore was successfully removed!");
-    exit(0);
+}
+
+/// What removing the singleton object would do.
+#[derive(Debug, PartialEq, Eq)]
+enum Removed {
+    /// The object belongs to a daemon that is running right now, so it is not
+    /// stale and was left in place.
+    LiveDaemon(i32),
+    /// Removed, or there was nothing there to remove.
+    Gone,
+    /// Present, and the unlink failed.
+    Failed(rustix::io::Errno),
+}
+
+/// The outcome of a forced removal, given the object to remove and the procfs
+/// root to read process identities from.
+///
+/// The object's contents are checked first, because the object outlives a crash
+/// but not a clean exit, so the pid in it is either a dead process — the case
+/// this exists for — or a daemon running right now. Unlinking the second is not
+/// a cleanup: the daemon keeps running with nothing left to signal it, and the
+/// next `--reload` or start-up creates a second one, leaving two daemons tuning
+/// the same machine with no way to address either by name.
+///
+/// An object that cannot be read, or that does not contain a pid, is treated as
+/// stale: it is a half-written or corrupt leftover, and refusing to remove it
+/// would leave the operator with no way forward.
+fn remove_stale_singleton(object: &str, proc_root: &std::path::Path) -> Removed {
+    use rustix::{
+        fs::Mode,
+        shm::{self, OFlags as ShmOFlags},
+    };
+
+    if let Some(pid) = shm::open(object, ShmOFlags::RDONLY, Mode::empty())
+        .ok()
+        .map(File::from)
+        .and_then(|mut file| {
+            let mut buf = String::new();
+            file.read_to_string(&mut buf).ok()?;
+            buf.trim().parse::<i32>().ok()
+        })
+        .filter(|&pid| proc_entry_looks_like_daemon(proc_root, pid))
+    {
+        return Removed::LiveDaemon(pid);
+    }
+
+    match shm::unlink(object) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => Removed::Gone,
+        Err(errno) => Removed::Failed(errno),
+    }
 }
 
 pub(crate) fn check_singleton() -> Result<IpcSingletonGuard, String> {
@@ -191,9 +253,82 @@ fn proc_entry_looks_like_daemon(proc_root: &std::path::Path, pid: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::proc_entry_looks_like_daemon;
+    use super::{Removed, proc_entry_looks_like_daemon, remove_stale_singleton};
     use std::io::Write;
     use std::path::Path;
+
+    /// Creates a shared-memory object under a name of its own, so the guard can
+    /// be driven without touching the real singleton.
+    fn object(name: &str, contents: &str) {
+        use rustix::{
+            fs::Mode,
+            shm::{self, OFlags as ShmOFlags},
+        };
+        let _ = shm::unlink(name);
+        let fd = shm::open(
+            name,
+            ShmOFlags::CREATE | ShmOFlags::EXCL | ShmOFlags::RDWR,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .expect("create a shared-memory object");
+        std::fs::File::from(fd)
+            .write_all(contents.as_bytes())
+            .expect("write the object contents");
+    }
+
+    /// Removes the object again, so a failing test cannot leave one behind to
+    /// affect the next run.
+    struct Object(&'static str);
+
+    impl Drop for Object {
+        fn drop(&mut self) {
+            let _ = rustix::shm::unlink(self.0);
+        }
+    }
+
+    /// The point of the guard: a live daemon is recognised, so the object is not
+    /// mistaken for the stale leftover it looks like from the outside.
+    #[test]
+    fn an_object_naming_a_running_daemon_is_not_stale() {
+        const NAME: &str = "/AnanicyRsTestLiveOwner";
+        let dir = tempfile::tempdir().expect("a proc root");
+        cmdline(dir.path(), 4242, &["/usr/bin/ananicy-rs"]);
+        object(NAME, "4242\n");
+        let _cleanup = Object(NAME);
+        assert_eq!(
+            remove_stale_singleton(NAME, dir.path()),
+            Removed::LiveDaemon(4242)
+        );
+    }
+
+    /// A crashed daemon is the case the flag exists for: its object survives the
+    /// crash, and the pid inside it is either gone or has been recycled.
+    #[test]
+    fn an_object_naming_a_dead_or_recycled_pid_is_stale() {
+        const NAME: &str = "/AnanicyRsTestStaleOwner";
+        let dir = tempfile::tempdir().expect("a proc root");
+        cmdline(dir.path(), 4242, &["/bin/sh", "-c", "sleep 1"]);
+        object(NAME, "4242");
+        let _cleanup = Object(NAME);
+        assert_eq!(remove_stale_singleton(NAME, dir.path()), Removed::Gone);
+    }
+
+    #[test]
+    fn an_object_holding_something_other_than_a_pid_is_stale() {
+        const NAME: &str = "/AnanicyRsTestCorruptOwner";
+        let dir = tempfile::tempdir().expect("a proc root");
+        object(NAME, "not a pid");
+        let _cleanup = Object(NAME);
+        assert_eq!(remove_stale_singleton(NAME, dir.path()), Removed::Gone);
+    }
+
+    #[test]
+    fn a_missing_object_names_no_daemon() {
+        const NAME: &str = "/AnanicyRsTestAbsentOwner";
+        let dir = tempfile::tempdir().expect("a proc root");
+        let _ = rustix::shm::unlink(NAME);
+        assert_eq!(remove_stale_singleton(NAME, dir.path()), Removed::Gone);
+    }
 
     /// Writes a `/proc`-shaped tree with one process's `cmdline`, where the
     /// elements are NUL-separated exactly as the kernel reports them.
