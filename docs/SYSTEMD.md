@@ -215,11 +215,31 @@ the reload happens in the running process without dropping events.
 |--------|-----------|
 | `loglevel`, `log_applied_rule`, other `apply_*` flags | Reload |
 | `ananicy.conf` values that are re-read | Reload |
-| `.rules`, `.types`, `.cgroups` | Restart |
+| `.rules`, `.types`, `.cgroups` | Reload |
 | `check_freq` | Restart — captured when the manual scanner starts |
 
 A reload that fails to parse keeps the previous configuration and logs the
-error; the daemon does not silently fall back to defaults.
+error; the daemon does not silently fall back to defaults. The rules are reloaded
+independently of that outcome, because a configuration that will not parse has not
+changed `rule_load` either.
+
+`rule_load = false` is honoured as the deliberate choice it is: the rules already
+loaded stay in force and the reload says so.
+
+Two things about what a reload can and cannot reach:
+
+* **It applies to processes as they are seen.** A process already tuned keeps the
+  values it was given until the next time it produces an event, which for an
+  event-driven backend means the next exec. Nothing is re-tuned retroactively,
+  because the daemon is not keeping a list of what it has already done.
+* **It creates cgroups for newly added `.cgroups` entries.** A rule naming a
+  cgroup that does not exist yet has no directory until one is made, and a restart
+  would have made it, so a reload does too. Settings are applied whether or not
+  the cgroup already existed, so editing an existing entry works as well.
+
+The rule set is swapped in atomically. A process being matched at the moment of the
+swap is matched against one consistent set rather than a mixture of the old and the
+new, and the write lock is held only for the swap itself.
 
 ## NixOS
 

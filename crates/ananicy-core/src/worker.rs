@@ -10,7 +10,7 @@ use {
 };
 
 use {
-    crate::{config::Config, process::Process, rules::Rules},
+    crate::{config::Config, process::Process, rules::SharedRules},
     serde_json::Value,
     std::{collections::HashMap, sync::Arc, thread::JoinHandle},
     tracing::{debug, error, info, warn},
@@ -83,7 +83,7 @@ enum RuleApplication {
 
 pub struct Worker {
     config: Arc<Config>,
-    rules: Arc<Rules>,
+    rules: SharedRules,
     platform: Arc<dyn PlatformActions>,
     cpuset_aliases: HashMap<String, String>,
     receiver: Receiver<Process>,
@@ -94,7 +94,7 @@ pub struct Worker {
 impl Worker {
     pub fn new(
         config: Arc<Config>,
-        rules: Arc<Rules>,
+        rules: SharedRules,
         platform: Arc<dyn PlatformActions>,
         cpuset_aliases: HashMap<String, String>,
         receiver: Receiver<Process>,
@@ -168,7 +168,7 @@ impl Worker {
                 }
             }
 
-            let rules = &self.rules;
+            let rules = self.rules.get();
             let rule = rules.get_rule(lookup_name);
             let is_realtime = self.platform.is_realtime(p.identity.pid.0);
 

@@ -91,7 +91,12 @@ fn config_reload_changes_applied_rule_logging_for_next_event() {
     // The reload happens on another thread while the worker is running, so this
     // also covers the work_loop reading a fresh snapshot per process.
     use {
-        ananicy_core::{process::Process, rules::Rules, types::Pid, worker::Worker},
+        ananicy_core::{
+            process::Process,
+            rules::{Rules, SharedRules},
+            types::Pid,
+            worker::Worker,
+        },
         std::{
             collections::HashMap,
             fs,
@@ -131,7 +136,7 @@ fn config_reload_changes_applied_rule_logging_for_next_event() {
     let events = capture_events(LevelFilter::INFO, || {
         Worker::new(
             config,
-            Arc::new(rules),
+            SharedRules::new(rules),
             Arc::new(platform),
             HashMap::new(),
             rx,

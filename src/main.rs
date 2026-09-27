@@ -2,7 +2,7 @@
 compile_error!("At least one event source feature ('bpf' or 'netlink') must be enabled.");
 
 use {
-    ananicy_core::process::Process,
+    ananicy_core::{process::Process, rules::SharedRules},
     ananicy_platform::LinuxPlatform,
     std::process::{exit, id},
     tracing::{debug, info},
@@ -122,18 +122,25 @@ fn main() {
     };
 
     let (tx, rx) = mpsc::channel::<Process>();
-    let rules = Arc::new(rules_obj);
+    // Shared between the worker, which reads it for every process, and the signal
+    // handler, which replaces it on `SIGUSR1`. That is what lets `--reload` pick
+    // up rule changes without a restart.
+    let rules = SharedRules::new(rules_obj);
     let platform = Arc::new(LinuxPlatform::new());
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
     if let Err(e) = signals::install(
-        config.clone(),
-        config_path,
+        signals::Reload::new(
+            config.clone(),
+            config_path.clone(),
+            config_dir_path.clone(),
+            rules.clone(),
+            log_reload_handle,
+            log_level_override,
+        ),
         is_systemd,
         shutdown_flag.clone(),
         tx.clone(),
-        log_reload_handle,
-        log_level_override,
     ) {
         error!("Failed to install signal handlers: {}", e);
         error!(

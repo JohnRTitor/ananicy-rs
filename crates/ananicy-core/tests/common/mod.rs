@@ -13,7 +13,7 @@ use {
         config::{Config, ConfigSnapshot},
         cpuset::CpuSet,
         process::Process,
-        rules::Rules,
+        rules::{Rules, SharedRules},
         types::Pid,
         worker::{PlatformActions, PlatformError, Worker},
     },
@@ -389,7 +389,7 @@ pub fn run_worker_with(
     let events = capture_events(filter, || {
         Worker::new(
             config,
-            Arc::new(rules),
+            SharedRules::new(rules),
             platform.clone(),
             cpuset_aliases,
             rx,

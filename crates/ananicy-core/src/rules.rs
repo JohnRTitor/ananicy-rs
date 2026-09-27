@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use {
     crate::{
@@ -361,5 +361,147 @@ fn merge_patch(target: &mut Value, patch: &Value) {
         }
     } else {
         *target = patch.clone();
+    }
+}
+
+/// A rule set that can be replaced while the daemon is running.
+///
+/// `--reload` promises to pick up rule changes, and a rule set built once at
+/// start-up cannot deliver that: the worker holds it for the life of the process
+/// and reads it on every process it sees. This wraps it so a reload can build a
+/// new one and swap it in, which is only safe because the reader takes a snapshot
+/// rather than borrowing across the swap.
+///
+/// An `RwLock` rather than an `ArcSwap` because it is in `std` and the read side
+/// is a shared lock plus an `Arc` clone — once per process received, which is
+/// nothing next to the procfs reads the same iteration does.
+#[derive(Clone)]
+pub struct SharedRules(Arc<RwLock<Arc<Rules>>>);
+
+impl SharedRules {
+    pub fn new(rules: Rules) -> Self {
+        Self(Arc::new(RwLock::new(Arc::new(rules))))
+    }
+
+    /// The current rule set.
+    ///
+    /// The returned `Arc` is a snapshot: a reload that lands after this call does
+    /// not affect the set being read, so one process is always matched against one
+    /// consistent set of rules rather than a mixture of the old and the new.
+    ///
+    /// A poisoned lock yields the last set that was successfully installed rather
+    /// than propagating the panic. The only way to poison it is a panic while
+    /// holding it, and refusing to tune any process from then on would be a far
+    /// worse outcome than using a slightly stale rule set.
+    pub fn get(&self) -> Arc<Rules> {
+        match self.0.read() {
+            Ok(rules) => rules.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Installs a freshly loaded rule set, returning how many rules it holds.
+    ///
+    /// Takes the lock for the swap only, so a process being read at the same moment
+    /// is unaffected and simply sees one set or the other.
+    pub fn replace(&self, rules: Rules) -> usize {
+        let size = rules.size();
+        let installed = Arc::new(rules);
+        match self.0.write() {
+            Ok(mut current) => *current = installed,
+            Err(poisoned) => *poisoned.into_inner() = installed,
+        }
+        size
+    }
+}
+
+#[cfg(test)]
+mod shared_rules {
+    use {super::*, crate::config::ConfigSnapshot};
+
+    fn rules_named(name: &str) -> Rules {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        rules.load_rule_from_string(&format!(r#"{{"name":"{name}","nice":5}}"#));
+        rules
+    }
+
+    /// The point of the snapshot: a reload that lands while a process is being
+    /// matched must not change the rules that process is matched against. If the
+    /// reader borrowed instead, this could not be said.
+    #[test]
+    fn a_reader_keeps_the_set_it_started_with() {
+        let shared = SharedRules::new(rules_named("before"));
+        let in_flight = shared.get();
+        shared.replace(rules_named("after"));
+
+        assert!(
+            in_flight.get_rule("before").is_some(),
+            "the set taken before the swap must still answer for itself"
+        );
+        assert!(
+            in_flight.get_rule("after").is_none(),
+            "and must not see the set installed after it"
+        );
+        assert!(
+            shared.get().get_rule("after").is_some(),
+            "a reader arriving after the swap sees the new set"
+        );
+        assert!(shared.get().get_rule("before").is_none());
+    }
+
+    /// Every clone names the same set, which is what lets the worker and the
+    /// signal handler each hold one.
+    #[test]
+    fn a_clone_sees_the_swap() {
+        let shared = SharedRules::new(rules_named("before"));
+        let other = shared.clone();
+        shared.replace(rules_named("after"));
+
+        assert!(other.get().get_rule("after").is_some());
+    }
+
+    /// A rule that is removed from disk must stop applying after a reload. This
+    /// is the user-visible half of the feature: before it, only a restart dropped
+    /// a rule.
+    #[test]
+    fn a_removed_rule_stops_applying_after_a_reload() {
+        let shared = SharedRules::new(rules_named("doomed"));
+        assert!(shared.get().get_rule("doomed").is_some());
+
+        shared.replace(rules_named("survivor"));
+        assert!(shared.get().get_rule("doomed").is_none());
+        assert!(shared.get().get_rule("survivor").is_some());
+    }
+
+    /// The count is reported so a reload can say what changed.
+    #[test]
+    fn replace_reports_the_installed_rule_count() {
+        let shared = SharedRules::new(rules_named("one"));
+        assert_eq!(shared.replace(rules_named("one")), 1);
+    }
+
+    /// A fresh set has an empty resolution cache, so a rule edited on disk is not
+    /// answered out of the previous set's cache.
+    #[test]
+    fn a_reloaded_set_does_not_answer_from_the_old_cache() {
+        let first = rules_named("cached");
+        let shared = SharedRules::new(first);
+        // Warm the cache in the installed set.
+        assert!(shared.get().get_rule("cached").is_some());
+
+        // Replace it with a set where that rule has a different value.
+        let mut second = rules_named("cached");
+        second.load_rule_from_string(r#"{"name":"cached","nice":9}"#);
+        shared.replace(second);
+
+        let rule = shared
+            .get()
+            .get_rule("cached")
+            .expect("the rule is still there");
+        assert_eq!(
+            rule.get("nice").and_then(|v| v.as_i64()),
+            Some(9),
+            "the reloaded value must be what is read, not the cached earlier one"
+        );
     }
 }

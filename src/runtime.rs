@@ -12,7 +12,9 @@ use {
 
 use {
     crate::monitor,
-    ananicy_core::{config::Config, process::Process, rules::Rules, worker::Worker},
+    ananicy_core::{
+        config::Config, process::Process, rules::Rules, rules::SharedRules, worker::Worker,
+    },
     std::{
         collections::HashMap,
         process::exit,
@@ -45,7 +47,7 @@ pub(crate) struct RunOptions {
 
 pub(crate) fn run(
     config: Arc<Config>,
-    rules: Arc<Rules>,
+    rules: SharedRules,
     platform: Arc<LinuxPlatform>,
     aliases: HashMap<String, String>,
     events: ProcessEvents,
@@ -89,7 +91,7 @@ pub(crate) fn run(
     // systemd unit reports as success, and which leaves an `x3d_mode` change
     // made at start-up in place because the restore lives on the shutdown path.
     if wait_for_cgroup_hierarchy() {
-        create_cgroups(&rules);
+        create_cgroups(&rules.get());
     }
 
     info!("Spawning worker thread");
@@ -131,7 +133,7 @@ pub(crate) fn run(
         // and a host that had no hierarchy a moment ago is not going to grow one
         // while the daemon was sleeping.
         if ananicy_platform::cgroups::has_cgroup_hierarchy() {
-            create_cgroups(&rules);
+            create_cgroups(&rules.get());
         }
     }
 
@@ -206,7 +208,7 @@ fn settings_from_rule(rule: &serde_json::Value) -> CgroupSettings {
 /// created is reported by the cgroup manager and skipped; the point of this
 /// function is that running without one of them is still better than not running
 /// at all, so it deliberately has no failure path for a caller to take.
-fn create_cgroups(rules: &Arc<Rules>) {
+pub(crate) fn create_cgroups(rules: &Arc<Rules>) {
     for (name, value) in rules.get_cgroups() {
         ananicy_platform::cgroups::create_cgroup(&name.0, settings_from_rule(value));
     }
