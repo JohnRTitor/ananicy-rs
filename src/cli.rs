@@ -153,7 +153,8 @@ struct Opts {
     /// Config directory
     config_dir: Option<String>,
     #[bpaf(long)]
-    /// Reload configuration/rules
+    /// Reload global configuration and the log level. Rule, type and cgroup
+    /// files are only read at start-up and need a restart.
     reload: bool,
     #[bpaf(long)]
     /// Force remove IPC semaphore
