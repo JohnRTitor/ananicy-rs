@@ -32,17 +32,6 @@ pub enum PlatformError {
     Io(#[from] std::io::Error),
 }
 
-impl PlatformError {
-    /// Whether this error should skip the current attribute and allow the rest of the rule to proceed,
-    /// or abort the entire rule application for this process.
-    pub fn is_skippable(&self) -> bool {
-        matches!(
-            self,
-            PlatformError::PermissionDenied | PlatformError::Skipped(_)
-        )
-    }
-}
-
 /// PlatformActions abstracts the Linux-specific OS operations so the core worker
 /// can be unit tested without requiring a Linux kernel or root privileges.
 pub trait PlatformActions: Send + Sync {
@@ -296,6 +285,12 @@ impl Worker {
         is_affected_by_cgroup_bug: bool,
     ) -> Result<RuleApplication, PlatformError> {
         let mut applied_any = false;
+        // A failure on one attribute must not cost the rule the rest of them: the
+        // reference applies what it can and carries on, and a perfectly valid
+        // `ionice` is not worth losing because `sched` named a policy this kernel
+        // would not take. Every attribute below therefore records its failure here
+        // and moves on, rather than returning, and the rule is reported as
+        // partially applied if anything at all got through.
         let mut partial_failure = None;
 
         if cfg.apply_nice
@@ -310,14 +305,7 @@ impl Worker {
                 .set_priority(p.identity.pid.0, tids, nice as i32)
             {
                 Ok(()) => applied_any = true,
-                Err(e) if e.is_skippable() => {
-                    partial_failure.get_or_insert(e);
-                }
                 Err(e) => {
-                    // A failure on one attribute must not cost the rule the rest of
-                    // them: the reference applies what it can and carries on, and a
-                    // perfectly valid `ionice` is not worth losing because `sched`
-                    // named a policy this kernel would not take.
                     partial_failure.get_or_insert(e);
                 }
             }
@@ -369,14 +357,7 @@ impl Worker {
                     .set_latency_nice(p.identity.pid.0, tids, latnice)
                 {
                     Ok(()) => applied_any = true,
-                    Err(e) if e.is_skippable() => {
-                        partial_failure.get_or_insert(e);
-                    }
                     Err(e) => {
-                        // A failure on one attribute must not cost the rule the rest of
-                        // them: the reference applies what it can and carries on, and a
-                        // perfectly valid `ionice` is not worth losing because `sched`
-                        // named a policy this kernel would not take.
                         partial_failure.get_or_insert(e);
                     }
                 }
@@ -396,14 +377,7 @@ impl Worker {
                 .set_sched(p.identity.pid.0, tids, sched, rtprio)
             {
                 Ok(()) => applied_any = true,
-                Err(e) if e.is_skippable() => {
-                    partial_failure.get_or_insert(e);
-                }
                 Err(e) => {
-                    // A failure on one attribute must not cost the rule the rest of
-                    // them: the reference applies what it can and carries on, and a
-                    // perfectly valid `ionice` is not worth losing because `sched`
-                    // named a policy this kernel would not take.
                     partial_failure.get_or_insert(e);
                 }
             }
@@ -422,14 +396,7 @@ impl Worker {
                 .set_io_priority(p.identity.pid.0, ioclass, ionice)
             {
                 Ok(()) => applied_any = true,
-                Err(e) if e.is_skippable() => {
-                    partial_failure.get_or_insert(e);
-                }
                 Err(e) => {
-                    // A failure on one attribute must not cost the rule the rest of
-                    // them: the reference applies what it can and carries on, and a
-                    // perfectly valid `ionice` is not worth losing because `sched`
-                    // named a policy this kernel would not take.
                     partial_failure.get_or_insert(e);
                 }
             }
@@ -447,14 +414,7 @@ impl Worker {
                 .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)
             {
                 Ok(()) => applied_any = true,
-                Err(e) if e.is_skippable() => {
-                    partial_failure.get_or_insert(e);
-                }
                 Err(e) => {
-                    // A failure on one attribute must not cost the rule the rest of
-                    // them: the reference applies what it can and carries on, and a
-                    // perfectly valid `ionice` is not worth losing because `sched`
-                    // named a policy this kernel would not take.
                     partial_failure.get_or_insert(e);
                 }
             }
@@ -482,14 +442,7 @@ impl Worker {
             );
             match self.platform.add_pid_to_cgroup(p.identity.pid.0, cgroup) {
                 Ok(()) => applied_any = true,
-                Err(e) if e.is_skippable() => {
-                    partial_failure.get_or_insert(e);
-                }
                 Err(e) => {
-                    // A failure on one attribute must not cost the rule the rest of
-                    // them: the reference applies what it can and carries on, and a
-                    // perfectly valid `ionice` is not worth losing because `sched`
-                    // named a policy this kernel would not take.
                     partial_failure.get_or_insert(e);
                 }
             }
@@ -531,14 +484,7 @@ impl Worker {
                             .set_affinity(p.identity.pid.0, tids, &parsed_set)
                         {
                             Ok(()) => applied_any = true,
-                            Err(e) if e.is_skippable() => {
-                                partial_failure.get_or_insert(e);
-                            }
                             Err(e) => {
-                                // A failure on one attribute must not cost the rule the rest of
-                                // them: the reference applies what it can and carries on, and a
-                                // perfectly valid `ionice` is not worth losing because `sched`
-                                // named a policy this kernel would not take.
                                 partial_failure.get_or_insert(e);
                             }
                         }
