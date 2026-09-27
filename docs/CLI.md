@@ -100,7 +100,7 @@ still behaves the same way.
 - `--config <CONFIG>`: Override the default config file path (default: `/etc/ananicy.d/ananicy.conf`).
 - `--config-dir <CONFIG_DIR>`: Override the rules directory (default: `/etc/ananicy.d`).
 - `--reload`: Send a signal to the running `ananicy-rs` instance (via an IPC semaphore) to reload global configuration, the active log level, and the rule, type and cgroup files. A process already tuned keeps its settings until it is next seen, so nothing is re-tuned retroactively. `check_freq` still requires a restart: it is captured when the manual scanner starts.
-- `--force-remove-semaphore`: Force remove the IPC semaphore (use only if the daemon crashed and left a stale semaphore).
+- `--force-remove-semaphore`: Remove the daemon's single-instance object, for the case where a crashed daemon left one behind. Exits 0 when the object is gone afterwards — including when there was none to remove — and 1 when it could not be removed, or when the object still belongs to a running `ananicy-rs`, which is reported by pid rather than unlinked. The divergences from `ananicy-cpp` are in `docs/COMPATIBILITY.md` §5.
 - `--manual-scanning` (`--manualscanning`): Enable periodic manual procfs scanning (useful if event listeners miss events).
 - `--benchmark`: Run the daemon in benchmark mode for performance profiling.
 - `--benchmark-count <BENCHMARK_COUNT>`: Number of iterations to run in benchmark mode.

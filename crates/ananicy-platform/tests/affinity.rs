@@ -183,6 +183,10 @@ fn a_vanished_process_is_reported_as_gone_not_as_an_unsupported_kernel() {
 /// and the operator deserves to be told that, rather than to be told the kernel
 /// has no affinity support.
 ///
+/// `Skipped` is the other wrong answer: it reads "no CPU in the cpuset a rule
+/// asked for is available to *this pid*", which is a claim about the process,
+/// where a CPU the machine does not have is a claim about the machine.
+///
 /// Against the pre-fix code this test fails with `Err(Unsupported)`.
 #[test]
 fn a_mask_the_kernel_cannot_accept_is_reported_as_such() {

@@ -68,7 +68,9 @@ To allow both implementations to coexist on the same system without colliding, `
 - **`check_disks_schedulers`:** `ananicy-cpp` has no start-up check for block devices on a scheduler that cannot honour `ioclass`/`ionice`, although the key is in its own `test-readfile.txt` fixture. Restored from the original Ananicy, where it shipped enabled; read-only, defaults to on. It accepts `mq-deadline`, which the kernel does honour and the original's CFQ/BFQ note predates, so it stays quiet on the NVMe machines that make up most of what it sees; the note in `docs/CONFIGURATION.md` that has always said CFQ/BFQ was corrected with it.
 - **`--benchmark-count`:** `ananicy-cpp` compares the count in its main loop, so it keeps running for a whole `check_freq` interval (a minute by default) after reaching it. `ananicy-rs` stops as soon as the worker reaches it, which is a few milliseconds later.
 - **An unknown action:** `ananicy-cpp` logs `Unknown action requested` and then starts the daemon anyway. `ananicy-rs` exits 1.
-- **Exit codes for a misused `dump`:** `ananicy-cpp` exits 1 for a missing or unknown sub-action; `ananicy-rs` exits 2, the code it uses for every usage error. `--reload` and `--force-remove-semaphore` exit 1 in both.
+- **Exit codes for a misused `dump`:** `ananicy-cpp` exits 1 for a missing or unknown sub-action; `ananicy-rs` exits 2, the code it uses for every usage error. `--reload` exits 1 in both.
+- **`--force-remove-semaphore` on a name that is not there:** `ananicy-cpp` prints the errno and exits 1 for any `shm_unlink(3)` that does not succeed (`main.cpp:115-119`), which includes the `ENOENT` of a name that was never created. `ananicy-rs` exits 0: the status answers "is a stale object still there?", and a name that is not there is the answer "no". A name that cannot be *unlinked* still exits 1, as it does in the reference.
+- **`--force-remove-semaphore` on a running daemon's object:** `ananicy-cpp` unlinks whatever carries the name, which unaddresses a daemon that is still running — the next start creates a second object and two daemons then tune the same machine. `ananicy-rs` reads the pid out of the object first and refuses when that pid is still an `ananicy-rs`, naming it and telling the operator to stop it. The object outlives a crash but not a clean exit, so a pid that is gone — or recycled by an unrelated process — is still treated as stale and removed.
 - **The cpuset CPU bound:** a rule's `cpuset` is validated against at least 1024 CPUs, so a CPU index above the configured count is accepted as long as it is below 1024. `ananicy-cpp` validates against the configured count alone (`sysconf(_SC_NPROCESSORS_CONF)`), which is also what it parses a cpuset with.
 - **`CPUQuota` arithmetic:** both compute the quota as a period times the number of CPUs times the percentage. `ananicy-cpp` uses the total number of logical CPUs, `ananicy-rs` the number the kernel says this process may run on at once, which is smaller under a cgroup CPU limit. The packaged unit sets no CPU limit, so the two agree there.
 - **Netlink receive buffer:** `ananicy-rs` asks for 8 MiB and falls back silently if the kernel refuses, and it drains the socket through `epoll` with a 100 ms tick where `ananicy-cpp` uses a 500 ms `SO_RCVTIMEO`. Fewer overruns, at the cost of a slightly more active loop. After a reconnect the reference keeps its "same pid as last time" filter, this daemon starts over, so one process can be reported twice.
@@ -138,6 +140,13 @@ divergence goes.
 
 ### 5.2 Where this daemon is the stricter or the looser one
 
+- **A `#!` script is matched as the script, not as its interpreter.** The reference reads
+  `argv[0]`, which for a shebang exec is the interpreter, so `sh /path/script` is `sh` there.
+  Here the second argument is consulted as well, and used when the kernel's `comm` names it —
+  which is what identifies the shape, and keeps a process that rewrote `argv[0]` resolving to
+  `argv[0]` as before. The two daemons differ for every script started through a wrapper, which
+  on NixOS is every program: measured on a live daemon, 285 rule applications over 25 minutes
+  went to 16 processes named `bash`, each given the `bash` rule instead of its own.
 - **A `cpuset` string may contain whitespace.** `CpuSet::parse` trims each token, so
   `"0, 1"` and `" 5"` are accepted; the reference tests the raw token for non-digits and
   rejects both (`cpuset.cpp:224-228, 262-267`). A rule written with a space after the comma
@@ -307,7 +316,7 @@ They are part of the contract, not accidents, and each is pinned by a test:
 | `llc-N` aliases are numbered by ascending CPU id, so `llc-0` is the LLC containing CPU 0. | `ananicy-platform/tests/topology.rs` |
 | An X3D single-CCD part is recognised by its die count, so both aliases exist even with no readable L3. | `ananicy-platform/src/x3d.rs` |
 | `dump proc`'s `cmd` is the name the rule engine matched on, and `cmdline` is an array of the arguments. | `tests/cli.rs` |
-| A failed `--force-remove-semaphore` exits 1; only a successful unlink exits 0. | `tests/cli.rs` |
+| Nothing to remove is a success; a running daemon's object is left in place. | `tests/cli.rs` |
 | An attribute that fails does not prevent the rule's remaining attributes from being applied. | `ananicy-core/tests/worker_rules.rs` |
 | Skipping a realtime process' cgroup, or a `cpuset` alias that resolves empty, is not a failure. | `ananicy-core/tests/worker_rules.rs` |
 | The `nice` → `cpu.weight` mirror cannot overflow, whatever `nice` a rule carries. | `ananicy-core/tests/worker_rules.rs` |
@@ -330,7 +339,7 @@ indistinguishable from never having looked: this table is the evidence of covera
 | Capability | `ananicy-cpp` | `ananicy-rs` | Note |
 | --- | --- | --- | --- |
   | `--verbose` | one step more verbose, clamped at `trace` | same | the debug-verbosity log line still differs, see §5.1 |
-  | `--force-remove-semaphore` error path | exit 1 + message | exit 1 + message |
+  | `--force-remove-semaphore` on a name that cannot be unlinked | exit 1 + message | exit 1 + message | the name that is not there, and the name a running daemon still holds, diverge — see §5 |
   | IPC object permissions | 0600 | 0600 |
   | Benchmark spin | `sleep` then break | same |
   | Bare invocation | help, exit 0 | help, exit 0 |

@@ -45,20 +45,17 @@ fn set_affinity_for(tid: i32, mask: &[u8]) -> io::Result<()> {
     }
 }
 
-/// The mask a task is currently allowed to run on, as the kernel reports it.
+/// A kernel CPU list — `0-3,8`, the shape both
+/// `/sys/devices/system/cpu/possible` and `/proc/<tid>/status`'s
+/// `Cpus_allowed_list` use — as a mask of `num_bytes` bytes.
 ///
-/// `/proc/<tid>/status`'s `Cpus_allowed_list` and `sched_getaffinity(2)` are
-/// both `p->cpus_ptr`, which the kernel already intersects with the task's cpuset
-/// and with the online-CPU mask, so this is the closest a user-space reader gets
-/// to "where this task is allowed to run".
-fn current_affinity(tid: i32, num_bytes: usize) -> Option<Vec<u8>> {
-    let status = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
-    let line = status
-        .lines()
-        .find(|l| l.starts_with("Cpus_allowed_list:"))?;
-    let list = line.split_once(':')?.1;
-
+/// `None` for a range that does not parse, and for a list with no CPU in it at
+/// all: a mask of zeroes would assert that this machine has no CPUs, which is
+/// not something to conclude from a string that could not be read.
+fn mask_from_cpu_list(list: &str, num_bytes: usize) -> Option<Vec<u8>> {
     let mut mask = vec![0u8; num_bytes];
+    let mut any = false;
+
     for part in list.split(',') {
         let part = part.trim();
         if part.is_empty() {
@@ -74,10 +71,26 @@ fn current_affinity(tid: i32, num_bytes: usize) -> Option<Vec<u8>> {
         for cpu in start..=end {
             if cpu < (num_bytes * 8) as u32 {
                 mask[(cpu / 8) as usize] |= 1 << (cpu % 8);
+                any = true;
             }
         }
     }
-    Some(mask)
+
+    any.then_some(mask)
+}
+
+/// The mask a task is currently allowed to run on, as the kernel reports it.
+///
+/// `/proc/<tid>/status`'s `Cpus_allowed_list` and `sched_getaffinity(2)` are
+/// both `p->cpus_ptr`, which the kernel already intersects with the task's cpuset
+/// and with the online-CPU mask, so this is the closest a user-space reader gets
+/// to "where this task is allowed to run".
+fn current_affinity(tid: i32, num_bytes: usize) -> Option<Vec<u8>> {
+    let status = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
+    let line = status
+        .lines()
+        .find(|l| l.starts_with("Cpus_allowed_list:"))?;
+    mask_from_cpu_list(line.split_once(':')?.1, num_bytes)
 }
 
 /// Applies a rule's `cpuset` to every thread of a process.
@@ -168,7 +181,7 @@ fn apply_to_tids(tids: &[i32], mask: &[u8]) -> Result<(), AffinityFailure> {
     Ok(())
 }
 
-/// The CPUs the kernel was built with, as its own `possible` mask says.
+/// The CPUs this machine can run a task on, and how precisely that is known.
 ///
 /// Used to tell the two things `sched_setaffinity(2)` answers `EINVAL` for apart:
 /// a mask naming CPUs that do not exist, and a mask whose intersection with the
@@ -176,31 +189,76 @@ fn apply_to_tids(tids: &[i32], mask: &[u8]) -> Result<(), AffinityFailure> {
 /// machine; the second is a rule that could have been satisfied somewhere else.
 /// The kernel does not distinguish them, and an operator reading a log would not
 /// either if the daemon did not.
-fn kernel_possible_cpus(num_bytes: usize) -> Option<Vec<u8>> {
-    let raw = std::fs::read_to_string("/sys/devices/system/cpu/possible").ok()?;
-    let mut mask = vec![0u8; num_bytes];
-    for part in raw.trim().split(',') {
-        let (start, end) = match part.split_once('-') {
-            Some((s, e)) => (s.parse::<u32>().ok()?, e.parse::<u32>().ok()?),
-            None => {
-                let cpu = part.trim().parse::<u32>().ok()?;
-                (cpu, cpu)
-            }
-        };
-        for cpu in start..=end {
-            if (cpu as usize) < num_bytes * 8 {
-                mask[(cpu / 8) as usize] |= 1 << (cpu % 8);
-            }
+///
+/// Neither source is always readable. `/sys` is absent from a Nix build sandbox
+/// and from many containers, so `/proc/cpuinfo` stands in for it — but it lists
+/// the *online* CPUs, which is a narrower claim than "exists", and the two must
+/// not be reported as the same thing.
+enum MachineCpus {
+    /// `/sys/devices/system/cpu/possible`: every CPU the kernel was built for.
+    Possible(Vec<u8>),
+    /// `/proc/cpuinfo`: the CPUs that are up, which excludes those that exist
+    /// but are off.
+    Online(Vec<u8>),
+}
+
+impl MachineCpus {
+    fn read(num_bytes: usize) -> Option<Self> {
+        std::fs::read_to_string("/sys/devices/system/cpu/possible")
+            .ok()
+            .and_then(|raw| mask_from_cpu_list(raw.trim(), num_bytes))
+            .map(Self::Possible)
+            .or_else(|| online_cpus(num_bytes).map(Self::Online))
+    }
+
+    fn mask(&self) -> &[u8] {
+        match self {
+            Self::Possible(mask) | Self::Online(mask) => mask,
         }
     }
-    Some(mask)
+
+    /// What to say about a rule that named none of them. Wording follows the
+    /// source, so a CPU that is merely offline is not called non-existent.
+    fn absent(&self) -> &'static str {
+        match self {
+            Self::Possible(_) => "no CPU a rule asked for exists on this machine",
+            Self::Online(_) => "no CPU a rule asked for is online on this machine",
+        }
+    }
+}
+
+fn online_cpus(num_bytes: usize) -> Option<Vec<u8>> {
+    let raw = std::fs::read_to_string("/proc/cpuinfo").ok()?;
+    let mut mask = vec![0u8; num_bytes];
+    let mut any = false;
+
+    for line in raw.lines() {
+        let Some(rest) = line.strip_prefix("processor") else {
+            continue;
+        };
+        let Some(value) = rest.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let Ok(cpu) = value.trim().parse::<u32>() else {
+            continue;
+        };
+        if cpu < (num_bytes * 8) as u32 {
+            mask[(cpu / 8) as usize] |= 1 << (cpu % 8);
+            any = true;
+        }
+    }
+
+    any.then_some(mask)
 }
 
 /// One retry with `requested ∩ allowed`.
 ///
 /// A mask the kernel considers impossible does not narrow to anything, so it is
 /// separated out first: naming a CPU that does not exist is a different answer
-/// from a rule whose CPUs this process is not allowed to reach.
+/// from a rule whose CPUs this process is not allowed to reach. Neither is
+/// something to infer when the machine's CPU set could not be read — a mask
+/// naming CPUs that do not exist is not "not available to this process", and
+/// saying so would point whoever reads the log at the wrong process.
 fn narrow_and_retry(
     pid: i32,
     tids: &[i32],
@@ -216,20 +274,25 @@ fn narrow_and_retry(
         )));
     };
 
-    if let Some(possible) = kernel_possible_cpus(num_bytes)
-        && !any_set(&and(mask, &possible))
+    let machine = MachineCpus::read(num_bytes);
+    if let Some(known) = &machine
+        && !any_set(&and(mask, known.mask()))
     {
-        return Err(PlatformError::InvalidCpuset(
-            "no CPU a rule asked for exists on this machine".to_string(),
-        ));
+        return Err(PlatformError::InvalidCpuset(known.absent().to_string()));
     }
 
     let narrowed = and(mask, &allowed);
 
     if !any_set(&narrowed) {
-        return Err(PlatformError::Skipped(format!(
-            "no CPU in the cpuset a rule asked for is available to {pid}"
-        )));
+        return Err(match &machine {
+            Some(_) => PlatformError::Skipped(format!(
+                "no CPU in the cpuset a rule asked for is available to {pid}"
+            )),
+            // Every CPU named exists and none of them is this process's to use,
+            // unless the machine's CPUs are unknown, in which case that is a
+            // guess and the kernel's own refusal is what gets reported.
+            None => PlatformError::Io(io::Error::from_raw_os_error(libc::EINVAL)),
+        });
     }
 
     if narrowed == mask {
@@ -256,5 +319,84 @@ fn classify(error: io::Error) -> PlatformError {
         Some(libc::ESRCH) => PlatformError::NotFound,
         Some(libc::EACCES) | Some(libc::EPERM) => PlatformError::PermissionDenied,
         _ => PlatformError::Io(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cores(mask: &[u8]) -> Vec<u32> {
+        mask.iter()
+            .enumerate()
+            .flat_map(|(byte, &b)| {
+                (0..8)
+                    .filter_map(move |bit| (b & (1 << bit) != 0).then_some((byte * 8) as u32 + bit))
+            })
+            .collect()
+    }
+
+    /// A list of CPUs is read from three places — the kernel's `possible` mask,
+    /// a thread's `Cpus_allowed_list` and a rule's own `cpuset` string — so a
+    /// mistake in it is a mistake in what a rule is allowed to touch.
+    #[test]
+    fn a_cpu_list_becomes_the_mask_it_names() {
+        assert_eq!(
+            cores(&mask_from_cpu_list("0-3,8", 2).unwrap()),
+            [0, 1, 2, 3, 8]
+        );
+        assert_eq!(cores(&mask_from_cpu_list(" 2 , 8 ", 2).unwrap()), [2, 8]);
+        assert_eq!(cores(&mask_from_cpu_list("7", 1).unwrap()), [7]);
+    }
+
+    /// A list naming nothing the mask can address is an empty result, not a mask
+    /// of zeroes: zeroes would say this machine has no CPUs at all, and the caller
+    /// acts on that difference.
+    #[test]
+    fn a_list_the_mask_is_too_short_for_is_no_cpus_at_all() {
+        assert!(mask_from_cpu_list("8", 1).is_none());
+        assert!(mask_from_cpu_list("64-65", 1).is_none());
+        assert!(mask_from_cpu_list("", 2).is_none());
+        assert!(mask_from_cpu_list("garbage", 2).is_none());
+    }
+
+    /// A CPU id past the end of the mask is dropped rather than read as one: a
+    /// `possible` file that does not parse must not be able to name CPU 4096, and
+    /// a list that reaches past the end is still a list of the CPUs that fit.
+    #[test]
+    fn a_list_reaching_past_the_mask_keeps_the_part_that_fits() {
+        assert_eq!(
+            cores(&mask_from_cpu_list("0-1023", 2).unwrap()),
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        );
+    }
+
+    /// The offline-CPU stand-in for `possible`, and the last source consulted
+    /// when `/sys` is not mounted. It is read from the running machine, so all
+    /// this can say is that it is there and does not claim CPUs out of range.
+    #[test]
+    fn the_online_cpus_are_readable_where_procfs_is() {
+        let Some(mask) = online_cpus(128) else {
+            return;
+        };
+        assert!(
+            mask.iter().any(|&b| b != 0),
+            "a mask of zeroes would claim this machine has no CPUs"
+        );
+        assert_eq!(mask.len(), 128, "as wide as the mask the caller asked for");
+    }
+
+    /// Whichever source answers, the machine's CPUs have to be narrower than the
+    /// mask the rule was built for — a source that reported a CPU nobody can
+    /// address would turn every `cpuset` into a `Skipped`.
+    #[test]
+    fn the_machine_cpus_fit_in_the_mask_they_are_read_for() {
+        if let Some(machine) = MachineCpus::read(128) {
+            assert_eq!(machine.mask().len(), 128);
+            assert!(
+                !machine.absent().is_empty(),
+                "an unsatisfiable cpuset is reported with a reason"
+            );
+        }
     }
 }

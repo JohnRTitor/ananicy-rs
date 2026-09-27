@@ -60,11 +60,6 @@ rustPlatform.buildRustPackage {
   ++ lib.optionals withBpf [ "bpf" ]
   ++ lib.optionals withSystemd [ "systemd" ];
 
-  checkFlags = [
-    # Fails in Nix sandbox due to restricted permissions
-    "--skip=test_set_affinity_on_current_process"
-  ];
-
   hardeningDisable = [
     "zerocallusedregs"
   ];

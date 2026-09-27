@@ -78,6 +78,12 @@ their module documentation, and the ones that need privileges print a
 - `crates/ananicy-platform/tests/mounts.rs` and `tests/procfs.rs` — read the
   host's `/proc`; the synthetic tables and fixtures cover everything that can be
   covered without a host.
+- `tests/cli.rs` — the three `--force-remove-semaphore` tests use the one name in
+  `/dev/shm`, so two of them stand aside when a daemon owns it (printing
+  `skipping …`), and the third runs both halves inside a private user and mount
+  namespace, which needs user namespaces and skips where they are not permitted.
+  `test_cli_daemon_still_runs_without_a_cgroup_hierarchy` does the same for the
+  same reason.
 
 ## Fuzzing
 

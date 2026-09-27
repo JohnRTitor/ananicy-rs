@@ -266,16 +266,10 @@ nix flake check          # build the package as a check
 nix develop              # shell with cargo, rustfmt, clippy, clang, libbpf
 ```
 
-`nix build` runs the test suite, skipping one test that cannot pass in the
-sandbox:
-
-```
---skip=test_set_affinity_on_current_process
-```
-
-A system test that calls `sched_setaffinity` on the test process itself cannot
-have its mask changed under the sandbox's restrictions, so it is excluded
-rather than made to pass vacuously.
+`nix build` runs the whole test suite; nothing is excluded for the sandbox. The
+affinity system tests only ever change the mask of the test process itself and
+restore it, which the sandbox permits, and the tests that need a `/dev/shm` or a
+cgroup hierarchy of their own build one in a namespace instead of skipping.
 
 The Nix build differs from a local one in two ways worth knowing:
 

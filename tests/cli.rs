@@ -410,6 +410,10 @@ fn test_cli_completion_filters_dump_targets_by_prefix() {
 
 #[test]
 fn test_cli_loglevel_config_propagation() {
+    // `start` creates the singleton object, so on a root-run suite it competes
+    // with the `--force-remove-semaphore` tests below for the one name in
+    // `/dev/shm`. Unprivileged it exits at the root check and never gets there.
+    let _guard = singleton_lock();
     let temp_dir = std::env::temp_dir();
     let config_path = temp_dir.join(format!("ananicy_test_config_{}.conf", std::process::id()));
     std::fs::write(&config_path, "loglevel=debug").unwrap();
@@ -777,25 +781,215 @@ fn test_cli_daemon_still_runs_without_a_cgroup_hierarchy() {
 // --force-remove-semaphore
 // ---------------------------------------------------------
 
-/// The exit status answers "is a stale singleton object still there?", so a
-/// failure to remove one has to be a failure.
+/// The singleton object as a path in `/dev/shm`, which is what a shell can look
+/// at and what `stat` can answer for. Spelled out here rather than imported from
+/// the daemon: it is a compatibility surface, since anything that cleans up by
+/// name has to know it, and a rename in `src/ipc.rs` should fail here rather than
+/// quietly leave such a caller cleaning up nothing.
+const SINGLETON_PATH: &str = "/dev/shm/AnanicyRsMutex";
+
+/// The same object as `shm_open(3)` names it, which is the path without the
+/// `/dev/shm/` directory it lives in.
+fn singleton_name() -> &'static str {
+    SINGLETON_PATH
+        .strip_prefix("/dev/shm/")
+        .expect("the object lives in /dev/shm")
+}
+
+/// A pid above any plausible `pid_max`, so an object naming it names a process
+/// that cannot be running — which is what a `SIGKILL`ed daemon leaves behind.
+const DEAD_PID: i32 = i32::MAX;
+
+/// One name in `/dev/shm` belongs to the machine, not to this test binary, so
+/// the tests that read or write it take turns with the ones that start a daemon.
+static SINGLETON: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn singleton_lock() -> std::sync::MutexGuard<'static, ()> {
+    SINGLETON.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the object is there at all.
 ///
-/// The reference prints the errno and returns `EXIT_FAILURE` when `shm_unlink`
-/// does not succeed (`main.cpp:115-119`). Returning 0 regardless meant a
-/// wrapper script using the status to confirm cleanup was told it had worked
-/// when it had not. Verified by execution before the change: a second
-/// `--force-remove-semaphore` with no daemon running returned 0.
+/// Asked of the path rather than of `shm_open(3)`, because the answer has to
+/// cover an object belonging to somebody else: the daemon creates it mode `0600`,
+/// so a user that is not the owner cannot open it and would read "not there" for
+/// an object that is very much there.
+fn singleton_exists() -> bool {
+    std::path::Path::new(SINGLETON_PATH).exists()
+}
+
+/// Creates the object the daemon would have created, holding `contents` — the
+/// pid of whatever last owned it.
+fn create_singleton(contents: &str) {
+    use rustix::{
+        fs::Mode,
+        shm::{self, OFlags as ShmOFlags},
+    };
+    use std::io::Write;
+    let fd = shm::open(
+        singleton_name(),
+        ShmOFlags::CREATE | ShmOFlags::EXCL | ShmOFlags::RDWR,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .expect("create a shared-memory object");
+    std::fs::File::from(fd)
+        .write_all(contents.as_bytes())
+        .expect("write the object contents");
+}
+
+/// Removes the object again, so a test that fails partway cannot leave one behind
+/// to make the next run report a daemon that is not there.
+struct SingletonObject;
+
+impl Drop for SingletonObject {
+    fn drop(&mut self) {
+        let _ = rustix::shm::unlink(singleton_name());
+    }
+}
+
+/// Whether the name is free for a test to use. It is not, on a machine where the
+/// daemon is installed and running — and that daemon's object is the one thing
+/// these tests must never touch, so they step aside rather than interfere.
+fn singleton_is_free() -> bool {
+    !singleton_exists()
+}
+
+/// Whether a test may use the one name in `/dev/shm`, printing why not when it
+/// may not: on a host with the daemon installed, these three tests have nothing
+/// to work with and must not work around a live daemon to get something.
+fn claim_singleton_name() -> bool {
+    if singleton_is_free() {
+        return true;
+    }
+    eprintln!("skipping: {SINGLETON_PATH} belongs to a daemon that is not ours");
+    false
+}
+
+/// Nothing in the way is the answer the flag is asked for, so it is a success.
+///
+/// The reference prints the errno and exits 1 for any `shm_unlink(3)` that does
+/// not succeed (`main.cpp:115-119`), which includes the `ENOENT` of a name that
+/// was never created. Here the status means "is a stale object still there?", and
+/// a name that is not there is the answer "no". The divergence is recorded in
+/// `docs/COMPATIBILITY.md`.
 #[test]
-fn test_cli_force_remove_semaphore_reports_failure() {
+fn nothing_to_remove_is_a_success() {
+    let _guard = singleton_lock();
+    if !claim_singleton_name() {
+        return;
+    }
+
     let mut cmd = ananicy();
     cmd.arg("--force-remove-semaphore");
-    // There is no shared memory object for this name, so the unlink fails. The
-    // name is unique to the test binary's namespace on a shared host only if the
-    // daemon is not running, which is the case the reference also treats as an
-    // error.
-    cmd.assert()
-        .code(1)
-        .stderr(predicate::str::contains("Failed to remove semaphore"));
+    cmd.assert().code(0).stderr(predicate::str::contains(
+        "Semaphore was successfully removed!",
+    ));
+}
+
+/// A daemon that was killed leaves its object behind, and the pid inside it is
+/// gone: the case the flag exists for. It is removed, and reported as removed.
+#[test]
+fn a_stale_singleton_is_removed_and_reported_as_removed() {
+    let _guard = singleton_lock();
+    if !claim_singleton_name() {
+        return;
+    }
+    create_singleton(&DEAD_PID.to_string());
+    let _cleanup = SingletonObject;
+
+    let mut cmd = ananicy();
+    cmd.arg("--force-remove-semaphore");
+    cmd.assert().code(0).stderr(predicate::str::contains(
+        "Semaphore was successfully removed!",
+    ));
+    assert!(
+        !singleton_exists(),
+        "the object the run reported as removed is still there"
+    );
+}
+
+/// A daemon that is running right now is not a stale leftover, and unlinking its
+/// object is not a cleanup: it keeps running with nothing left to signal it, the
+/// next start creates a second object, and two daemons then tune the same machine
+/// with no way to address either by name.
+///
+/// Both halves of the setup need a daemon running as root and a `/dev/shm` of our
+/// own, so they are arranged together inside a private user and mount namespace:
+/// the object the daemon creates there is invisible to the host, and the test has
+/// no way of reaching a real one. Skipped where user namespaces are unavailable,
+/// which is the same condition the cgroup-hierarchy test above skips on.
+#[test]
+fn a_running_daemons_singleton_is_left_in_place() {
+    use std::{fs, process::Command as StdCommand};
+
+    let dir = tempfile::tempdir().expect("a temporary config directory");
+    let config = dir.path().join("ananicy.conf");
+    fs::write(&config, "check_freq=5\n").expect("a configuration");
+    // An empty rules directory, so the daemon is not reading whatever the host
+    // happens to have installed in /etc/ananicy.d.
+    fs::create_dir(dir.path().join("rules")).expect("a rules directory");
+
+    let binary = assert_cmd::cargo::cargo_bin("ananicy-rs")
+        .display()
+        .to_string();
+    let script = format!(
+        "mount -t tmpfs none /dev/shm || exit 90\n\
+         {binary} --config {config} start &\n\
+         daemon=$!\n\
+         waited=0\n\
+         while [ ! -e {SINGLETON_PATH} ] && [ $waited -lt 200 ]; do\n\
+         sleep 0.1; waited=$((waited + 1)); done\n\
+         if [ ! -e {SINGLETON_PATH} ]; then echo NO_OBJECT; kill $daemon; exit 91; fi\n\
+         {binary} --force-remove-semaphore\n\
+         echo \"STATUS=$?\"\n\
+         if [ -e {SINGLETON_PATH} ]; then echo OBJECT_SURVIVED; else echo OBJECT_GONE; fi\n\
+         kill $daemon 2>/dev/null\n\
+         wait 2>/dev/null\n\
+         true\n",
+        config = config.display(),
+    );
+
+    let output = match StdCommand::new("unshare")
+        .args(["--user", "--map-root-user", "--mount", "sh", "-c", &script])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            eprintln!("skipping: cannot run unshare ({e})");
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Operation not permitted") {
+        eprintln!("skipping: user namespaces are not permitted here");
+        return;
+    }
+    assert!(
+        !stdout.contains("NO_OBJECT"),
+        "the daemon never created the object, so the test proves nothing:\n{stderr}"
+    );
+
+    assert!(
+        stdout.contains("STATUS=1"),
+        "a running daemon's object must not be removed, so the status is a failure:\n\
+         {stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("OBJECT_SURVIVED"),
+        "the object was unlinked out from under the running daemon:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("Refusing to remove the singleton object"),
+        "the run must say whose object it left alone and why:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Stop it first"),
+        "the operator has to be told what to do about it:\n{stderr}"
+    );
 }
 
 /// `cmd` is the name the rule engine matches on, and `cmdline` keeps the
