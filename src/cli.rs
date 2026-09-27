@@ -4,23 +4,6 @@ use bpaf::{Bpaf, ShellComp};
 
 use crate::systemd::SystemdRequest;
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct Args {
-    pub systemd: SystemdRequest,
-    pub daemon: bool,
-    pub config: Option<String>,
-    pub config_dir: Option<String>,
-    pub reload: bool,
-    pub force_remove_semaphore: bool,
-    pub manual_scanning: bool,
-    pub benchmark: bool,
-    pub benchmark_count: Option<u32>,
-    pub bpf_min_us: Option<u32>,
-    pub verbose: bool,
-    pub command: Option<Commands>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DumpTarget {
     Rules,
@@ -64,7 +47,9 @@ fn complete_from(
         .collect()
 }
 
-// bpaf's `complete` takes `&T` where `T` is the parsed type, so `&String` is required here.
+// bpaf's `complete` takes `&T` where `T` is the parsed type, so `&String` is
+// required here: each sub-action is parsed *after* it has been completed, so
+// that a prefix that is not a target yet ("cg") still completes.
 #[allow(clippy::ptr_arg)]
 fn dump_completer(input: &String) -> Vec<(&'static str, Option<&'static str>)> {
     complete_from(&DUMP_TARGET_NAMES, input)
@@ -91,36 +76,44 @@ impl FromStr for DebugTarget {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum Commands {
-    Dump { sub_action: DumpTarget },
-    Debug { sub_action: DebugTarget },
-    Start,
-    Unknown(String),
+/// bpaf hands the `dump` sub-action over as a string, and an unknown target is
+/// a usage error, so this one can fail.
+fn dump_target(raw: String) -> Result<DumpTarget, String> {
+    raw.parse()
 }
 
+/// The `debug` sub-action is optional, and every string is a valid one, so
+/// nothing can fail here.
+fn debug_target(raw: Option<String>) -> Option<DebugTarget> {
+    raw.map(|raw| DebugTarget::from_str(&raw).expect("`DebugTarget` accepts any string"))
+}
+
+// A variant doc comment is the action's help text, so the notes that are not
+// help are `//` comments.
 #[derive(Debug, Clone, Bpaf)]
-pub enum BpafCommands {
+pub enum Commands {
     #[bpaf(command("dump"))]
     /// Dump internal state
     Dump {
         #[bpaf(
-            positional("SUB_ACTION"),
+            positional::<String>("SUB_ACTION"),
             complete(dump_completer),
-            complete_shell(ShellComp::Nothing)
+            complete_shell(ShellComp::Nothing),
+            parse(dump_target)
         )]
-        sub_action: String,
+        sub_action: DumpTarget,
     },
     #[bpaf(command("debug"), hide)]
     /// The undocumented `debug` action.
     Debug {
         #[bpaf(
-            positional("SUB_ACTION"),
+            positional::<String>("SUB_ACTION"),
             optional,
             complete(debug_completer),
-            complete_shell(ShellComp::Nothing)
+            complete_shell(ShellComp::Nothing),
+            map(debug_target)
         )]
-        sub_action: Option<String>,
+        sub_action: Option<DebugTarget>,
     },
     #[bpaf(command("start"))]
     /// Start the daemon
@@ -131,12 +124,20 @@ pub enum BpafCommands {
         #[bpaf(positional("SHELL"), optional)]
         shell: Option<String>,
     },
+    // Not an action at all: the reference reported an unrecognised action and
+    // exited 1 rather than refusing the command line, so `Args::parse` builds
+    // this from the leftover positional and bpaf never sees it. `skip` keeps it
+    // out of the alternatives, which is what leaves an action name that fails
+    // to parse (`dump` with no sub-action) to report its own error instead of
+    // being read as one.
+    #[bpaf(skip)]
+    Unknown(String),
 }
 
 #[derive(Debug, Clone, Bpaf)]
 #[bpaf(options("ananicy-rs"), version)]
 /// ANother Auto NICe daemon rewrite in Rust for lower CPU and memory usage
-struct Opts {
+pub struct Args {
     #[bpaf(long)]
     /// Run as systemd service (detected automatically when omitted)
     systemd: bool,
@@ -145,48 +146,69 @@ struct Opts {
     no_systemd: bool,
     #[bpaf(long)]
     /// Run as daemon
-    daemon: bool,
+    pub daemon: bool,
     #[bpaf(long, argument("CONFIG"))]
     /// Config path
-    config: Option<String>,
+    pub config: Option<String>,
     #[bpaf(long, argument("CONFIG_DIR"))]
     /// Config directory
-    config_dir: Option<String>,
+    pub config_dir: Option<String>,
     #[bpaf(long)]
     /// Reload the configuration, the log level, and the rule, type and cgroup
     /// files. Processes already tuned keep their settings until they are seen
     /// again.
-    reload: bool,
+    pub reload: bool,
     #[bpaf(long)]
     /// Force remove IPC semaphore
-    force_remove_semaphore: bool,
+    pub force_remove_semaphore: bool,
     // Both spellings: `--manualscanning` is what the Ananicy command line this
     // daemon is compatible with used, and ananicy-cpp still accepts it.
     #[bpaf(long("manual-scanning"), long("manualscanning"))]
     /// Enable manual periodic scanning (also accepted as `--manualscanning`)
-    manual_scanning: bool,
+    pub manual_scanning: bool,
     #[bpaf(long)]
     /// Benchmark mode
-    benchmark: bool,
+    pub benchmark: bool,
     #[bpaf(long, argument("BENCHMARK_COUNT"))]
     /// Number of times to benchmark
-    benchmark_count: Option<u32>,
+    pub benchmark_count: Option<u32>,
     #[bpaf(long, argument("BPF_MIN_US"))]
     /// Minimum microseconds for BPF intervals
-    bpf_min_us: Option<u32>,
+    pub bpf_min_us: Option<u32>,
     #[bpaf(short, long)]
     /// Enable verbose output
-    verbose: bool,
-    #[bpaf(external(bpaf_commands), optional)]
-    command: Option<BpafCommands>,
+    pub verbose: bool,
+    #[bpaf(external(commands), optional)]
+    pub command: Option<Commands>,
+    // Folded into `command` by `parse`, so that an unrecognised action is
+    // reported rather than refused. This is a positional, and positionals come
+    // last.
     #[bpaf(positional("UNKNOWN_ACTION"), optional, hide)]
     unknown: Option<String>,
 }
 
 impl Args {
+    /// What the systemd flags asked for, refusing the pair that asks for both
+    /// directions at once.
+    ///
+    /// Refused by this and not by the caller, because the pair is a usage error
+    /// and a usage error has to be settled before the no-command fallback
+    /// below answers the run with the help text instead.
+    pub fn systemd_request(&self) -> SystemdRequest {
+        match (self.systemd, self.no_systemd) {
+            (true, true) => {
+                eprintln!("error: --systemd and --no-systemd are mutually exclusive");
+                exit(2);
+            }
+            (true, false) => SystemdRequest::Enabled,
+            (false, true) => SystemdRequest::Disabled,
+            (false, false) => SystemdRequest::Auto,
+        }
+    }
+
     pub fn parse() -> Self {
-        let parsed_opts =
-            match opts().run_inner(bpaf::Args::from(&std::env::args().collect::<Vec<_>>()[1..])) {
+        let mut parsed =
+            match args().run_inner(bpaf::Args::from(&std::env::args().collect::<Vec<_>>()[1..])) {
                 Ok(o) => o,
                 Err(e) => {
                     let code = if let bpaf::ParseFailure::Stdout(..) = e {
@@ -200,81 +222,52 @@ impl Args {
                 }
             };
 
-        let mut final_command = None;
+        // Settled here, before the no-command fallback at the bottom of this
+        // function, which would otherwise answer a bare `--systemd
+        // --no-systemd` with the help text.
+        let _ = parsed.systemd_request();
 
-        let systemd = match (parsed_opts.systemd, parsed_opts.no_systemd) {
-            (true, true) => {
-                eprintln!("error: --systemd and --no-systemd are mutually exclusive");
-                exit(2);
-            }
-            (true, false) => SystemdRequest::Enabled,
-            (false, true) => SystemdRequest::Disabled,
-            (false, false) => SystemdRequest::Auto,
-        };
-
-        if let Some(cmd) = parsed_opts.command {
-            match cmd {
-                BpafCommands::Dump { sub_action } => match sub_action.parse::<DumpTarget>() {
-                    Ok(target) => final_command = Some(Commands::Dump { sub_action: target }),
-                    Err(e) => {
-                        eprintln!("error: {}", e);
-                        exit(2);
-                    }
-                },
-                BpafCommands::Debug { sub_action } => {
-                    let Some(sub_action) = sub_action else {
-                        eprintln!("error: A sub-action must be specified for debug.");
-                        exit(1);
-                    };
-                    let target = sub_action.parse::<DebugTarget>().unwrap();
-                    final_command = Some(Commands::Debug { sub_action: target });
+        if let Some(Commands::Completions { shell }) = &parsed.command {
+            let shell = shell.clone().unwrap_or_default();
+            match shell.as_str() {
+                "bash" | "zsh" | "fish" | "elvish" => {
+                    let arg = format!("--bpaf-complete-style-{}", shell);
+                    let arg = [arg];
+                    let _ = args().run_inner(bpaf::Args::from(&arg[..]).set_name("ananicy-rs"));
+                    unreachable!("bpaf completion generator should have exited");
                 }
-                BpafCommands::Start => final_command = Some(Commands::Start),
-                BpafCommands::Completions { shell } => {
-                    let shell = shell.unwrap_or_default();
-                    match shell.as_str() {
-                        "bash" | "zsh" | "fish" | "elvish" => {
-                            let arg = format!("--bpaf-complete-style-{}", shell);
-                            let args = [arg];
-                            let _ = opts()
-                                .run_inner(bpaf::Args::from(&args[..]).set_name("ananicy-rs"));
-                            unreachable!("bpaf completion generator should have exited");
-                        }
-                        _ => {
-                            eprintln!(
-                                "error: invalid shell '{}'; expected one of: bash, zsh, fish, elvish",
-                                shell
-                            );
-                            exit(2);
-                        }
-                    }
+                _ => {
+                    eprintln!(
+                        "error: invalid shell '{}'; expected one of: bash, zsh, fish, elvish",
+                        shell
+                    );
+                    exit(2);
                 }
             }
-        } else if let Some(unk) = parsed_opts.unknown {
-            final_command = Some(Commands::Unknown(unk));
         }
 
-        if final_command.is_none() && !parsed_opts.reload && !parsed_opts.force_remove_semaphore {
+        // Refused here rather than by the parser, because a `debug` with no
+        // sub-action is not a usage error and must not be reported as one: it
+        // exits 1, and it does so before anything is read or written.
+        if matches!(parsed.command, Some(Commands::Debug { sub_action: None })) {
+            eprintln!("error: A sub-action must be specified for debug.");
+            exit(1);
+        }
+
+        if parsed.command.is_none()
+            && let Some(unknown) = parsed.unknown.take()
+        {
+            parsed.command = Some(Commands::Unknown(unknown));
+        }
+
+        if parsed.command.is_none() && !parsed.reload && !parsed.force_remove_semaphore {
             // Need to print help.
-            if let Err(e) = opts().run_inner(bpaf::Args::from(&["--help"])) {
+            if let Err(e) = args().run_inner(bpaf::Args::from(&["--help"])) {
                 print!("{}", e.unwrap_stdout());
                 exit(0);
             }
         }
 
-        Args {
-            systemd,
-            daemon: parsed_opts.daemon,
-            config: parsed_opts.config,
-            config_dir: parsed_opts.config_dir,
-            reload: parsed_opts.reload,
-            force_remove_semaphore: parsed_opts.force_remove_semaphore,
-            manual_scanning: parsed_opts.manual_scanning,
-            benchmark: parsed_opts.benchmark,
-            benchmark_count: parsed_opts.benchmark_count,
-            bpf_min_us: parsed_opts.bpf_min_us,
-            verbose: parsed_opts.verbose,
-            command: final_command,
-        }
+        parsed
     }
 }

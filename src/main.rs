@@ -29,7 +29,10 @@ mod systemd;
 fn main() {
     panics::install();
     let args = Args::parse();
-    let systemd_mode = systemd::resolve(args.systemd, systemd::SystemdEnvironment::from_process());
+    let systemd_mode = systemd::resolve(
+        args.systemd_request(),
+        systemd::SystemdEnvironment::from_process(),
+    );
     // The systemd integration (sd_notify, journald logging) is only linked in
     // when the `systemd` cargo feature is enabled.
     let systemd_supported = cfg!(feature = "systemd");
@@ -95,7 +98,12 @@ fn main() {
     // Like `dump`, the `debug` action runs after config/rules
     // initialization but exits before the root check and daemon startup.
     if let Some(Commands::Debug { sub_action }) = &args.command {
-        debug::run(sub_action, systemd_status);
+        debug::run(
+            sub_action
+                .as_ref()
+                .expect("a `debug` without a sub-action is refused while parsing"),
+            systemd_status,
+        );
         return;
     }
 

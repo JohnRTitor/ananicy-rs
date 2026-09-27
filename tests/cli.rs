@@ -697,6 +697,23 @@ fn test_cli_systemd_flags_are_mutually_exclusive() {
         ));
 }
 
+/// The same refusal with no action to act on, which is the case that decides
+/// where it belongs: a run carrying nothing else is answered with the help
+/// text, so a check made after that decision would print the help and exit 0
+/// instead of refusing the command line.
+#[test]
+fn test_cli_systemd_flags_are_mutually_exclusive_without_an_action() {
+    let mut cmd = ananicy();
+    cmd.arg("--systemd")
+        .arg("--no-systemd")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "error: --systemd and --no-systemd are mutually exclusive",
+        ));
+}
+
 // ---------------------------------------------------------
 // Starting without a cgroup hierarchy
 // ---------------------------------------------------------
