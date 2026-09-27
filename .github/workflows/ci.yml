@@ -6,14 +6,28 @@ on:
       - '**.rs'
       - '**Cargo.toml'
       - '**Cargo.lock'
+      # `**.nix` and `flake.lock` are for the `nix` job below, which reads the
+      # flake. The module and the package expression live under contrib/nixos,
+      # which `**.nix` already covers at any depth.
+      - '**.nix'
+      - 'flake.lock'
+      # This file lists itself, unlike `lint.yml`: the jobs here run in
+      # containers and against a toolchain this repository chooses, so a change
+      # to what installs that toolchain is itself worth running.
+      - '.github/workflows/ci.yml'
   push:
     paths:
       - '**.rs'
       - '**Cargo.toml'
       - '**Cargo.lock'
+      - '**.nix'
+      - 'flake.lock'
+      - '.github/workflows/ci.yml'
   # The `paths` filters above mean that a change touching none of them — the
-  # Makefile, `data/`, the workflows themselves — runs nothing at all, and that a
-  # run cancelled by a newer push cannot be repeated. Dispatch bypasses both.
+  # Makefile, `data/`, `contrib/**` — runs nothing at all. This file is the one
+  # that lists itself, so a change to the jobs below is itself checked;
+  # `lint.yml` does not. Dispatch runs the jobs whatever the filter says, and is
+  # also how to re-run something a newer push cancelled.
   workflow_dispatch:
 
 permissions:
@@ -21,6 +35,15 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+
+# One group per ref, so a newer push to a branch cancels the run it supersedes
+# instead of both running to completion. The prefix is what keeps this from
+# cancelling `lint.yml` or `packaging.yml` outright: two runs share a group only
+# when the group name matches, and an unprefixed `${{ github.ref }}` would put
+# all three in one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -63,6 +86,10 @@ jobs:
       matrix:
         distro:
           - fedora:latest
+          # sid, not trixie, for the reason given in the job in
+          # `.github/workflows/packaging.yml`: the workspace uses let chains,
+          # which need rustc 1.88, and trixie ships 1.85.1.
+          - debian:sid
           - archlinux:latest
     runs-on: ubuntu-latest
     container:
@@ -70,13 +97,33 @@ jobs:
     # No sccache env here on purpose, see the note on the `test` job above.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # `rustfmt` is a separate package on Fedora, for the reason given on the
-      # `test` job; Arch has no such split, its `rust` package carries the whole
-      # toolchain.
+      # `rustfmt` is a separate package on Fedora and on Debian, for the reason
+      # given on the `test` job; Arch has no such split, its `rust` package
+      # carries the whole toolchain.
       - name: Install dependencies (Fedora)
         if: contains(matrix.distro, 'fedora')
         run: |
           dnf install -y gcc gcc-c++ git rust rustfmt cargo systemd-devel libbpf-devel pkgconf-pkg-config clang make
+      # `apt-get update` first: the image carries no package lists, and the
+      # other two are not `apt` images, so this step cannot be shared. The
+      # Debian counterparts of the packages above, one name per package:
+      # `build-essential` is gcc, g++, make and the libc headers that linking
+      # needs, and `ca-certificates` is not optional either -- the image has
+      # none, and cargo fetches the registry over HTTPS. `pkg-config` and
+      # `libsystemd-dev` are the `systemd` feature, `libbpf-dev` is
+      # libbpf-sys, `clang` generates the BPF skeleton. `git` is here for
+      # parity with the two images above and nothing in this job calls it:
+      # actions/checkout already ran, in an image with no git, exactly as in
+      # those two. See the note on `actions/checkout` in
+      # `.github/workflows/packaging.yml` for what that costs.
+      - name: Install dependencies (Debian)
+        if: contains(matrix.distro, 'debian')
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates git \
+            cargo rustc rustfmt \
+            pkg-config libsystemd-dev libbpf-dev clang
       - name: Install dependencies (Arch Linux)
         if: contains(matrix.distro, 'archlinux')
         run: |
@@ -85,3 +132,33 @@ jobs:
         run: cargo build --locked --all-targets --all-features
       - name: Test
         run: cargo test --locked --all-targets --all-features
+
+  nix:
+    name: Nix devShell
+    runs-on: ubuntu-latest
+    # No sccache env here on purpose, see the note on the `test` job: the
+    # devShell builds its own PATH, and nothing installs sccache into it.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The same action, and for the same reason, as the Nix job in
+      # `.github/workflows/packaging.yml`: it installs Nix onto the runner
+      # rather than needing a distribution image, and leaves `nix flake` and
+      # `nix develop` working for the steps below.
+      - name: Install and Setup Nix
+        uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
+      # Deliberately no `setup-rust` and no rustup toolchain: the toolchain
+      # under test is the one the flake pins, so a job that reached for the
+      # runner's rustc would be testing something else. The devShell names
+      # cargo, rustc, rustfmt, clippy, libbpf and clang itself, and
+      # `inputsFrom` the package brings in pkg-config and the systemd headers,
+      # so `--all-features` has everything its build scripts need.
+      - name: Build
+        run: nix develop --command cargo build --locked --all-targets --all-features
+      # Unprivileged, unlike the `test` job above, and for the reason the
+      # packaging jobs give: the cgroup tests in ananicy-platform are
+      # unreliable as root, so they skip themselves with a message instead of
+      # racing each other. `sudo -E` is not an option inside a devShell -- it
+      # would replace the shell's PATH, and with it the cargo this is testing.
+      # The root case is what the `test` job is for.
+      - name: Test
+        run: nix develop --command cargo test --locked --all-targets --all-features

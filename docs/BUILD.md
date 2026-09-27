@@ -5,7 +5,9 @@ installed, which feature pulls in which native library, how the release and Nix
 builds differ from a local one, and what each build failure actually means.
 
 For how the *test suite* is organised, see [TESTING.md](./TESTING.md). For
-running the daemon, see [CLI.md](./CLI.md).
+running the daemon, see [CLI.md](./CLI.md). For what the GitHub Actions
+workflows run, and why their jobs are shaped the way they are, see
+[`.github/README.md`](../.github/README.md).
 
 ## Requirements
 
@@ -347,78 +349,6 @@ requires `debian/` to be the top-level directory of a source package, so
 `cp -r contrib/debian debian` before building. See
 [contrib/debian/README.md](../contrib/debian/README.md) for the full flow,
 including the vendoring step.
-
-## Continuous integration
-
-Four workflows, all under `.github/workflows/`:
-
-| Workflow | Trigger | What it does |
-| --- | --- | --- |
-| `ci.yml` | `.rs`, `Cargo.toml`, `Cargo.lock` | Builds and tests on stable and nightly; repeats both on Fedora and Arch |
-| `lint.yml` | `.rs`, `Cargo.toml` | `cargo fmt --check` on nightly, `cargo clippy -D warnings` on stable |
-| `packaging.yml` | `.rs`, `Cargo.toml`, `Cargo.lock`, `*.nix`, `Makefile`, `data/**`, `contrib/**`, `flake.lock` | Builds the RPM, the `.deb` and the Arch package in their own container images, and `contrib/nixos` with `nix flake check` and `nix build` |
-| `release.yml` | `v*` tags | Builds, strips, tars, and publishes a release, plus a reproducible source tarball |
-
-Every action is pinned to a commit SHA rather than a tag, and Rust setup is
-funnelled through one composite action, `.github/actions/setup-rust`, which
-installs sccache, then the toolchain, then the native dependencies. sccache is
-configured per job rather than per workflow, because `RUSTC_WRAPPER` is only
-valid where sccache is actually on `PATH`; the `matrix-distro` jobs run in
-containers that do not have it. CI also requests the `rustfmt` component
-explicitly — see below for why that is not optional.
-
-The distro matrix builds `--all-features` in `fedora:latest` and
-`archlinux:latest`, so it needs clang, libbpf and pkg-config in the
-image, under that distribution's own package names.
-
-`packaging.yml` installs only the `BuildRequires` each recipe declares, so a
-recipe that grew an unnecessary dependency, or dropped a necessary one, fails
-the job. The Debian job builds as an unprivileged user, which is what
-`Rules-Requires-Root: no` in `debian/control` claims. The Arch job publishes the
-checkout as a local git remote carrying the release tag and points makepkg at
-that, so it builds the tree under test rather than whatever is published; only
-the source URL differs from the `PKGBUILD` on disk.
-
-The Nix job is the exception to all of that: it runs on the runner rather than
-in a container, because the pinned `determinate-nix-action` installs Nix itself
-rather than needing a distribution image. `nix flake check` evaluates the
-package and the NixOS module together, so that one command covers what
-`contrib/nixos` declares.
-
-Each of those three container jobs runs an `Install git and trust the workspace`
-step **before** `actions/checkout`, and both halves of it are load-bearing:
-
-- **git has to exist when the checkout runs.** `actions/checkout` looks for git
-  2.18 or newer on `PATH` and, not finding it, logs "The repository will be
-  downloaded using the GitHub REST API" — which extracts a plain working tree
-  with no `.git` at all, and reports success doing it. All three images lack
-  git, and listing it among the build dependencies is not enough, because that
-  step runs after the checkout.
-- **The workspace has to be a trusted git directory afterwards.** `/__w` is
-  bind-mounted from the host and owned by the runner user while the container
-  runs as root, so git refuses it as dubious ownership. `actions/checkout` adds
-  its own `safe.directory` entry to a *temporary* `HOME` and then restores
-  `HOME`, so nothing downstream inherits it. The same rule applies to the local
-  mirror the Arch job clones from, which is why that is handed over to the build
-  user rather than just made world-readable.
-
-Both failures look identical from the failing step — "not a git repository" and
-exit 128 — so every step that uses git re-checks with `git rev-parse --git-dir`
-and names the cause in a `::error::` annotation, with git's own message left on
-stderr.
-
-All three jobs run the test suite unprivileged, which is what their build systems
-do by construction — `makepkg` refuses to run as root, and the Debian package
-declares `Rules-Requires-Root: no`. The Fedora job has to arrange it, because a
-bare `rpmbuild -ba` runs as root, and the cgroup tests in `ananicy-platform` are
-unreliable as root: three of them share one cgroup name and each removes it on the
-way out, so they race each other. It builds with `--nocheck` and then runs the
-same `cargo test --locked --offline` against the same source and vendor tree as
-an unprivileged user.
-
-Note that the path filters of `ci.yml` and `lint.yml` do not include
-`.github/**`, so a change to one of those two workflows alone will not trigger a
-run. `packaging.yml` and `release.yml` list themselves.
 
 ## Troubleshooting
 

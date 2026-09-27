@@ -22,6 +22,9 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[Compatibility with the Reference Implementation](docs/COMPATIBILITY.md)**: Every behavioural difference between `ananicy-rs` and the C++ reference, plus what was verified equivalent, what this daemon adds, and the two things it lacks.
 - **[Testing](docs/TESTING.md)**: What the test suite verifies, which tests need a live system, and how the tests relate to the C++ daemon.
 
+Continuous integration is documented next to the workflows themselves, in
+[`.github/README.md`](.github/README.md).
+
 ## Status
 
 **Alpha / Experimental**

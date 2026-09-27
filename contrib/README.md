@@ -114,8 +114,9 @@ They are generated on demand, gitignored, and never committed here.
 [`.github/workflows/packaging.yml`](../.github/workflows/packaging.yml) builds
 each recipe in its distribution's own container image, with the distribution's
 own packaging tools, so the recipes are checked by actually building the
-packages rather than by asserting the files exist. See that workflow for what
-each job installs and what it does.
+packages rather than by asserting the files exist. See
+[`.github/README.md`](../.github/README.md) for what each job installs and
+does, and why.
 
 ## Adding a recipe
 
