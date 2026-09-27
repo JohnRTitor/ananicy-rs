@@ -7,7 +7,7 @@ use {
     },
     serde_json::Value,
     std::{collections::HashMap, fs, num::NonZeroUsize, path::Path},
-    tracing::{debug, error, warn},
+    tracing::{debug, error, info, warn},
 };
 
 /// One `name_regex` rule, compiled once when the rule file is read.
@@ -193,7 +193,7 @@ impl Rules {
                 for line in content.lines() {
                     // The result is intentionally ignored: blank lines and comments are normal,
                     // and an invalid JSON line is already logged by `load_rule_from_string`.
-                    self.load_rule_from_string(line);
+                    self.load_rule_from_named(line, Some(path));
                 }
             }
             Err(e) => {
@@ -202,7 +202,39 @@ impl Rules {
         }
     }
 
-    pub fn load_rule_from_string(&mut self, line: &str) -> bool {
+    /// Says so when a definition replaces one of the same name read earlier.
+    ///
+    /// A rule directory is a pile of third-party files plus whatever the operator
+    /// adds, and the last entry read for a name wins outright. That is the
+    /// documented way to override a shipped rule, and it is completely silent:
+    /// `dump rules` prints the winner, the loser is gone from the map, and
+    /// nothing in the output distinguishes an override from a rule that was
+    /// always there. So a rule that is quietly not doing anything — or quietly
+    /// doing something else — is indistinguishable from a working one until
+    /// somebody greps the rule directory by hand. This is the one line that
+    /// makes it visible, and it is `info` because an operator who overrides a
+    /// rule on purpose should see it in the ordinary log.
+    fn note_redefinition(replaced: bool, what: &str, name: &str, source: Option<&Path>) {
+        if !replaced {
+            return;
+        }
+        match source {
+            Some(path) => info!(
+                "{} '{}' from {} replaces an earlier definition of the same name",
+                what,
+                name,
+                path.display()
+            ),
+            None => info!(
+                "{} '{}' replaces an earlier definition of the same name",
+                what, name
+            ),
+        }
+    }
+
+    /// Parses one line, attributing anything it defines to `source` for the
+    /// redefinition diagnostic.
+    fn load_rule_from_named(&mut self, line: &str, source: Option<&Path>) -> bool {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             return false;
@@ -228,8 +260,9 @@ impl Rules {
         match serde_json::from_str::<Value>(json_str) {
             Ok(value) => {
                 if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
-                    self.programs
-                        .insert(RuleName(name.to_string()), Arc::new(value.clone()));
+                    let key = RuleName(name.to_string());
+                    Self::note_redefinition(self.programs.contains_key(&key), "rule", name, source);
+                    self.programs.insert(key, Arc::new(value.clone()));
 
                     if let Some(regex_str) = value.get("name_regex").and_then(|v| v.as_str()) {
                         match Matcher::compile(regex_str, name) {
@@ -246,13 +279,25 @@ impl Rules {
                     // Type rule (has 'type' but no 'name')
                     // Actually, wait, program rules also have 'type'.
                     // The C++ logic sets it as a type rule if it HAS 'type' and NO 'name'
-                    self.types
-                        .insert(TypeName(type_name.to_string()), Arc::new(value));
+                    let key = TypeName(type_name.to_string());
+                    Self::note_redefinition(
+                        self.types.contains_key(&key),
+                        "type",
+                        type_name,
+                        source,
+                    );
+                    self.types.insert(key, Arc::new(value));
                     true
                 } else if let Some(cgroup_name) = value.get("cgroup").and_then(|v| v.as_str()) {
                     // Cgroup rule
-                    self.cgroups
-                        .insert(CgroupName(cgroup_name.to_string()), Arc::new(value));
+                    let key = CgroupName(cgroup_name.to_string());
+                    Self::note_redefinition(
+                        self.cgroups.contains_key(&key),
+                        "cgroup",
+                        cgroup_name,
+                        source,
+                    );
+                    self.cgroups.insert(key, Arc::new(value));
                     true
                 } else {
                     error!(
@@ -267,6 +312,14 @@ impl Rules {
                 false
             }
         }
+    }
+
+    /// Parses one rule, type or cgroup definition from a line of JSON.
+    ///
+    /// A line with no file behind it still gets the redefinition diagnostic; it
+    /// just cannot name where the earlier definition came from.
+    pub fn load_rule_from_string(&mut self, line: &str) -> bool {
+        self.load_rule_from_named(line, None)
     }
 
     pub fn get_rule(&self, name: &str) -> Option<Arc<Value>> {

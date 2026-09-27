@@ -11,6 +11,8 @@
 //! compatibility with the rule files shipped by the `ananicy` and `ananicy-cpp`
 //! communities; see `docs/COMPATIBILITY.md`.
 
+mod common;
+
 use {
     ananicy_core::{
         config::{Config, ConfigSnapshot},
@@ -846,6 +848,103 @@ fn an_absurdly_long_name_is_answered_but_not_remembered() {
     // disabling the cache.
     assert_eq!(rule_of(&rules, "real")["nice"], 7);
     assert_eq!(rules.cached_resolution_count(), before + 1);
+
+    drop(directory);
+}
+
+/// Overriding a shipped rule is the documented way to change one, and it is
+/// completely silent: the last entry read for a name wins, `dump rules` prints
+/// the winner, and the loser is simply gone from the map. Nothing in the output
+/// tells an operator that the rule they are looking at is theirs rather than
+/// upstream's — so a rule that is quietly not applying, or quietly applying
+/// something else, looks exactly like one that works.
+///
+/// This pins the one line that makes it visible, and that it names the file the
+/// winner came from. It cost a real mistake to write: a `name` collision with a
+/// shipped rule was found by grepping the rule directory by hand.
+#[test]
+fn an_override_says_that_it_replaced_an_earlier_definition() {
+    let mut rules = rules();
+    let (directory, path) = rules_dir(&[
+        ("00-default.rules", "{\"name\": \"greetd\", \"nice\": 16}\n"),
+        ("zz-local.rules", "{\"name\": \"greetd\", \"nice\": 0}\n"),
+    ]);
+
+    let events = common::capture_events(tracing_subscriber::filter::LevelFilter::INFO, || {
+        rules.load_directory(&path);
+    });
+
+    assert_eq!(
+        rule_of(&rules, "greetd")["nice"],
+        0,
+        "the last file read still wins"
+    );
+    assert!(
+        events.contains(tracing::Level::INFO, "rule 'greetd' from",)
+            && events.contains(tracing::Level::INFO, "replaces an earlier definition"),
+        "the override must say so, and name the file it came from: {:?}",
+        events.all()
+    );
+    assert!(
+        events.contains(tracing::Level::INFO, "zz-local.rules"),
+        "the winning file has to be named, or the message cannot be acted on: {:?}",
+        events.all()
+    );
+
+    drop(directory);
+}
+
+/// The same for a type, which is the more consequential of the two: a redefined
+/// type silently changes every rule that names it, so the count of rules it
+/// reaches is not obvious either.
+#[test]
+fn a_redefined_type_says_so() {
+    let mut rules = rules();
+    let (directory, path) = rules_dir(&[
+        ("00-types.types", "{\"type\": \"Compiler\", \"nice\": 13}\n"),
+        ("zz-types.types", "{\"type\": \"Compiler\", \"nice\": 9}\n"),
+    ]);
+
+    let events = common::capture_events(tracing_subscriber::filter::LevelFilter::INFO, || {
+        rules.load_directory(&path);
+    });
+
+    assert_eq!(
+        rules
+            .get_types()
+            .get(&TypeName("Compiler".to_string()))
+            .unwrap()["nice"],
+        9
+    );
+    assert!(
+        events.contains(tracing::Level::INFO, "type 'Compiler' from")
+            && events.contains(tracing::Level::INFO, "replaces an earlier definition"),
+        "a redefined type reaches every rule naming it, so it must announce itself: {:?}",
+        events.all()
+    );
+
+    drop(directory);
+}
+
+/// Nothing is announced when nothing was replaced, or the log would carry one
+/// line per rule in the set on every start.
+#[test]
+fn a_rule_that_replaces_nothing_is_silent() {
+    let mut rules = rules();
+    let (directory, path) = rules_dir(&[(
+        "a.rules",
+        "{\"name\": \"one\", \"nice\": 1}\n{\"name\": \"two\", \"nice\": 2}\n",
+    )]);
+
+    let events = common::capture_events(tracing_subscriber::filter::LevelFilter::INFO, || {
+        rules.load_directory(&path);
+    });
+
+    assert!(
+        !events.contains(tracing::Level::INFO, "replaces an earlier definition"),
+        "an ordinary load must not announce itself: {:?}",
+        events.all()
+    );
 
     drop(directory);
 }

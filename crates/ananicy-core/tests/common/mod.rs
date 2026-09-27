@@ -75,6 +75,15 @@ impl CapturedEvents {
             .iter()
             .any(|(event_level, message)| *event_level == level && message.contains(text))
     }
+
+    /// Everything captured, for putting in a failure message.
+    ///
+    /// An assertion that reports *what was logged* is the difference between a
+    /// test that can be debugged from its own output and one that has to be
+    /// reproduced by hand to see what the code actually emitted.
+    pub fn all(&self) -> Vec<(Level, String)> {
+        self.0.lock().unwrap().clone()
+    }
 }
 
 /// Installs a subscriber filtered at `filter` and runs `body` with it as the
