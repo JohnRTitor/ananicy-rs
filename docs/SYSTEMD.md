@@ -144,69 +144,25 @@ no daemon-specific reasoning behind it. They are listed in the unit file itself.
 
 ### Why `MemoryHigh` is 48M and not 16M
 
-The unit used to carry `MemoryHigh=16M` alongside `MemoryMax=96M`, and it produced
-a permanent I/O storm that had nothing to do with what the daemon does. It is worth
-recording, because `MemoryHigh` looks like a safety limit and is not one: exceeding
-it does not fail anything, it makes the kernel *reclaim*.
+`MemoryHigh` is not a limit in the way `MemoryMax` is. Exceeding it fails nothing; it
+makes the kernel reclaim, and the only memory this cgroup can reclaim is the daemon's
+own page cache and heap. So a `MemoryHigh` *below* the working set does not cap
+anything — it puts the daemon in a loop where every page it touches is thrown away
+and fetched again, which reads as unexplained I/O and a start-up measured in minutes.
+At 16M, against a working set around 34M, that is what the unit used to do: 3.66 GB
+read from the root filesystem in twenty minutes, and 90% of its page faults going to
+disk. Above the working set the setting does the job it exists for, which is starting
+to reclaim before the hard cap so a leak is survivable.
 
-This cgroup has almost nothing reclaimable in it. Reclaim can only throw away the
-daemon's own page cache — its mapped text, the rules it read at start-up — and swap
-out its own heap. With `MemoryHigh` set below the working set, every page the daemon
-touched was immediately discarded and fetched again, continuously. The evidence from
-a 15,829-rule rule set on a 12-core host:
+So 48M is the question "where is the working set", and for this daemon the answer is a
+function of the rule count: 29M with no rules, 34.4M with the default set, and the
+line is crossed at roughly 57,000 rules. [Memory](./MEMORY.md) has the table and
+`ananicy-rs debug memory` will measure yours, which the 16M case could not do and
+which is most of why 48M is defensible where 16M was not.
 
-| | |
-|---|---|
-| `memory.events` `high` | 126,903, with `max` at 0 — throttled a quarter of a million times, never once hit the hard cap |
-| cgroup `memory.pressure` `full avg300` | 15.9% — stalled almost one time in six |
-| `memory.stat` `pgfault` / `pgmajfault` | 96,048 / 86,413 — **90% of all page faults went to disk** |
-| `memory.stat` `workingset_refault_file` | 693,548, against 81,632 for anonymous memory |
-| Root filesystem `io.stat` `rbytes` | 3.66 GB in 20 minutes, 59,278 reads averaging 62 KB |
-| `zram0` `wbytes` / `rbytes` | 343 MB written, 325 MB read back — the heap, cycled ~19 times |
-
-The 62 KB average read is the tell: that is readahead against our own executable and
-libraries, not any file the daemon is reading on purpose. Nothing about `ananicy.d`
-or procfs changed, and `/proc` reads never reach the block layer at all, so tuning
-the rule engine or the event rate would not have helped. The other visible symptom
-was start-up: it took minutes rather than seconds, most of it spent faulting in the
-daemon's own text.
-
-That is a `MemoryHigh` *below* the working set, which is the only kind that is
-always wrong. Above it, the setting does the job it exists for — start reclaiming
-before the hard cap, so a leak is survivable rather than fatal. The whole question
-is where the working set is, and for this daemon that is a function of the rule
-count. Measured on a 12-core host, as peak cgroup usage:
-
-| Rules | Peak | |
-|------:|-----:|---|
-| 0 | 29.2 M | the daemon alone: BPF maps, load-time kernel slab, its own text |
-| 15,831 | 34.4 M | the default rule set — **1.40× the soft line** |
-| 30,000 | 39.8 M | |
-| 45,000 | 44.0 M | |
-| **~57,000** | **48 M** | **the soft line is crossed** |
-| 80,000 | 56.2 M | |
-
-So 48M is chosen for the default rule set, and it has about 3.6× that in hand. Past
-roughly 57,000 rules it is a throttle again, and nothing in a rule file indicates
-you are approaching that. The daemon now says so when it happens — `debug memory`
-reports it, and `--memory-stats` repeats it — which is what the 16M case could not
-do, and is most of why 48M is defensible where 16M was not. Check
-`ananicy-rs debug memory` when it matters.
-
-`MemoryMax=96M` is the hard cap, and the gap between the two is the point: a runaway
-is reclaimed back within 48M of headroom first. Worth knowing that the cap is not a
-self-contained failure — `OOMScoreAdjust=-999` makes this daemon the last candidate
-the OOM killer picks, so reaching it takes some other process rather than this one.
-That is the argument for the soft line being generous.
-
-The rule set's own cost is also far below where it was, which is a second line of
-defence rather than a substitute: [Memory](./MEMORY.md) has the rule-count table,
-including the size at which it steps, and what to check on your own machine.
-Roughly 29M of the peak is the daemon regardless of how many rules there are.
-
-`--memory-stats` reports the same numbers from inside the daemon once a minute, and
-`ananicy-rs debug memory` on demand, so a regression of this kind shows up in the
-journal or on the spot rather than needing `cgroupfs` attached by hand.
+One thing to know about the cap: `OOMScoreAdjust=-999` makes this daemon the *last*
+candidate the OOM killer picks, so reaching `MemoryMax` takes some other process
+rather than this one. That is the argument for a generous soft line.
 
 ## Delegation, from the operator's side
 
