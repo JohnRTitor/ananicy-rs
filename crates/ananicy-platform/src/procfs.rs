@@ -273,22 +273,27 @@ pub fn get_start_time(pid: i32) -> Option<u64> {
     // The fields after the comm field start with a space, then the state.
     // Field 3 (state) is index 0 in the new split array.
     // start time is field 22. 22 - 3 = 19. So it's index 19.
-    let fields_after_comm: Vec<&str> = stat[rparen + 1..].split_whitespace().collect();
-    if fields_after_comm.len() > 19 {
-        fields_after_comm[19].parse::<u64>().ok()
-    } else {
-        None
-    }
+    //
+    // `nth(19)` rather than `collect()`: the collect built a `Vec<&str>` of all
+    // fifty-odd remaining fields, ~800 bytes, to read one of them and throw the
+    // rest away. This is on the per-process path — `move_pid` calls it twice and
+    // the cgroup resolver twice more — so it was one of the most frequent
+    // allocations in the daemon. `None` here is the same answer the old
+    // `len() > 19` check gave for a truncated `stat`.
+    stat[rparen + 1..]
+        .split_whitespace()
+        .nth(19)
+        .and_then(|field| field.parse::<u64>().ok())
 }
 
 pub fn get_tgid(pid: i32) -> Option<i32> {
     let status = fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
     for line in status.lines() {
         if line.starts_with("Tgid:") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() == 2 {
-                return parts[1].parse::<i32>().ok();
-            }
+            // The second whitespace-separated field, without collecting the
+            // split into a `Vec` to index it. `Tgid:` is the first line of
+            // `/proc/<pid>/status`, so this returns on the first iteration.
+            return line.split_whitespace().nth(1)?.parse::<i32>().ok();
         }
     }
     None

@@ -22,6 +22,25 @@ pub const CGROUP_INIT_INTERVAL: Duration = Duration::from_millis(500);
 pub const CGROUP_INIT_TIMEOUT: Duration =
     Duration::from_millis(CGROUP_INIT_ATTEMPTS as u64 * CGROUP_INIT_INTERVAL.as_millis() as u64);
 
+/// The hierarchy version, without the mount point.
+///
+/// [`get_cgroup_info`] returns `CgroupInfo` by value, which is right for a
+/// caller that wants the mount point. A caller that only wants the version was
+/// cloning a `PathBuf` — a heap allocation and a copy — to read a one-byte
+/// enum, and `is_cgroup_v2` is asked once per process that matches a rule with
+/// a `nice` on it, so that was one allocation per process for a discriminant.
+///
+/// Falls back to [`get_cgroup_info`] when nothing is cached, which keeps the
+/// lazy detection and its single-publisher rule exactly as they were.
+pub fn cgroup_version() -> CgroupVersion {
+    if let Ok(info) = CGROUP_INFO.read()
+        && let Some(i) = &*info
+    {
+        return i.version;
+    }
+    get_cgroup_info().version
+}
+
 pub fn reset_cgroup_info() {
     if let Ok(mut info) = CGROUP_INFO.write() {
         *info = None;

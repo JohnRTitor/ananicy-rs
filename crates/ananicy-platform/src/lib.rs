@@ -77,7 +77,7 @@ impl PlatformActions for LinuxPlatform {
     }
 
     fn is_cgroup_v2(&self) -> bool {
-        get_cgroup_info().version == CgroupVersion::V2
+        mounts::cgroup_version() == CgroupVersion::V2
     }
 
     fn get_max_cores(&self) -> u32 {

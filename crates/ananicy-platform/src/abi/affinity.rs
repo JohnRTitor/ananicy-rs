@@ -24,7 +24,10 @@ pub fn get_max_number_of_cpus() -> u32 {
 fn mask_from(cpuset: &CpuSet, num_cpus: u32) -> Vec<u8> {
     let num_bytes = (num_cpus as usize) / 8;
     let mut mask = vec![0u8; num_bytes];
-    for cpu in cpuset.get_cores() {
+    // Lends the set's CPUs rather than collecting them: this is a per-process
+    // path, and the list it was building was discarded as soon as the mask was
+    // filled in.
+    for cpu in cpuset.cores() {
         if cpu < num_cpus {
             let byte_idx = (cpu / 8) as usize;
             let bit_idx = cpu % 8;
@@ -110,7 +113,10 @@ fn current_affinity(tid: i32, num_bytes: usize) -> Option<Vec<u8>> {
 ///
 /// So a failed call is retried once with the intersection of what was asked for
 pub fn set_affinity(pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), PlatformError> {
-    if cpuset.get_cores().is_empty() {
+    // `is_empty` rather than `get_cores().is_empty()`: the latter built a
+    // `Vec<u32>` of every set CPU, on every process, to answer a yes/no
+    // question and throw the vector away.
+    if cpuset.is_empty() {
         return Ok(());
     }
 

@@ -43,11 +43,21 @@ impl CpuSet {
     }
 
     pub fn get_cores(&self) -> Vec<u32> {
+        self.cores().collect()
+    }
+
+    /// The CPUs in the set, without materialising a `Vec` of them.
+    ///
+    /// The same information as [`CpuSet::get_cores`], lent rather than owned.
+    /// `get_cores` is what a caller wants when it is going to keep the list; it
+    /// is not what `set_affinity` wants, because that walks the mask it is
+    /// building anyway and was allocating a vector per process to do it — and a
+    /// second one, on top, only to ask whether the set was empty.
+    pub fn cores(&self) -> impl Iterator<Item = u32> + '_ {
         self.cores
             .iter()
             .enumerate()
             .filter_map(|(i, &b)| b.then_some(i as u32))
-            .collect()
     }
 
     pub fn parse(s: &str, max_cores: u32) -> Option<Self> {
@@ -57,11 +67,16 @@ impl CpuSet {
             return None;
         }
 
-        let tokens: Vec<&str> = s.split(',').collect();
-        for (i, token) in tokens.iter().enumerate() {
+        // `peekable` rather than `collect()`: the loop only ever needed to know
+        // whether an empty token was the last one, which is what a peek answers,
+        // and this is on the per-process path for every rule with a cpuset.
+        // The `Vec` of tokens was one allocation per process to hold a list
+        // that is walked once.
+        let mut tokens = s.split(',').peekable();
+        while let Some(token) = tokens.next() {
             let token = token.trim();
             if token.is_empty() {
-                if i == tokens.len() - 1 {
+                if tokens.peek().is_none() {
                     continue; // Allow trailing comma
                 }
                 return None; // Do not allow double commas or empty tokens like ',,'

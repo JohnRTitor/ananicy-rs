@@ -34,6 +34,18 @@ pub type Attribute<T> = Option<Option<T>>;
 /// between every rule that uses the same one. See `docs/CONFIGURATION.md`
 /// § Memory.
 ///
+/// The five names are `Attribute<Arc<str>>` at 24 bytes each, which is 96 of the
+/// 176 — and 24 rather than 16 because the inner `Option` spends the
+/// null-pointer niche and the outer one needs a discriminant of its own. They
+/// hold a few dozen distinct values across fifteen thousand rules, which is why
+/// interning them to indices is the obvious next reduction.
+///
+/// The sharing is real rather than aspirational, and it is load-bearing for the
+/// footprint: `precompute_inheritance` resolves each type once so that every rule
+/// inheriting it references one string. Resolving per rule gives each its own
+/// private allocation, for two extra 32-byte chunks per rule. `docs/MEMORY.md`
+/// § What the names cost has the measurement.
+///
 /// What these bytes cost depends on where they are put, which is why they are in
 /// a `Vec` and not in the map that finds them. A hash map's bucket count is the
 /// next power of two above `count * 8/7`, so a per-rule cost inside the map is a
@@ -497,6 +509,18 @@ impl Rules {
     /// set turned into a start-up that took minutes. Overlaying nine fixed-size
     /// fields in place needs room for one copy and no more.
     ///
+    /// Each type is resolved once, not once per rule that names it. `from_json`
+    /// allocates a fresh `Arc<str>` for every name it reads, so re-parsing the
+    /// type inside the loop gave every rule a private copy of a string the whole
+    /// set shares: measured, that was two extra 32-byte chunks per rule —
+    /// 31,660 allocations and 760 kB across a 15,831-rule set, for the two
+    /// distinct values its types declare. Resolving the types up front makes the
+    /// `Arc` do the job it is there for — one allocation per distinct value,
+    /// shared by every rule that inherits it.
+    /// `rules_inheriting_one_type_share_its_names` and
+    /// `inheritance_does_not_mutate_the_shared_type` are what hold both halves
+    /// of that: that it shares, and that sharing does not become aliasing.
+    ///
     /// Types are read rather than taken: a program rule must not be able to
     /// rewrite the type it inherits from, and two rules sharing a type must not
     /// be able to see each other.
@@ -505,18 +529,34 @@ impl Rules {
         // borrowed mutably and `types` immutably, and there is no way to ask `self`
         // for both at once.
         let Rules { rules, types, .. } = self;
+
+        // One resolved rule per type, keyed by the name the rules refer to it
+        // by. Borrowed from `types` for the length of this function and dropped
+        // with it, which leaves each surviving `Arc` referenced only by the
+        // rules that inherited it.
+        let bases: HashMap<&str, Rule> = types
+            .iter()
+            .map(|(name, value)| {
+                let mut base = Rule::from_json(value);
+                // The type's own `type` key is not inherited: the rule reports
+                // the type it named, and a type cannot itself inherit from a
+                // type.
+                base.type_name = None;
+                (name.as_ref(), base)
+            })
+            .collect();
+
         for rule in rules.iter_mut() {
-            let Some(type_name) = rule.type_name.clone() else {
+            // Borrowed, not cloned: the key is the rule's own `type_name`, and
+            // building a `TypeName` to look it up would allocate once per rule
+            // for a lookup that answers with the type it already names.
+            let Some(type_name) = rule.type_name.as_deref() else {
                 continue;
             };
-            let Some(type_rule) = types.get(&TypeName(type_name.to_string())) else {
+            let Some(base) = bases.get(type_name) else {
                 continue;
             };
-            let mut base = Rule::from_json(type_rule);
-            // The type's own `type` key is not inherited: the rule reports the
-            // type it named, and a type cannot itself inherit from a type.
-            base.type_name = None;
-            rule.inherit(&base);
+            rule.inherit(base);
         }
 
         // Also clear the cache since rules have been reloaded
@@ -602,8 +642,13 @@ impl Rules {
             Ok(value) => {
                 if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
                     let key = RuleName(name.to_string());
-                    let replacing = self.programs.contains_key(&key);
-                    Self::note_redefinition(replacing, "rule", name, source);
+                    // One lookup, not two. `contains_key` asked the map the
+                    // question the redefinition note needs and then `get` asked
+                    // it again for the index; hashing the same name twice per
+                    // definition was a load-time cost paid N times for an answer
+                    // the first lookup already had.
+                    let previous = self.programs.get(&key).copied();
+                    Self::note_redefinition(previous.is_some(), "rule", name, source);
 
                     // Overwrite in place when the name is already there, rather
                     // than pushing. Appending would leave the superseded rule in
@@ -613,8 +658,8 @@ impl Rules {
                     // rather than the one that applies. A rule file overriding an
                     // earlier one is the documented way to change a shipped rule,
                     // so this path is not hypothetical.
-                    let index = match self.programs.get(&key) {
-                        Some(index) => *index,
+                    let index = match previous {
+                        Some(index) => index,
                         None => {
                             // Reserved and filled in below rather than pushed
                             // with its value, so the rule is built once.
@@ -812,6 +857,26 @@ mod rule {
         );
     }
 
+    /// The exact size `docs/MEMORY.md` reasons about, pinned so a change to the
+    /// layout is a deliberate one rather than something the budget notices.
+    ///
+    /// The ceiling above is a guard rail; this is the number. 176 is
+    /// `Option<Box<str>>` (16) + three `Option<Option<i32>>` (24) + four
+    /// `Option<Option<Arc<str>>>` (96) + `Vec` (24) + one more `Option<Option<i32>>`
+    /// (8) — and the 96 is the interesting part: the inner `Option` spends the
+    /// null-pointer niche, so the outer one needs a real discriminant and the
+    /// pair is 24 bytes rather than 16. Interning the four names to indices is
+    /// what would take this to 84.
+    #[test]
+    fn a_rule_is_the_size_the_memory_budget_assumes() {
+        assert_eq!(
+            std::mem::size_of::<Rule>(),
+            176,
+            "docs/MEMORY.md budgets 176 bytes per rule; if this changed, that \
+             document's numbers and any plan built on them need re-deriving"
+        );
+    }
+
     /// A rule file is third-party content, and the set of keys this daemon
     /// implements is not the set a rule file may use. Dropping the rest would
     /// make `dump rules` report a rule as if the attribute had never been
@@ -921,10 +986,14 @@ mod rule {
         assert_eq!(parse(r#"{"name":"x"}"#).effective_latency_nice(), None);
     }
 
-    /// The names two rules share are one allocation, not two. A default rule set
-    /// has fifteen thousand rules drawing on a couple of dozen distinct type
-    /// names, ioclasses and cpusets, so this is the difference between one
-    /// hundred thousand allocations at load and a couple of dozen.
+    /// Two rules that happen to carry the same value can share one allocation.
+    ///
+    /// This is about the type's ability, not the loader's behaviour: the two
+    /// rules here are built by hand, because what the loader does is a separate
+    /// question with its own tests below — `rules_inheriting_one_type_share_its_names`
+    /// and `a_cgroup_name_inherited_from_a_type_is_shared_too`, which go through
+    /// `precompute_inheritance` and are what would fail if a rule set stopped
+    /// sharing.
     #[test]
     fn a_shared_name_is_one_allocation() {
         let value: Arc<str> = Arc::from("Doc-View");
@@ -940,6 +1009,98 @@ mod rule {
             2,
             "the rule holds the one allocation both names came from"
         );
+    }
+
+    /// The same sharing, reached the way a rule set actually reaches it.
+    ///
+    /// The test above hand-assigns an `Arc` and so proves only that `Arc` can
+    /// share. What a rule set does is inherit every name from a `.types` file,
+    /// so this is the path that has to share: `precompute_inheritance` resolves
+    /// each rule's type and copies the resolved attributes onto it.
+    ///
+    /// Three hundred rules naming one type is a fifth of a default rule set, and
+    /// a type that declares an `ioclass` and a `sched` means two shared strings
+    /// per rule. Resolving the type per rule instead of once gives every rule a
+    /// private allocation — measured at two extra 32-byte chunks per rule, which
+    /// is 760 kB across a 15,831-rule set, and does not show up in peak RSS at
+    /// all. `docs/MEMORY.md` § What the names cost has the full figures.
+    #[test]
+    fn rules_inheriting_one_type_share_its_names() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        rules.load_rule_from_string(
+            r#"{"type":"BG","ioclass":"idle","sched":"idle","cgroup":"background"}"#,
+        );
+        for i in 0..300 {
+            rules.load_rule_from_string(&format!(r#"{{"name":"p{i}","type":"BG"}}"#));
+        }
+        rules.precompute_inheritance();
+
+        let (_, rule) = rules.get_rule("p0").expect("p0 has a rule");
+        let strong = Arc::strong_count(
+            rule.sched
+                .as_ref()
+                .and_then(|declared| declared.as_ref())
+                .expect("a sched was inherited"),
+        );
+        assert_eq!(
+            strong, 300,
+            "300 rules inherit 'idle' from one type, so the string they share \
+             must be one allocation with 300 references — not 300 allocations \
+             of the same four bytes"
+        );
+    }
+
+    /// The same for the cgroup name, which is a third field on the same type and
+    /// would be missed by a test that only looked at `ioclass`.
+    #[test]
+    fn a_cgroup_name_inherited_from_a_type_is_shared_too() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        rules.load_rule_from_string(r#"{"type":"BG","cgroup":"background"}"#);
+        for i in 0..50 {
+            rules.load_rule_from_string(&format!(r#"{{"name":"q{i}","type":"BG"}}"#));
+        }
+        rules.precompute_inheritance();
+
+        let (_, rule) = rules.get_rule("q0").expect("q0 has a rule");
+        let strong = Arc::strong_count(
+            rule.cgroup
+                .as_ref()
+                .and_then(|declared| declared.as_ref())
+                .expect("a cgroup was inherited"),
+        );
+        assert_eq!(strong, 50, "one allocation behind all 50 rules");
+    }
+
+    /// A rule that overrides the type's name keeps its own, and the rest still
+    /// share the type's. Sharing must not become aliasing: two rules naming
+    /// different values are two allocations, or a mutation of one would be seen
+    /// by the other.
+    #[test]
+    fn an_overridden_name_is_not_aliased_to_the_types() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        rules.load_rule_from_string(r#"{"type":"BG","ioclass":"idle"}"#);
+        rules.load_rule_from_string(r#"{"name":"a","type":"BG"}"#);
+        rules.load_rule_from_string(r#"{"name":"b","type":"BG","ioclass":"best-effort"}"#);
+        rules.precompute_inheritance();
+
+        let (_, a) = rules.get_rule("a").expect("a has a rule");
+        let (_, b) = rules.get_rule("b").expect("b has a rule");
+        assert_eq!(a.ioclass(), Some("idle"));
+        assert_eq!(b.ioclass(), Some("best-effort"));
+        let shared = Arc::strong_count(
+            a.ioclass
+                .as_ref()
+                .and_then(|declared| declared.as_ref())
+                .expect("a inherited one"),
+        );
+        let own = Arc::strong_count(
+            b.ioclass
+                .as_ref()
+                .and_then(|declared| declared.as_ref())
+                .expect("b declared one"),
+        );
+        assert_eq!(shared, 1, "a's value is the only reference left after load");
+        assert_eq!(own, 1, "and b's override is a separate allocation entirely");
     }
 
     /// A rule that declares a name in an unexpected type is treated as declaring
