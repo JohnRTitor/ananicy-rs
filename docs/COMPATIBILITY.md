@@ -15,6 +15,7 @@ To allow both implementations to coexist on the same system without colliding, `
 
 - **Binary Name:** `ananicy-rs` (instead of `ananicy-cpp`)
 - **Systemd Unit:** `ananicy-rs.service` (instead of `ananicy-cpp.service`)
+- **Unit memory limits:** the reference's unit sets `MemoryHigh=16M` and `MemoryMax=64M`; this one sets `48M` and `96M`. `MemoryHigh` is not a limit in the way `MemoryMax` is — exceeding it fails nothing, it makes the kernel *reclaim*, and the only memory this cgroup can reclaim is the daemon's own page cache and heap. At 16M, against a working set of about 34M, that put the daemon in a loop where every page it touched was discarded and fetched again: 3.66 GB read from the root filesystem in twenty minutes, 90% of its page faults going to disk, and a start-up measured in minutes. 48M sits above the working set, and 96M leaves room to reclaim back into before the hard cap. The working set grows with the rule count, so these are not constants to copy — [Memory](./MEMORY.md) has the measurements and `ananicy-rs debug memory` checks yours.
 - **Environment Variables:** 
   - `ANANICY_RS_CONF` overrides the default config file path (defaults to `/etc/ananicy.d/ananicy.conf`).
   - `ANANICY_RS_CONFDIR` overrides the default config directory (defaults to `/etc/ananicy.d`).

@@ -125,7 +125,7 @@ exists for us rather than for systemd, so this is the reasoning:
 | `RestrictNamespaces` | `cgroup` | We never create a cgroup namespace; `Delegate=yes` does not require one, since managing cgroups is `mkdir` plus file writes |
 | `CapabilityBoundingSet` | `CAP_SYS_NICE`, `CAP_SYS_RESOURCE`, `CAP_DAC_READ_SEARCH`, `CAP_SYS_ADMIN`, `CAP_DAC_OVERRIDE` | Exactly what setting `nice`/`ionice`/`oom_score_adj`/`latency_nice` and writing cgroupfs needs |
 | `Nice`, `OOMScoreAdjust` | `-5`, `-999` | Keeps the daemon itself from being starved or OOM-killed while it manages everyone else |
-| `MemoryHigh`, `MemoryMax` | `48M`, `96M` | A soft line above the working set — 1.40× the 34.4M peak with a default rule set — so reclaim is a response to a leak rather than a permanent state, and a hard cap twice it. A `MemoryHigh` **below** the working set is a throttle, which is what the 16M this replaced was; see below |
+| `MemoryHigh`, `MemoryMax` | `48M`, `96M` | A soft line above the working set — 1.40× the 34.4M peak with a default rule set — so reclaim is a response to a leak rather than a permanent state, and a hard cap twice it. `MemoryHigh` reads like a limit and is not one, and the reference's 16M was below the working set; see [COMPATIBILITY § 1](./COMPATIBILITY.md#1-project-identity-and-configuration) and [Memory](./MEMORY.md) |
 | `ExecReload` | `ananicy-rs --reload` | Configuration reload without dropping events (see below) |
 | `Restart`, `RestartSec` | `always`, `10` | Survives crashes; `SuccessExitStatus=143` (`128 + SIGTERM`) keeps a deliberate stop from being logged as a failure |
 | `StartLimitIntervalSec`, `StartLimitBurst` | `60`, `5` | Stops a restart loop from thrashing the machine |
@@ -141,28 +141,6 @@ The settings not in the table — `PrivateTmp`, `PrivateDevices`, `ProtectHome`,
 `ProtectKernelModules`, `NoNewPrivileges`, `MemoryDenyWriteExecute`,
 `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID` — are stock hardening with
 no daemon-specific reasoning behind it. They are listed in the unit file itself.
-
-### Why `MemoryHigh` is 48M and not 16M
-
-`MemoryHigh` is not a limit in the way `MemoryMax` is. Exceeding it fails nothing; it
-makes the kernel reclaim, and the only memory this cgroup can reclaim is the daemon's
-own page cache and heap. So a `MemoryHigh` *below* the working set does not cap
-anything — it puts the daemon in a loop where every page it touches is thrown away
-and fetched again, which reads as unexplained I/O and a start-up measured in minutes.
-At 16M, against a working set around 34M, that is what the unit used to do: 3.66 GB
-read from the root filesystem in twenty minutes, and 90% of its page faults going to
-disk. Above the working set the setting does the job it exists for, which is starting
-to reclaim before the hard cap so a leak is survivable.
-
-So 48M is the question "where is the working set", and for this daemon the answer is a
-function of the rule count: 29M with no rules, 34.4M with the default set, and the
-line is crossed at roughly 57,000 rules. [Memory](./MEMORY.md) has the table and
-`ananicy-rs debug memory` will measure yours, which the 16M case could not do and
-which is most of why 48M is defensible where 16M was not.
-
-One thing to know about the cap: `OOMScoreAdjust=-999` makes this daemon the *last*
-candidate the OOM killer picks, so reaching `MemoryMax` takes some other process
-rather than this one. That is the argument for a generous soft line.
 
 ## Delegation, from the operator's side
 

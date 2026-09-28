@@ -1,10 +1,10 @@
 # Memory
 
 What the daemon uses memory for, how much of it is the rule set, and how to
-find out on your own machine. The operational question this exists to answer is
-"is this number normal, and what do I do about it" — the unit's limits and why
-they are where they are are in
-[SYSTEMD § Why `MemoryHigh` is 48M and not 16M](./SYSTEMD.md#why-memoryhigh-is-48m-and-not-16m).
+find out on your own machine. The two unit settings that bound it are
+`MemoryHigh=48M` and `MemoryMax=96M`, and why they differ from the reference's
+16M/64M is in
+[COMPATIBILITY § 1](./COMPATIBILITY.md#1-project-identity-and-configuration).
 
 ## What it is made of
 
@@ -84,6 +84,4 @@ pages", which is the question that matters when I/O appears out of nowhere:
   is readahead against its executable.
 
 Both are in cgroupfs, one level above anything a process can see about itself,
-which is why they are reported from inside rather than left to `cgroupfs`. The
-thresholds and the measurements behind them are in
-[SYSTEMD](./SYSTEMD.md#why-memoryhigh-is-48m-and-not-16m).
+which is why they are reported from inside rather than left to `cgroupfs`.
