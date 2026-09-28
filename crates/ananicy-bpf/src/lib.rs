@@ -52,22 +52,84 @@ mod tests {
         );
     }
 
-    /// The same argument for the `start` map: it was declared, never referenced
-    /// by anything, and cost 624 kB of kernel memory — a declaration that is only
-    /// ever a declaration has no way to fail visibly.
-    #[test]
-    fn there_is_no_start_map() {
-        for (number, line) in SOURCE.lines().enumerate() {
-            let line = line.trim();
-            if line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') {
+    /// The maps the program declares, and which of them are live.
+    ///
+    /// Read from the source rather than from the generated skeleton, which looks
+    /// like the stronger choice and is not. `bpftool gen skeleton` emits an entry
+    /// only for maps some program references, so a live-but-unused map leaves no
+    /// trace in it at all: with `start` uncommented, the generated `pub struct
+    /// maps` still listed only `events` and `heap`. The compiled object would
+    /// settle it, but libbpf-cargo does not keep it — `OUT_DIR` holds the
+    /// skeleton and nothing else.
+    ///
+    /// That combination is why this is a source check and why the declaration is
+    /// worth commenting rather than deleting: an unused map costs 624 kB, is
+    /// invisible in the generated Rust, and is gone from the daemon's view of its
+    /// own maps, so the only place the fact is recorded is here.
+    fn declared_maps() -> (Vec<String>, Vec<String>) {
+        let mut live = Vec::new();
+        let mut commented = Vec::new();
+        for line in SOURCE.lines() {
+            let Some((_, name)) = line.split_once("} ") else {
                 continue;
+            };
+            // Every map declaration ends `} <name> SEC(".maps");`, so this is the
+            // one shape to look for rather than a parse of the whole struct.
+            let Some((name, _)) = name.split_once(" SEC(\".maps\")") else {
+                continue;
+            };
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+                commented.push(name.to_string());
+            } else {
+                live.push(name.to_string());
             }
-            assert_ne!(
-                line,
-                "} start SEC(\".maps\");",
-                "line {}: the unused `start` map is back, costing 624 kB of \
-                 kernel memory that nothing in the program touches",
-                number + 1
+        }
+        assert!(
+            !live.is_empty(),
+            "no live maps found in the BPF program at all, so this check would \
+             pass on a program that declares none"
+        );
+        (live, commented)
+    }
+
+    /// The `start` map is declared upstream and never touched, and a BPF hash map
+    /// allocates its element pool at creation rather than on first insert, so the
+    /// reference's 10,240 entries cost 624 kB of kernel memory charged to this
+    /// cgroup for the life of the process and buy nothing.
+    ///
+    /// The declaration stays in the source, commented, as a record for anyone
+    /// reading this program against ananicy-cpp and for whoever eventually wants
+    /// per-process state. What must not happen is it becoming live, which is what
+    /// this asks. See [`declared_maps`] for why the generated skeleton cannot be
+    /// used to ask it.
+    #[test]
+    fn the_start_map_is_declared_but_not_live() {
+        let (live, commented) = declared_maps();
+        assert!(
+            commented.contains(&"start".to_string()),
+            "the commented record of the `start` map is gone from the source. \
+             That is a reasonable thing to do, but then drop this test too: \
+             there is nothing left for it to protect."
+        );
+        assert!(
+            !live.contains(&"start".to_string()),
+            "the `start` map is live again ({live:?}), which costs 624 kB of \
+             kernel memory for a map nothing in the program reads or writes"
+        );
+    }
+
+    /// Both ways. A test that only checked `start` was absent would also pass on
+    /// a program that declared no maps at all.
+    #[test]
+    fn the_maps_the_program_uses_are_live() {
+        let (live, _) = declared_maps();
+        for used in ["events", "heap"] {
+            assert!(
+                live.contains(&used.to_string()),
+                "`{used}` should be a live map ({live:?}); the program writes \
+                 every event through `events` and takes its scratch buffer from \
+                 `heap`"
             );
         }
     }

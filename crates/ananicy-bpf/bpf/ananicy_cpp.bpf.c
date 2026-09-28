@@ -17,26 +17,47 @@ struct event {
 
 const volatile __u64 min_us = 0;
 
-/* No `start` map.
+/*
+ * The reference also declares a uid filter and calls none of it. `targ_uid`,
+ * the `valid_uid()` that tested it against `INVALID_UID`, and `INVALID_UID`
+ * itself, alongside `targ_pid` and `targ_tgid`: five declarations that
+ * referenced nothing but each other, so a filter that reads as a decision while
+ * applying to no one. Recorded here rather than deleted outright for the same
+ * reason as `start` below -- they cost nothing, and a reader comparing this
+ * program against ananicy-cpp should not have to find out by noticing they are
+ * missing.
  *
- * The reference declares one -- a 10,240-entry hash of pid -> timestamp -- and
- * nothing ever reads or writes it: in the version this was taken from, the name
- * appeared once, in the declaration. `BPF_MAP_TYPE_HASH` allocates its element
- * pool at creation rather than on first insert, so the map costs 624 kB of
- * kernel memory charged to this cgroup for the life of the process: a 573 kB
- * pool of 10,240 56-byte elements, plus a 64 kB bucket index. It was worth
- * deleting for that, and the comment this replaced claimed rather more for it.
+ *     #define INVALID_UID ((uid_t)-1)
+ *     const volatile pid_t targ_pid = 0;
+ *     const volatile pid_t targ_tgid = 0;
+ *     const volatile uid_t targ_uid = INVALID_UID;
+ *     static __always_inline bool valid_uid(uid_t uid) { return uid != INVALID_UID; }
+ */
+
+/*
+ * Kept as a record, commented out. The reference declares this map and
+ * nothing ever reads or writes it: in the version this was taken from, the
+ * name `start` appeared once in the file, in the declaration. A BPF hash map
+ * allocates its element pool when it is created rather than on first insert,
+ * so the untouched map still costs 624 kB of kernel memory charged to this
+ * cgroup for the life of the process -- a 573 kB pool of 10,240 56-byte
+ * elements, plus a 64 kB bucket index.
  *
- * Every event takes its timestamp from `bpf_ktime_get_ns()` and carries it in
- * the event itself, which is why nothing needed the map.
+ *     struct {
+ *         __uint(type, BPF_MAP_TYPE_HASH);
+ *         __uint(max_entries, 10240);
+ *         __type(key, u32);
+ *         __type(value, u64);
+ *     } start SEC(".maps");
  *
- * Also gone, for the same reason and with nothing else to say for them:
- * `targ_pid`, `targ_tgid`, `targ_uid`, the `valid_uid()` that tested
- * `targ_uid` against `INVALID_UID`, and `INVALID_UID` itself. The reference
- * declares all four and calls none of them, so together they were a filter
- * nothing applied -- and a uid filter that is compiled out but still readable
- * in the source is worse than one that is absent, because it reads as a
- * decision.
+ * Nothing needed it. What it looks like it was for -- tracking when a process
+ * last ran -- is done without any map: every event takes its timestamp from
+ * `bpf_ktime_get_ns()` and carries it in the event, against a per-CPU `prev_ts`.
+ * This is what a per-*process* version would have to build on, and it cannot be
+ * this map: `u32 -> u64` with no TTL or eviction grows to 10,240 pids and then
+ * refuses new ones, and pids are recycled. A real per-process feature needs a
+ * different map with an eviction policy, so keeping the declaration here costs
+ * nothing and keeps the option visible to whoever looks for it.
  */
 
 struct {

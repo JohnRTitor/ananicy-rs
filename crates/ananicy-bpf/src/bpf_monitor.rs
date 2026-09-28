@@ -16,7 +16,7 @@ use {
         skel::{OpenSkel, Skel, SkelBuilder},
     },
     std::{io, sync::mpsc::Sender, time::Duration},
-    tracing::{error, info},
+    tracing::{debug, error, info},
 };
 
 use ananicy_core::process::Process;
@@ -109,7 +109,7 @@ impl BpfMonitor {
         // memory, which is the part of the footprint reclaim cannot return, so it
         // is worth a line next to the rule set's own cost. `summary()` already
         // carries the `kernel` and `slab` figures.
-        tracing::debug!(
+        debug!(
             "Memory after loading the BPF program: {}",
             ananicy_platform::memstats::Snapshot::read().summary(),
         );
