@@ -88,7 +88,11 @@ impl BpfMonitor {
         if let Some(min) = min_us
             && let Some(rodata) = open_skel.maps.rodata_data.as_mut()
         {
-            // Set the rate limit in BPF to prevent context switch event storms
+            // The minimum interval between reported events, per CPU. Zero -- the
+            // default, and what an invocation without the flag gets -- leaves the
+            // check in the program inert, so nothing changes unless it is asked
+            // for. See the flag's documentation for what a non-zero value does,
+            // because the name is easy to read as a rate and it is not one.
             rodata.min_us = min as u64;
         }
 

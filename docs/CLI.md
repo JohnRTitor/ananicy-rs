@@ -104,7 +104,23 @@ still behaves the same way.
 - `--manual-scanning` (`--manualscanning`): Enable periodic manual procfs scanning (useful if event listeners miss events).
 - `--benchmark`: Run the daemon in benchmark mode for performance profiling.
 - `--benchmark-count <BENCHMARK_COUNT>`: Number of iterations to run in benchmark mode.
-- `--bpf-min-us <BPF_MIN_US>`: Minimum microseconds for BPF intervals.
+- `--bpf-min-us <BPF_MIN_US>`: Minimum microseconds between reported events, per CPU. The default of `0` disables the check entirely, so an invocation without the flag reports every `exec` and `fork`.
+
+  What a non-zero value does is drop the tail of a burst. The gap is measured
+  against the previous event *on the same CPU*, not against the same process and
+  not as a rate: a package manager or a game launcher forking a few hundred
+  processes a second keeps the first of each burst and loses the rest, which is
+  usually what you want, since the ones it loses are the ones that exited before
+  the worker could read their procfs. Anything dropped is caught by the next
+  periodic `/proc` scan, so the cost of dropping an event is delayed tuning, not
+  lost tuning.
+
+  A large value therefore looks like a daemon that has stopped tuning anything:
+  `--bpf-min-us 1000000` is one second, and on a busy machine that is most
+  events. The value is not clamped — it is what the program is given — so if the
+  daemon goes quiet, this is the first thing to check. `--memory-stats` will
+  still report normally throughout, since it reads the footprint rather than
+  waiting for events.
 - `--memory-stats`: Report memory usage, paging and reclaim counters once a minute. The counters that distinguish a daemon that is merely using memory from one that is being made to re-fetch it — `memory.events:high`, `pgmajfault`, `workingset_refault_file`, swap in and out — live in cgroupfs, one level above anything the process can see about itself, so without this there is nothing in the log to tell the two apart. See `docs/SYSTEMD.md` § *Why `MemoryHigh` is 48M and not 16M* for what those numbers looked like when this was not visible.
 - `-v, --verbose`: Enable verbose output. With the `bpf` event source this also turns on the eBPF loader's own diagnostics, which is the only place the reason for a refused load or attach is printed.
 

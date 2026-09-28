@@ -7,7 +7,6 @@
 #include "core_fixes.bpf.h"
 
 #define TASK_COMM_LEN 16
-#define INVALID_UID ((uid_t)-1)
 
 struct event {
     pid_t pid;
@@ -17,19 +16,27 @@ struct event {
 };
 
 const volatile __u64 min_us = 0;
-const volatile pid_t targ_pid = 0;
-const volatile pid_t targ_tgid = 0;
-const volatile uid_t targ_uid = INVALID_UID;
 
 /* No `start` map.
  *
- * The reference declares one — a 10,240-entry hash of pid -> timestamp — and
- * never reads it back. BPF_MAP_TYPE_HASH allocates its element pool up front, so
- * an unused map of that size is still a few hundred kilobytes of kernel memory
- * charged to this daemon's cgroup for the life of the process, and unlike the
- * rule set it is memory reclaim cannot give back: it raises the floor under
- * everything else. Every event gets a timestamp from `bpf_ktime_get_ns()` and
- * carries it in the event itself, which is why nothing ever needed the map.
+ * The reference declares one -- a 10,240-entry hash of pid -> timestamp -- and
+ * nothing ever reads or writes it: in the version this was taken from, the name
+ * appeared once, in the declaration. `BPF_MAP_TYPE_HASH` allocates its element
+ * pool at creation rather than on first insert, so the map costs 624 kB of
+ * kernel memory charged to this cgroup for the life of the process: a 573 kB
+ * pool of 10,240 56-byte elements, plus a 64 kB bucket index. It was worth
+ * deleting for that, and the comment this replaced claimed rather more for it.
+ *
+ * Every event takes its timestamp from `bpf_ktime_get_ns()` and carries it in
+ * the event itself, which is why nothing needed the map.
+ *
+ * Also gone, for the same reason and with nothing else to say for them:
+ * `targ_pid`, `targ_tgid`, `targ_uid`, the `valid_uid()` that tested
+ * `targ_uid` against `INVALID_UID`, and `INVALID_UID` itself. The reference
+ * declares all four and calls none of them, so together they were a filter
+ * nothing applied -- and a uid filter that is compiled out but still readable
+ * in the source is worse than one that is absent, because it reads as a
+ * decision.
  */
 
 struct {
@@ -45,10 +52,6 @@ struct {
     __uint(value_size, sizeof(u32));
 } events SEC(".maps");
 
-static __always_inline bool valid_uid(uid_t uid) {
-    return uid != INVALID_UID;
-}
-
 static __always_inline struct event* handle_event(pid_t pid, pid_t* prev_pid, u64* prev_ts) {
     struct event *e;
     int zero = 0;
@@ -58,10 +61,17 @@ static __always_inline struct event* handle_event(pid_t pid, pid_t* prev_pid, u6
 
     u64 ts = bpf_ktime_get_ns();
 
-    // Compute delta_us
+    // Minimum interval between reported events, per CPU. `prev_ts` is a
+    // per-CPU global, so this is the gap since the previous exec or fork on
+    // *this* CPU -- not since this process was last seen, and not a rate.
+    // The effect of a non-zero value is to drop the tail of a burst: a package
+    // manager or a game launcher forking a few hundred processes a second keeps
+    // the first of each burst and loses the rest, which is the right thing to
+    // do for the ones that exited before the worker could read their procfs.
+    // Anything dropped is caught later by the periodic /proc scan.
     u64 delta_us = (ts - *prev_ts) / 1000;
-    //if (min_us && delta_us <= min_us)
-    //    return 0;
+    if (min_us && delta_us <= min_us)
+        return 0;
 
     // Assign variables to event struct
     e->pid = pid;
@@ -85,7 +95,7 @@ int handle_exec(struct trace_event_raw_sched_process_exec* ctx)
 
     u32 pid = bpf_get_current_pid_tgid();
     e = handle_event(pid, &prev_pid, &prev_ts);
-    if (!e) /* can't happen */
+    if (!e) /* dropped by the minimum-interval check */
         return 0;
 
     /* output */
@@ -119,7 +129,7 @@ int handle_fork(struct trace_event_raw_sched_process_fork* ctx)
      */
     u32 pid = ctx->child_pid;
     e = handle_event(pid, &prev_pid, &prev_ts);
-    if (!e) /* can't happen */
+    if (!e) /* dropped by the minimum-interval check */
         return 0;
 
     /* output */

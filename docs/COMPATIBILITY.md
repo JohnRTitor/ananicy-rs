@@ -206,6 +206,18 @@ configuration it fell back to.
   verification build of the reference has no eBPF support and rejects the flag before parsing it.
   Rejecting the value is the better answer — the reference silently narrows it — but a unit file
   that worked will not start.
+- **`--bpf-min-us` does what the reference does, which is nothing — except here it now does
+  something.** The reference comments out the check that reads the value (the
+  `if (min_us && delta_us <= min_us)` pair in `handle_event()`) and keeps the flag that sets it,
+  so a `BPFMinUs` in a working unit file has no effect there. Here it had none either: the
+  value was threaded all the way into the program's read-only data and consumed by no
+  instruction, which is how a documented flag can be inert without anything failing. The check
+  is enabled now, so this daemon honours the flag and the reference does not — a divergence, and
+  a deliberate one, since a flag that does nothing is not a compatibility property worth keeping.
+  It is a minimum interval between reported events measured against the previous event on the
+  same CPU, not a rate, so a large value reads as a daemon that has stopped tuning anything;
+  see the flag's entry in [CLI](./CLI.md). Verified by reading both sources rather than by
+  running the reference's eBPF build, which is the same limitation as the item above.
 - **A configuration file with CRLF line endings.** The kernel is not involved; this is the
   reference's own `trim` stripping `' '` and not `'\r'` (`config.cpp:28-35`), so every value keeps
   the carriage return. The stored value is literally `"true\r"` — visible as `^M` in `Config::show`,
