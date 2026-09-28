@@ -42,10 +42,13 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Everything that was stored is still reachable under the name it declared.
-    for (name, rule) in rules.get_rules() {
+    for (name, rule) in rules.iter_rules() {
+        // `get_rule` answers with the name and the rule; only the rule is being
+        // compared, and the name it comes back with is the key it was asked for.
+        let resolved = rules.get_rule(name.as_ref()).map(|(_, resolved)| resolved);
         assert_eq!(
-            rules.get_rule(name.as_ref()).as_deref(),
-            Some(rule.as_ref()),
+            resolved,
+            Some(rule),
             "{} is stored but not resolvable",
             name.as_ref()
         );

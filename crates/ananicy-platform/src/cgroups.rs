@@ -89,16 +89,19 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
         return false;
     };
 
-    let (target, created) = if manager.cgroup_exists(cgroup_name) {
-        match manager.resolve_target_dir(cgroup_name) {
-            Some(target) => (target, false),
-            None => return false,
-        }
-    } else {
-        match manager.ensure_child(cgroup_name) {
+    // Resolved once. `cgroup_exists` used to answer this by resolving the target
+    // and dropping the result, and then the branch that acted on the answer
+    // resolved the same name again — two identical `PathBuf`s built to ask one
+    // question, on a path that runs for every `.cgroups` rule at every reload.
+    let (target, created) = match manager.resolve_target_dir(cgroup_name) {
+        Some(target) if target.exists() => (target, false),
+        // Either there is no hierarchy to name a path in, or the cgroup is not
+        // there yet. Both are `ensure_child`'s to answer, and it resolves the
+        // name again because creating it is where the path is actually needed.
+        _ => match manager.ensure_child(cgroup_name) {
             Some(target) => (target, true),
             None => return false,
-        }
+        },
     };
 
     // Applied either way. A failure to write is reported by the manager, which

@@ -76,6 +76,22 @@ impl<R: CgroupProcessResolver> CachingCgroupResolver<R> {
             ttl,
         }
     }
+
+    /// How many holders the cached path for `pid` currently has, including the
+    /// cache's own.
+    ///
+    /// A test seam and nothing else, like [`Rules::cached_resolution_count`]
+    /// next door: the property that matters about this cache — that a hit hands
+    /// back the path already in memory rather than a fresh copy of it — is not
+    /// observable from outside without asking. It was, when the path was an
+    /// owned `PathBuf` and every hit allocated a new one that no counter could
+    /// see.
+    #[doc(hidden)]
+    pub fn cached_path_holders(&self, pid: i32) -> Option<usize> {
+        let cache = self.cache.read().ok()?;
+        let (_, identity, _) = cache.peek(&pid)?;
+        identity.as_ref().map(|identity| identity.path.holders())
+    }
 }
 
 impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R> {
@@ -326,6 +342,48 @@ mod tests {
                 inner.calls.load(Ordering::SeqCst),
                 1,
                 "an absent answer caches too"
+            );
+        }
+
+        #[test]
+        fn a_cached_lookup_hands_back_the_path_it_already_holds() {
+            let inner = Counting {
+                answer: Some(answer("/shared.scope")),
+                ..Default::default()
+            };
+            let resolver = CachingCgroupResolver::new(&inner, 16, Duration::from_secs(60));
+
+            resolver.resolve(us()).unwrap();
+            let after_miss = resolver
+                .cached_path_holders(us())
+                .expect("the miss cached something");
+            assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
+
+            // Every one of these is a hit. Each returns a copy, and each copy is
+            // dropped at the end of the statement — so if a hit were building a
+            // fresh path rather than referencing the cached one, the number of
+            // live copies would be whatever the allocator had not reclaimed yet
+            // rather than the cache's one.
+            for _ in 0..50 {
+                let hit = resolver.resolve(us()).unwrap();
+                assert_eq!(
+                    hit.as_ref().map(|c| c.path.as_path()),
+                    Some(std::path::Path::new("/shared.scope")),
+                    "and the answer is still right"
+                );
+            }
+
+            assert_eq!(
+                resolver.cached_path_holders(us()),
+                Some(after_miss),
+                "fifty cache hits left the number of live copies of the path \
+                 exactly where the single miss left it: every hit referenced the \
+                 cached path instead of building another one"
+            );
+            assert_eq!(
+                inner.calls.load(Ordering::SeqCst),
+                1,
+                "and none re-resolved"
             );
         }
     }
