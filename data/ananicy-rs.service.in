@@ -46,21 +46,20 @@ Delegate=yes
 Restart=always
 RestartSec=10
 
-# A hard cap only. `MemoryHigh` is deliberately absent, because it was a mistake.
+# A hard cap, and deliberately no `MemoryHigh`.
 #
-# `MemoryHigh` is not a limit in the sense `MemoryMax` is: exceeding it does not
-# fail anything, it makes the kernel reclaim -- and the only things this cgroup
-# can reclaim are the daemon's own page cache and its own heap. Set to 16M
-# against a working set of roughly 40M, that produced a permanent reclaim loop:
-# every page the daemon touched was thrown away and fetched again, so the rule
-# set was re-read from disk and re-swapped in continuously. On a host with zram
-# the heap churned through the compressed device; either way the daemon spent its
-# life in `D` state and start-up took minutes.
+# `MemoryHigh` is not a limit in the sense `MemoryMax` is: exceeding it makes the
+# kernel reclaim, and the only memory this cgroup can reclaim is the daemon's own
+# page cache and heap. A `MemoryHigh` below the working set therefore does not cap
+# anything -- it puts the daemon in a loop where every page it touches is
+# discarded and fetched again, which reads as unexplained I/O and a slow start.
+# At 16M against ~40M that is what this unit did.
 #
-# The cap below is what actually protects the machine, and it is set well above
-# the measured peak so that reaching it means a real runaway rather than normal
-# operation. Raise it if you load many more rules than a default rule set has.
-MemoryMax=128M
+# 64M is 1.6x the measured peak (39.4M with a default rule set; steady state is
+# 21.4M). A cap below the peak stops being a cap and becomes a throttle, so do
+# not lower it without checking `ananicy-rs debug memory` first. Raise it for
+# rule sets much larger than the default one.
+MemoryMax=64M
 
 # Hardening
 ProtectSystem=full

@@ -233,8 +233,7 @@ Most of the 10.5 MB is the `HashMap` that indexes the rules, which holds each
 rule's 176 bytes inline in a table sized for the next power of two — 6.5 MB of
 it, against 2.8 MB of rules. A `Vec<Rule>` with the map holding indices would be
 about 4.5 MB; it is not done because it trades one obvious invariant — the map
-*is* the rules — for three megabytes in a process with a hundred megabytes of
-headroom.
+*is* the rules — for three megabytes in a process capped at 64M.
 
 None of this is an optimisation for its own sake. The earlier version held each
 rule as a `serde_json::Value`, which put the working set above the `MemoryHigh`

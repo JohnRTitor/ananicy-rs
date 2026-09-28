@@ -67,13 +67,6 @@ fn print_libbpf_message(_level: PrintLevel, message: String) {
     eprint!("{message}");
 }
 
-/// A counter the kernel may not report at all, as something loggable.
-fn display_or(value: Option<u64>) -> String {
-    value
-        .map(|bytes| format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0)))
-        .unwrap_or_else(|| "n/a".to_string())
-}
-
 impl BpfMonitor {
     /// Loads and attaches the tracepoint programs.
     ///
@@ -108,17 +101,13 @@ impl BpfMonitor {
 
         info!("BPF Monitor initialized successfully.");
 
-        // Reported here because the maps and the perf buffer are ours, and they
-        // are charged to this cgroup as kernel memory. It is the part of the
-        // footprint that reclaim cannot give back, so it raises the floor under
-        // everything else and belongs next to the rule set's own cost in the log
-        // rather than being discovered when the unit's limit is hit.
-        let memory = ananicy_platform::memstats::Snapshot::read();
+        // The maps and the perf buffer are charged to this cgroup as kernel
+        // memory, which is the part of the footprint reclaim cannot return, so it
+        // is worth a line next to the rule set's own cost. `summary()` already
+        // carries the `kernel` and `slab` figures.
         tracing::debug!(
-            "Memory after loading the BPF program: {} (kernel {} of which slab {})",
-            memory.summary(),
-            display_or(memory.kernel),
-            display_or(memory.slab),
+            "Memory after loading the BPF program: {}",
+            ananicy_platform::memstats::Snapshot::read().summary(),
         );
 
         Ok(Self { skel })

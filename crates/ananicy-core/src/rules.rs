@@ -27,37 +27,21 @@ pub type Attribute<T> = Option<Option<T>>;
 
 /// A program rule, resolved against its type.
 ///
-/// This is the change that made the daemon fit in memory. A rule used to be kept
-/// as a `serde_json::Value` — a `BTreeMap` with a node of roughly 700 bytes
-/// however few keys it held — plus an `Arc` header, plus a `String` key, for
-/// every rule in the set. A 15,829-rule default rule set cost about 18.6 MB, and
-/// against the `MemoryHigh` the shipped unit used to carry that was most of the
-/// problem: the working set did not fit, so the kernel reclaimed the daemon's own
-/// pages continuously and the daemon spent its life re-reading itself from disk.
+/// A rule used to be held as a `serde_json::Value`, which is a `BTreeMap` whose
+/// node is roughly 700 bytes however few keys it holds -- about 1.2 KB for a
+/// `{"name":..., "type":...}` rule, times fifteen thousand. The typed fields
+/// below make that 176 bytes, with the five names shared as one allocation
+/// between every rule that uses the same one. Loading a default rule set costs
+/// 10.5 MB instead of 18.6 MB; see `docs/CONFIGURATION.md` § Memory.
 ///
-/// Every attribute here is a fixed-size field, and the five that are names —
-/// `type`, `ioclass`, `sched`, `cgroup` and `cpuset` — are `Box<str>` or
-/// `Arc<str>`, which is one allocation shared by every rule that uses the same
-/// name rather than one each. A default rule set draws on sixteen distinct type
-/// names and a handful of `ioclass`, `sched`, `cpuset` and cgroup names, so that
-/// is a couple of dozen allocations behind fifteen thousand rules rather than a
-/// hundred and fifty thousand.
+/// Most of the 10.5 MB is the `HashMap` holding the rules inline rather than the
+/// rules themselves, so a `Vec<Rule>` with the map holding indices would be
+/// smaller. It is not done: the map being the rules is worth more than the three
+/// megabytes.
 ///
-/// A rule is 176 bytes, and the map stores them inline, so the whole set is about
-/// 10.5 MB. It is worth being exact about where that goes, because the number is
-/// not what the per-rule arithmetic suggests: the rules themselves are 2.8 MB of
-/// it, the `HashMap` that indexes them is 6.5 MB (it holds each rule's 176 bytes
-/// in a table sized for the next power of two), and the rest is the `RuleName`
-/// keys. Storing the rules in a `Vec` and indexing that instead would bring it to
-/// about 4.5 MB, and is not done here: it trades a single obvious invariant — the
-/// map *is* the rules — for three megabytes in a process whose limit is now
-/// 128M and whose working set has a hundred megabytes of room in it.
-///
-/// What a rule file may say is not closed: an attribute this daemon does not
-/// implement still has to survive into `dump rules`, or a rule set using one
-/// would be reported as if the attribute had never been written. Those keys go
-/// in `extras` — empty for every rule in the shipped set, so they cost nothing
-/// there, and populated for a rule that uses one.
+/// An attribute this daemon does not implement is kept in `extras` rather than
+/// dropped, so `dump rules` still reports what a rule file says. `extras` is
+/// empty for every rule in the shipped set, so this costs nothing there.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Rule {
     /// The type this rule inherited from, kept for `dump rules` to report.
@@ -685,7 +669,7 @@ impl Rules {
         // The cache is keyed on the process name, and a process name is the
         // basename of `argv[0]` — which the kernel puts no upper bound on. A
         // single `execve` with a 128 KiB `argv[0]` therefore produces a 128 KiB
-        // key, and 5000 of them is half a gigabyte, against a `MemoryMax=128M` in
+        // key, and 5000 of them is half a gigabyte, against a `MemoryMax=64M` in
         // the shipped unit. A name that long is not a program name and no rule
         // can match it usefully, so it is answered without being remembered. The
         // lookup itself still happens, so the answer is the same either way.

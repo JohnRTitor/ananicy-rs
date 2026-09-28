@@ -1,22 +1,12 @@
 //! What the daemon's own memory is doing, read from procfs and cgroupfs.
 //!
-//! This exists because the daemon had a failure mode that nothing else could
-//! see. The shipped unit carried `MemoryHigh=16M` against a working set of about
-//! 40M, and exceeding `MemoryHigh` does not fail anything — it makes the kernel
-//! reclaim. This cgroup has almost nothing to reclaim but the daemon's own page
-//! cache and its own heap, so every page the daemon touched was discarded and
-//! fetched again, continuously. The result was 3.66 GB read from the root
-//! filesystem in twenty minutes, 343 MB cycled through zram, 90% of all page
-//! faults going to disk, and a daemon whose start-up took minutes because it was
-//! busy refaulting its own executable.
-//!
-//! None of that is visible from inside the process. `/proc/self/status` says
-//! `VmData: 24424 kB` and the log looks healthy. The counters that give it away
-//! — `memory.events:high`, `pgmajfault`, `workingset_refault_file` — are in
-//! cgroupfs, one directory above whatever the daemon can see of itself. This
-//! module reads them so the daemon can report its own steady state, and a
-//! regression of this shape shows up in the journal rather than needing
-//! `cgroupfs` attached by hand.
+//! This exists because a daemon can be made to re-fetch its own pages, and that
+//! is invisible from inside the process. `MemoryHigh` below the working set does
+//! it: the kernel reclaims, the cgroup can only give back the daemon's own page
+//! cache and heap, and the result is continuous I/O with a healthy-looking log.
+//! The counters that give it away — `memory.events:high`, `pgmajfault`,
+//! `workingset_refault_file`, swap in and out — are in cgroupfs, one level above
+//! what the process can see about itself, so this reads them for itself.
 //!
 //! Every read here is optional. A missing or unreadable file leaves its field
 //! `None` and is not an error: a cgroup v1 host, a container whose cgroup
@@ -493,8 +483,10 @@ Threads:\t\t4
         );
     }
 
-    /// The exact numbers from the reported incident, so the report is known to
-    /// recognise them.
+    /// A daemon being made to re-fetch its own pages has to say so. This is the
+    /// shape a `MemoryHigh` below the working set produces, with figures from
+    /// such a case rather than invented ones, because a diagnostic nobody has
+    /// ever seen fire is not one anybody can rely on.
     #[test]
     fn the_thrashing_daemon_is_diagnosed() {
         let snapshot = Snapshot {
