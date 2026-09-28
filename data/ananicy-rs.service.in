@@ -46,20 +46,32 @@ Delegate=yes
 Restart=always
 RestartSec=10
 
-# A hard cap, and deliberately no `MemoryHigh`.
+# A soft line and a hard cap.
 #
 # `MemoryHigh` is not a limit in the sense `MemoryMax` is: exceeding it makes the
-# kernel reclaim, and the only memory this cgroup can reclaim is the daemon's own
-# page cache and heap. A `MemoryHigh` below the working set therefore does not cap
-# anything -- it puts the daemon in a loop where every page it touches is
-# discarded and fetched again, which reads as unexplained I/O and a slow start.
-# At 16M against ~40M that is what this unit did.
+# kernel reclaim rather than failing anything, and the only memory this cgroup
+# can reclaim is the daemon's own page cache and heap. So a `MemoryHigh` below
+# the working set does not cap anything -- it puts the daemon in a loop where
+# every page it touches is discarded and fetched again, which reads as
+# unexplained I/O and a slow start. At 16M against a ~40M working set that is
+# what this unit used to do, and it cost 3.66 GB of reads in twenty minutes.
 #
-# 64M is 1.6x the measured peak (39.4M with a default rule set; steady state is
-# 21.4M). A cap below the peak stops being a cap and becomes a throttle, so do
-# not lower it without checking `ananicy-rs debug memory` first. Raise it for
-# rule sets much larger than the default one.
-MemoryMax=64M
+# 48M is chosen to stay above the working set with room to spare, so that the
+# soft line exists for a leak rather than for normal operation. With a default
+# rule set the peak is 34.4M and steady state 14.5M. It stops being above the
+# working set at roughly 57,000 rules -- about 3.6x the default rule set -- and
+# past that this line becomes a throttle. Nothing in a rule file indicates you
+# are approaching that, so check `ananicy-rs debug memory` when it matters, and
+# expect the daemon to warn rather than to fail quietly.
+#
+# 96M is the hard cap. A runaway is still OOM-killed rather than taking the
+# machine with it, and it has twice the soft line to be reclaimed back within
+# first. Note that `OOMScoreAdjust=-999` makes this daemon the last candidate the
+# OOM killer picks, so reaching the cap takes some other process rather than
+# this one -- which is the argument for the soft line above being generous rather
+# than tight.
+MemoryHigh=48M
+MemoryMax=96M
 
 # Hardening
 ProtectSystem=full

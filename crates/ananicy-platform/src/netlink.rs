@@ -100,7 +100,7 @@ pub struct NetlinkMonitor {
 /// The process name is the basename of `argv[0]`, which the kernel does not
 /// upper-bound — `MAX_ARG_STRLEN` is 128 KiB — and storing it verbatim at
 /// `REPORTED_NAMES_CAPACITY` entries would let any unprivileged local process
-/// make this cache cost a gigabyte against a `MemoryMax=64M`. Storing a digest
+/// make this cache cost a gigabyte against a `MemoryMax=96M`. Storing a digest
 /// fixes the size at 16 bytes per entry, so the whole cache is bounded at about
 /// 128 KiB no matter what names pass through it.
 ///

@@ -316,9 +316,12 @@ impl Snapshot {
         {
             findings.push(format!(
                 "cgroup usage {:.1}M is above memory.high {:.1}M, so the kernel is \
-                 reclaiming this daemon's own pages continuously -- memory.high is a \
-                 throttle point, not a limit, and the only thing this cgroup can reclaim \
-                 is the daemon itself. Raise or remove memory.high.",
+                 reclaiming this daemon's own pages and will keep doing so while it \
+                 stays there -- memory.high is a throttle point, not a limit, and the \
+                 only memory this cgroup can reclaim is the daemon itself. Either the \
+                 daemon is using more than the limit was set for (a rule set larger \
+                 than about 57,000 rules does it) or something is leaking; raise \
+                 memory.high, or memory.max if that would run into a hard cap.",
                 mib(Some(current)),
                 mib(Some(high))
             ));

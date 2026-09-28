@@ -830,7 +830,7 @@ fn a_regex_matcher_does_not_outlive_the_load_that_compiled_it() {
 /// Asserting the answer alone would prove nothing: a lookup for a 128 KiB name
 /// returns `None` whether or not it was cached, because no rule matches it. What
 /// has to be pinned is the *cache*, which is why the count is asked for. 5000
-/// such names is 640 MB, against `MemoryMax=64M` in the shipped unit, and any
+/// such names is 640 MB, against `MemoryMax=96M` in the shipped unit, and any
 /// unprivileged local process can produce them with `execve`.
 #[test]
 fn an_absurdly_long_name_is_answered_but_not_remembered() {

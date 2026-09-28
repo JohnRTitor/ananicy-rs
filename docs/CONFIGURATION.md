@@ -243,7 +243,7 @@ None of this is an optimisation for its own sake. The original version held each
 rule as a `serde_json::Value`, which put the working set above the `MemoryHigh`
 the shipped unit carried; the kernel then reclaimed the daemon's own pages
 continuously and the daemon spent its life re-reading itself from disk. See
-[SYSTEMD § Why there is no `MemoryHigh`](./SYSTEMD.md#why-there-is-no-memoryhigh)
+[SYSTEMD § Why `MemoryHigh` is 48M and not 16M](./SYSTEMD.md#why-memoryhigh-is-48m-and-not-16m)
 for those measurements.
 
 What all of this scales with is **the number of rules**, not the size of the rule

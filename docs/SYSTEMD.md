@@ -125,7 +125,7 @@ exists for us rather than for systemd, so this is the reasoning:
 | `RestrictNamespaces` | `cgroup` | We never create a cgroup namespace; `Delegate=yes` does not require one, since managing cgroups is `mkdir` plus file writes |
 | `CapabilityBoundingSet` | `CAP_SYS_NICE`, `CAP_SYS_RESOURCE`, `CAP_DAC_READ_SEARCH`, `CAP_SYS_ADMIN`, `CAP_DAC_OVERRIDE` | Exactly what setting `nice`/`ionice`/`oom_score_adj`/`latency_nice` and writing cgroupfs needs |
 | `Nice`, `OOMScoreAdjust` | `-5`, `-999` | Keeps the daemon itself from being starved or OOM-killed while it manages everyone else |
-| `MemoryHigh`, `MemoryMax` | *(unset)*, `64M` | A hard cap on the whole cgroup, 1.6× the measured 39.4M peak, so a runaway allocation is still OOM-killed. **`MemoryHigh` is deliberately absent** — see below |
+| `MemoryHigh`, `MemoryMax` | `48M`, `96M` | A soft line above the working set — 1.40× the 34.4M peak with a default rule set — so reclaim is a response to a leak rather than a permanent state, and a hard cap twice it. A `MemoryHigh` **below** the working set is a throttle, which is what the 16M this replaced was; see below |
 | `ExecReload` | `ananicy-rs --reload` | Configuration reload without dropping events (see below) |
 | `Restart`, `RestartSec` | `always`, `10` | Survives crashes; `SuccessExitStatus=143` (`128 + SIGTERM`) keeps a deliberate stop from being logged as a failure |
 | `StartLimitIntervalSec`, `StartLimitBurst` | `60`, `5` | Stops a restart loop from thrashing the machine |
@@ -142,9 +142,9 @@ The settings not in the table — `PrivateTmp`, `PrivateDevices`, `ProtectHome`,
 `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID` — are stock hardening with
 no daemon-specific reasoning behind it. They are listed in the unit file itself.
 
-### Why there is no `MemoryHigh`
+### Why `MemoryHigh` is 48M and not 16M
 
-The unit used to carry `MemoryHigh=16M` alongside `MemoryMax=64M`, and it produced
+The unit used to carry `MemoryHigh=16M` alongside `MemoryMax=96M`, and it produced
 a permanent I/O storm that had nothing to do with what the daemon does. It is worth
 recording, because `MemoryHigh` looks like a safety limit and is not one: exceeding
 it does not fail anything, it makes the kernel *reclaim*.
@@ -171,26 +171,38 @@ the rule engine or the event rate would not have helped. The other visible sympt
 was start-up: it took minutes rather than seconds, most of it spent faulting in the
 daemon's own text.
 
-`MemoryMax=64M` is 1.6× the peak the daemon reaches, which is worth stating
-precisely because a cap near the peak is safe and a cap below it is not. With a
-default rule set, steady state is 21.4M and the peak is 39.4M, reached in the first
-four minutes and not exceeded afterwards. The peak is roughly `anon` 10.6M, ~11M of
-transient kernel allocation from the BPF load, and ~13M of page cache over 362 rule
-files and the loaded BPF object. The kernel gives the last two back on its own — the
-kernel allocation within the half hour, the cache under any pressure at all — so
-there is room above the peak. Below it, ordinary start-up sits in permanent reclaim,
-with an OOM kill appended.
+That is a `MemoryHigh` *below* the working set, which is the only kind that is
+always wrong. Above it, the setting does the job it exists for — start reclaiming
+before the hard cap, so a leak is survivable rather than fatal. The whole question
+is where the working set is, and for this daemon that is a function of the rule
+count. Measured on a 12-core host, as peak cgroup usage:
 
-A cap below about 48M stops being a cap and becomes a throttle. Raise it for rule
-sets much larger than the default one, and check `ananicy-rs debug memory` before
-changing it.
+| Rules | Peak | |
+|------:|-----:|---|
+| 0 | 29.2 M | the daemon alone: BPF maps, load-time kernel slab, its own text |
+| 15,831 | 34.4 M | the default rule set — **1.40× the soft line** |
+| 30,000 | 39.8 M | |
+| 45,000 | 44.0 M | |
+| **~57,000** | **48 M** | **the soft line is crossed** |
+| 80,000 | 56.2 M | |
 
-The rule set itself was also made cheaper to hold, as a second line of defence: see
-[CONFIGURATION § Memory](./CONFIGURATION.md#memory) for the before and after,
-including the size at which it steps. That is not a substitute for the cap above —
-roughly 29M of the 39.4M peak is the daemon regardless of how many rules there
-are — but it means the cap has a factor of three in it rather than a hair's
-breadth.
+So 48M is chosen for the default rule set, and it has about 3.6× that in hand. Past
+roughly 57,000 rules it is a throttle again, and nothing in a rule file indicates
+you are approaching that. The daemon now says so when it happens — `debug memory`
+reports it, and `--memory-stats` repeats it — which is what the 16M case could not
+do, and is most of why 48M is defensible where 16M was not. Check
+`ananicy-rs debug memory` when it matters.
+
+`MemoryMax=96M` is the hard cap, and the gap between the two is the point: a runaway
+is reclaimed back within 48M of headroom first. Worth knowing that the cap is not a
+self-contained failure — `OOMScoreAdjust=-999` makes this daemon the last candidate
+the OOM killer picks, so reaching it takes some other process rather than this one.
+That is the argument for the soft line being generous.
+
+The rule set's own cost is also far below where it was, which is a second line of
+defence rather than a substitute: see [CONFIGURATION § Memory](./CONFIGURATION.md#memory)
+for the before and after, including the rule count at which it used to step. Roughly
+29M of the peak is the daemon regardless of how many rules there are.
 
 `--memory-stats` reports the same numbers from inside the daemon once a minute, and
 `ananicy-rs debug memory` on demand, so a regression of this kind shows up in the

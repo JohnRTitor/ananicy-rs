@@ -705,7 +705,7 @@ impl Rules {
         // The cache is keyed on the process name, and a process name is the
         // basename of `argv[0]` — which the kernel puts no upper bound on. A
         // single `execve` with a 128 KiB `argv[0]` therefore produces a 128 KiB
-        // key, and 5000 of them is half a gigabyte, against a `MemoryMax=64M` in
+        // key, and 5000 of them is half a gigabyte, against a `MemoryMax=96M` in
         // the shipped unit. A name that long is not a program name and no rule
         // can match it usefully, so it is answered without being remembered. The
         // lookup itself still happens, so the answer is the same either way.
