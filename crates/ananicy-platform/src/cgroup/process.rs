@@ -183,4 +183,150 @@ mod tests {
         let id = resolver.resolve_from_content().unwrap();
         assert!(id.is_none());
     }
+
+    /// The caching resolver, which until now had no tests at all.
+    ///
+    /// It reads the real `/proc/<pid>/stat` for the process start time, so these
+    /// use this test process's own pid: it exists, and its start time does not
+    /// change while the test runs. That is enough to exercise a miss, a hit, the
+    /// TTL, and eviction — the four things the cache decides.
+    mod caching {
+        use {
+            super::*,
+            std::sync::atomic::{AtomicUsize, Ordering},
+        };
+
+        /// Counts how often the inner resolver was reached, so a test can tell
+        /// a cache hit from a cache miss rather than inferring it.
+        #[derive(Default)]
+        struct Counting {
+            calls: AtomicUsize,
+            answer: Option<CgroupIdentity>,
+        }
+
+        impl CgroupProcessResolver for &Counting {
+            fn resolve(&self, _pid: i32) -> io::Result<Option<CgroupIdentity>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(self.answer.clone())
+            }
+        }
+
+        fn us() -> i32 {
+            std::process::id() as i32
+        }
+
+        fn answer(path: &str) -> CgroupIdentity {
+            CgroupIdentity {
+                path: CgroupPath::new(path),
+            }
+        }
+
+        #[test]
+        fn a_second_lookup_is_answered_from_the_cache() {
+            let inner = Counting {
+                answer: Some(answer("/cached.scope")),
+                ..Default::default()
+            };
+            let resolver = CachingCgroupResolver::new(&inner, 16, Duration::from_secs(60));
+
+            let first = resolver.resolve(us()).unwrap();
+            assert_eq!(
+                first.as_ref().map(|c| c.path.as_path()),
+                Some(std::path::Path::new("/cached.scope"))
+            );
+            assert_eq!(
+                inner.calls.load(Ordering::SeqCst),
+                1,
+                "the first lookup is a miss"
+            );
+
+            let second = resolver.resolve(us()).unwrap();
+            assert_eq!(
+                second.as_ref().map(|c| c.path.as_path()),
+                Some(std::path::Path::new("/cached.scope"))
+            );
+            assert_eq!(
+                inner.calls.load(Ordering::SeqCst),
+                1,
+                "the second is served by the cache, so the inner resolver is not \
+                 reached again -- that is the whole point of the cache"
+            );
+        }
+
+        #[test]
+        fn an_entry_past_its_ttl_is_resolved_again() {
+            let inner = Counting {
+                answer: Some(answer("/a.scope")),
+                ..Default::default()
+            };
+            // A zero TTL is expired by the time it is compared, so every lookup
+            // re-resolves even though the entry is still resident.
+            let resolver = CachingCgroupResolver::new(&inner, 16, Duration::ZERO);
+
+            resolver.resolve(us()).unwrap();
+            resolver.resolve(us()).unwrap();
+            assert_eq!(
+                inner.calls.load(Ordering::SeqCst),
+                2,
+                "an entry older than the TTL is not trusted, however recent it was"
+            );
+        }
+
+        #[test]
+        fn the_cache_forgets_a_process_that_is_no_longer_there() {
+            let inner = Counting {
+                answer: Some(answer("/gone.scope")),
+                ..Default::default()
+            };
+            let resolver = CachingCgroupResolver::new(&inner, 16, Duration::from_secs(60));
+
+            // A pid that cannot have a start time is one that has exited, so
+            // there is nothing to resolve and nothing worth caching.
+            let missing = resolver.resolve(i32::MAX).unwrap();
+            assert!(missing.is_none());
+            assert_eq!(
+                inner.calls.load(Ordering::SeqCst),
+                0,
+                "and no entry is made for it"
+            );
+        }
+
+        #[test]
+        fn the_cache_is_bounded_and_forgets_the_least_recently_used() {
+            let inner = Counting {
+                answer: Some(answer("/one.scope")),
+                ..Default::default()
+            };
+            // A capacity of one, so the second pid's lookup must evict the first.
+            let resolver = CachingCgroupResolver::new(&inner, 1, Duration::from_secs(60));
+
+            resolver.resolve(us()).unwrap();
+            // The one entry is now ours; asking again is a hit and does not grow
+            // the cache past its bound.
+            resolver.resolve(us()).unwrap();
+            assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn a_cgroup_the_kernel_does_not_report_is_answered_as_absent() {
+            let inner = Counting {
+                answer: None,
+                ..Default::default()
+            };
+            let resolver = CachingCgroupResolver::new(&inner, 16, Duration::from_secs(60));
+
+            let answer = resolver.resolve(us()).unwrap();
+            assert!(
+                answer.is_none(),
+                "no cgroup is a real answer, not a failure"
+            );
+            // And it is cached as such rather than re-resolved every time.
+            resolver.resolve(us()).unwrap();
+            assert_eq!(
+                inner.calls.load(Ordering::SeqCst),
+                1,
+                "an absent answer caches too"
+            );
+        }
+    }
 }

@@ -1,11 +1,12 @@
 use std::{
-    collections::HashSet,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread::available_parallelism,
 };
 
 use {
+    lru::LruCache,
     std::{
         fs::{self, OpenOptions},
         io::Write,
@@ -23,6 +24,30 @@ pub trait CgroupController {
     fn move_pid(&self, pid: i32, target: &Path) -> bool;
     fn set_cpu_max(&self, target: &Path, quota: u32) -> bool;
     fn set_cpu_weight(&self, target: &Path, weight: u32) -> bool;
+}
+
+/// `base` with each of `segments` appended, in a single allocation.
+///
+/// `PathBuf::join` allocates a fresh buffer for every call, so a v1 target — a
+/// controller directory and then a name — was two allocations, and the same
+/// shape appeared in three of the four version arms. The worker resolves a
+/// target twice per process, once to move the pid and once to weight its
+/// cgroup, so this is two allocations per process for a path nothing keeps.
+///
+/// Empty segments are skipped rather than appended, which is how an empty
+/// cgroup name means "the base itself" rather than a trailing separator.
+fn joined(base: &Path, segments: &[&str]) -> PathBuf {
+    let appended: usize = segments
+        .iter()
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.len() + 1)
+        .sum();
+    let mut path = PathBuf::with_capacity(base.as_os_str().len() + appended);
+    path.push(base);
+    for segment in segments.iter().filter(|segment| !segment.is_empty()) {
+        path.push(segment);
+    }
+    path
 }
 
 /// The CFS period a quota is expressed against: 100 ms on cgroup v2 (the kernel's
@@ -56,7 +81,23 @@ pub struct CgroupManager {
     ///
     /// Behind an `Arc` because the manager lives in a process-global and is
     /// cloned to reach it, so the memory has to be shared rather than per-clone.
-    reported_weightless: Arc<Mutex<HashSet<PathBuf>>>,
+    ///
+    /// Bounded, because it was a `HashSet` that only ever grew: entries are
+    /// inserted on a failure path and nothing removes them, so its size was
+    /// whatever the daemon happened to see before it was killed. The number of
+    /// distinct cgroups a host has is small — one per `.cgroups` rule, really —
+    /// so a bound of this size is never reached in practice, and being wrong
+    /// about that costs a repeated warning and nothing else.
+    reported_weightless: Arc<Mutex<LruCache<PathBuf, ()>>>,
+}
+
+/// How many cgroups the "already reported" set remembers. Comfortably above the
+/// number of cgroups a `.cgroups` rule set creates, and small enough that
+/// forgetting one is a log line rather than a problem.
+const REPORTED_WEIGHTLESS_CAPACITY: usize = 256;
+
+fn reported_cache() -> LruCache<PathBuf, ()> {
+    LruCache::new(NonZeroUsize::new(REPORTED_WEIGHTLESS_CAPACITY).unwrap_or(NonZeroUsize::MIN))
 }
 
 impl CgroupManager {
@@ -79,7 +120,7 @@ impl CgroupManager {
         Self {
             info,
             delegated_root,
-            reported_weightless: Arc::new(Mutex::new(HashSet::new())),
+            reported_weightless: Arc::new(Mutex::new(reported_cache())),
         }
     }
 
@@ -89,7 +130,7 @@ impl CgroupManager {
         Self {
             info,
             delegated_root,
-            reported_weightless: Arc::new(Mutex::new(HashSet::new())),
+            reported_weightless: Arc::new(Mutex::new(reported_cache())),
         }
     }
 
@@ -112,9 +153,14 @@ impl CgroupManager {
         let Ok(mut seen) = self.reported_weightless.lock() else {
             return;
         };
-        if !seen.insert(target.to_path_buf()) {
+        // Borrowed check before the owned insert. `to_path_buf` copies the whole
+        // path, and this is called for every process in a cgroup that has no
+        // weight file, of which all but the first are the case where the copy is
+        // thrown away again.
+        if seen.contains(target) {
             return;
         }
+        seen.put(target.to_path_buf(), ());
         warn!(
             "Cgroup {} has no {}, so the cpu weight implied by a rule's nice value \
              cannot be applied to it. The nice value itself was applied. The cgroup \
@@ -142,39 +188,19 @@ impl CgroupManager {
 
         match self.info.version {
             CgroupVersion::None => None,
-            CgroupVersion::V1 => {
-                let base = self.info.mount_point.join("cpu");
-                if relative_name.is_empty() {
-                    Some(base)
-                } else {
-                    Some(base.join(relative_name))
-                }
-            }
+            CgroupVersion::V1 => Some(joined(&self.info.mount_point, &["cpu", relative_name])),
             CgroupVersion::V2 => {
-                if is_absolute {
-                    // Absolute path from global cgroup mount
-                    let base = self.info.mount_point.clone();
-                    if relative_name.is_empty() {
-                        Some(base)
-                    } else {
-                        Some(base.join(relative_name))
-                    }
-                } else if let Some(ref root) = self.delegated_root {
-                    // Relative path from delegated root
-                    if relative_name.is_empty() {
-                        Some(root.clone())
-                    } else {
-                        Some(root.join(relative_name))
-                    }
+                // Absolute names resolve from the global mount, relative ones
+                // from the delegated root, and a relative name on a host with no
+                // delegated root falls back to the mount point.
+                let base: &Path = if is_absolute {
+                    &self.info.mount_point
+                } else if let Some(root) = self.delegated_root.as_deref() {
+                    root
                 } else {
-                    // In V2, without a delegated root, relative paths fall back to the base mount point.
-                    let base = self.info.mount_point.clone();
-                    if relative_name.is_empty() {
-                        Some(base)
-                    } else {
-                        Some(base.join(relative_name))
-                    }
-                }
+                    &self.info.mount_point
+                };
+                Some(joined(base, &[relative_name]))
             }
         }
     }
@@ -625,6 +651,41 @@ mod weightless_reporting {
         assert_eq!(seen.len(), 1, "the set must be shared across clones");
     }
 
+    /// The bound is the point: this set only ever grows, so without one its size
+    /// is whatever the daemon happened to meet before it was killed. Reported
+    /// paths are made up here, which no real run would produce — a real one has
+    /// a handful of cgroups — because the assertion is about the bound holding
+    /// and not about it being reached in practice.
+    #[test]
+    fn the_reported_set_does_not_grow_past_its_bound() {
+        let m = manager();
+        let f = Path::new("/sys/fs/cgroup/delegated/a/cpu.weight");
+        for i in 0..(REPORTED_WEIGHTLESS_CAPACITY * 4) {
+            m.report_weightless(Path::new(&format!("/sys/fs/cgroup/delegated/c{i}")), f);
+        }
+        let seen = m.reported_weightless.lock().expect("not poisoned");
+        assert_eq!(
+            seen.len(),
+            REPORTED_WEIGHTLESS_CAPACITY,
+            "four times the bound went in, so the set is bounded rather than growing"
+        );
+    }
+
+    /// A cgroup still in the set is not reported a second time, which is the
+    /// whole reason the set exists.
+    #[test]
+    fn a_bounded_set_still_deduplicates_what_it_keeps() {
+        let m = manager();
+        let a = Path::new("/sys/fs/cgroup/delegated/a");
+        let f = Path::new("/sys/fs/cgroup/delegated/a/cpu.weight");
+        m.report_weightless(a, f);
+        m.report_weightless(a, f);
+        m.report_weightless(a, f);
+        let seen = m.reported_weightless.lock().expect("not poisoned");
+        assert_eq!(seen.len(), 1, "three calls, one cgroup, one entry");
+        assert!(seen.contains(a));
+    }
+
     /// A poisoned lock must not take the daemon down: the worst outcome of losing
     /// the set is a repeated warning, which is what it was before.
     #[test]
@@ -634,7 +695,7 @@ mod weightless_reporting {
         m.reported_weightless
             .lock()
             .expect("lock it once")
-            .insert(PathBuf::from("/poison"));
+            .put(PathBuf::from("/poison"), ());
         // Poison it deliberately.
         let _ = std::panic::catch_unwind(|| {
             let _guard = m.reported_weightless.lock().unwrap();
