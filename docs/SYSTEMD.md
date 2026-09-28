@@ -200,9 +200,9 @@ the OOM killer picks, so reaching it takes some other process rather than this o
 That is the argument for the soft line being generous.
 
 The rule set's own cost is also far below where it was, which is a second line of
-defence rather than a substitute: see [CONFIGURATION § Memory](./CONFIGURATION.md#memory)
-for the before and after, including the rule count at which it used to step. Roughly
-29M of the peak is the daemon regardless of how many rules there are.
+defence rather than a substitute: [Memory](./MEMORY.md) has the rule-count table,
+including the size at which it steps, and what to check on your own machine.
+Roughly 29M of the peak is the daemon regardless of how many rules there are.
 
 `--memory-stats` reports the same numbers from inside the daemon once a minute, and
 `ananicy-rs debug memory` on demand, so a regression of this kind shows up in the

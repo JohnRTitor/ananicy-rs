@@ -200,58 +200,11 @@ Loading continues past both, so one bad line does not cost you the rest of the f
 - `oom_score_adj: [-1000..1000]`: Adjust the Out Of Memory killer score. Negative values decrease the score, making it *less* likely to be killed. Use for critical programs. (`ananicy-cpp` documents the range as `[-999, 999]`; the kernel accepts `-1000`, and the daemon writes the value to `/proc/<pid>/oom_score_adj` unchanged, so the kernel is the one that rejects anything outside its own range.)
 - `cpuset`: Pin the process to the specified CPU cores using Linux cpuset notation. Accepts ranges (`0-7`), comma-separated lists (`0,2,4`), mixed (`0-3,8-11`), or [Named Aliases (Topology)](./TOPOLOGY.md).
 - `cgroup`: Put the process in the specified cgroup.
-- `type`: Set the type of the rule. All options defined in the type will be used as if written explicitly in the rule, although you can override each option if needed.
+- `type`: Set the type of the rule. All options defined in the type will be used as if written explicitly in the rule, although you can override each option if needed. An attribute written with nothing usable in it — `null`, or a number written as a string — *suppresses* the value its type would otherwise supply rather than inheriting it, so `{"name": "x", "type": "T", "nice": null}` is a rule that does not set `nice`. That is what an RFC 7396 merge of the rule onto `T` gives, and what `ananicy-cpp` does.
 
-An attribute written with nothing usable in it — `null`, or a number written as a
-string — *suppresses* the value its type would otherwise supply, rather than
-inheriting it. `{"name": "x", "type": "T", "nice": null}` is a rule that does not
-set `nice`, which is what an RFC 7396 merge of the rule onto `T` gives and is what
-`ananicy-cpp` does.
+A key this daemon does not implement is kept with the rule and reported by `dump rules` rather than dropped, so a rule set that uses one is not reported as though it had never been written. It is not applied, and it is not counted as a reason the rule did nothing.
 
-Attributes this daemon does not implement are kept and reported: they are not
-applied, and they are neither lost from `dump rules` nor counted as the reason a
-rule did nothing. `name_regex` is one of them in the sense that it is a matching
-directive rather than a tunable, but it is kept with the rule so that a report of
-the rule describes the rule as written.
-
-### Memory
-
-A rule is 176 bytes of fixed-size fields, and the names it shares with other
-rules — its `type`, `ioclass`, `sched`, `cgroup` and `cpuset` — are one
-allocation between all the rules that use them rather than one each. The rules
-live in one contiguous `Vec` and the map that finds them holds a `u32` index, not
-the rule, so a bucket is 28 bytes rather than 200.
-
-Measured against a synthetic rule set, on the same machine and the same build,
-as peak RSS:
-
-| Rules | As `Value` per rule | Rules in the map | Rules in a `Vec` |
-|------:|-------------------:|-----------------:|----------------:|
-| 15,831 | 24.0 MB | 15.6 MB | **10.4 MB** |
-| 30,000 | — | 26.7 MB | **15.4 MB** |
-| 60,000 | — | 49.3 MB | **26.7 MB** |
-| 120,000 | — | — | **49.4 MB** |
-
-The index matters more than it looks, because a hash map's bucket count is the
-next power of two above `count * 8/7`. With the rules in the map, every bucket
-carries 200 bytes, so the set cost steps: **28,673 rules cost 10.7 MB more than
-28,670**, and 57,345 cost 21.2 MB more than 57,342. With the rules in a `Vec` the
-same three rules cost 1.2 MB and 3.1 MB. Nothing about a rule set makes the
-boundary visible, so a user who crosses it sees memory double for no reason.
-
-None of this is an optimisation for its own sake. The original version held each
-rule as a `serde_json::Value`, which put the working set above the `MemoryHigh`
-the shipped unit carried; the kernel then reclaimed the daemon's own pages
-continuously and the daemon spent its life re-reading itself from disk. See
-[SYSTEMD § Why `MemoryHigh` is 48M and not 16M](./SYSTEMD.md#why-memoryhigh-is-48m-and-not-16m)
-for those measurements.
-
-What all of this scales with is **the number of rules**, not the size of the rule
-set on disk — 2.1 MB of files and 15,831 rules are 10.4 MB of memory, and the
-files themselves are page cache the kernel will reclaim under any pressure.
-Sizing a `MemoryMax` therefore means measuring: the daemon's own fixed cost is
-about 29 MB of a 39.4 MB peak, and the rest is the rule set. `ananicy-rs debug
-memory` reports the current figures.
+What a large rule set costs, and how to check what yours costs, is in [Memory](./MEMORY.md).
 
 ## Types (`*.types`)
 

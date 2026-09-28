@@ -15,6 +15,7 @@ It operates by loading rules for known applications and listening to process cre
 Comprehensive documentation is available in the `docs/` directory:
 
 - **[Configuration and Rules](docs/CONFIGURATION.md)**: How to configure the daemon, write rules, types, and cgroup specifications.
+- **[Memory](docs/MEMORY.md)**: What the daemon's memory goes on, how rule-set size scales against it, and how to measure your own.
 - **[CLI and Usage](docs/CLI.md)**: How to run the daemon, command-line arguments, and systemd integration.
 - **[systemd Reference](docs/SYSTEMD.md)**: How systemd supervises a service, what it hands to a process, cgroup v2 delegation, and what the shipped unit's hardening does.
 - **[CPU Topology and Affinity](docs/TOPOLOGY.md)**: Details on CPU pinning, `big.LITTLE` detection, and AMD X3D support.
