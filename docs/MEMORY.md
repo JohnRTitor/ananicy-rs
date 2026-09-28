@@ -23,15 +23,11 @@ pressure at all, so the count is what matters and the disk size is not.
 
 ## Why the count matters more than the bytes
 
-A rule is 176 bytes of fixed-size fields, and the names it shares with other
-rules — its `type`, `ioclass`, `sched`, `cgroup` and `cpuset` — are one
-allocation between all the rules naming the same thing rather than one each. The
+A rule is 72 bytes of fixed-size fields, and the five names it carries — its
+`type`, `ioclass`, `sched`, `cgroup` and `cpuset` — are two bytes each, so a
+rule set pays for a couple of dozen distinct names once rather than per rule. The
 rules live in one contiguous `Vec`, and the map that finds them holds a `u32`
 index rather than the rule, so a bucket is 28 bytes.
-
-That sharing is not free and not automatic: it holds because the loader resolves
-each type once and every rule that inherits it takes a reference to the same
-string. The next section says what happens when it does not.
 
 Measured on a 12-core host, same machine and same build, as peak RSS:
 
@@ -41,6 +37,9 @@ Measured on a 12-core host, same machine and same build, as peak RSS:
 | 30,000 | — | 26.7 MB | **15.4 MB** |
 | 60,000 | — | 49.3 MB | **26.7 MB** |
 | 120,000 | — | — | **49.4 MB** |
+
+Those figures predate the changes below and are left as they were measured. The
+rule set's own cost has since come down by half; see § What the names cost.
 
 The index matters more than its size suggests, because a hash map's bucket count
 is the next power of two above `count * 8/7`. With the rules in the map, every
@@ -63,49 +62,54 @@ The current numbers are worth putting next to a cap. Against the unit's
 crossed at roughly **57,000 rules**, about 3.6× the default set. Game rule sets
 grow, and `extraRules` can cross that without anyone noticing.
 
-## What the names cost, which is not what 176 bytes says
+## What the names cost, which is not what the struct size says
 
-176 bytes is the `Rule` struct. It is not what a rule set keeps, because a rule
-also points at its type name, and the four name fields an inherited rule carries
-point at strings every other rule with the same type points at too.
+A `Rule` is 72 bytes. That number was 176, and the difference is 96 bytes of
+names that a rule set of any size shares: four `Option<Option<Arc<str>>>` at 24
+bytes each, holding a few dozen distinct values across fifteen thousand rules.
+Twenty-four rather than sixteen because the inner `Option` spends the
+null-pointer niche and the outer one needs a discriminant of its own.
 
-That is only true if they point at the *same* string. They do — the loader
-resolves each type once and `inherit` copies references, not contents — but this
-was not always so, and the difference is worth recording because it is invisible
-from the struct size and from peak RSS.
-
-Resolving the type inside the per-rule loop, which is what the loader used to do,
-made every rule's `ioclass` and `sched` its own private allocation: the string
-was parsed afresh per rule, so the `Arc` each rule ended up holding was
-referenced by exactly one rule. A 15,831-rule set drew on two distinct values and
-made 31,662 allocations for them.
-
-Counting live heap across a full load, before and after:
+They are two-byte indices into a process-wide table now, `type_name` included.
+Counting live heap across a full load:
 
 | | Rules | Live bytes | Live allocations | Per rule |
 |---|---:|---:|---:|---:|
-| Type resolved per rule | 15,831 | 5,243,345 | 63,479 | 4.01 allocations |
-| Type resolved once | 15,831 | 4,483,505 | 31,819 | 2.01 allocations |
-| **Difference** | | **−759,840 (−14.5%)** | **−31,660** | **−2** |
-| Type resolved per rule | 120,000 | 40,391,580 | 480,136 | 4.00 allocations |
-| Type resolved once | 120,000 | 34,631,628 | 240,138 | 2.00 allocations |
-| **Difference** | | **−5,759,952 (−14.3%)** | **−239,998** | **−2** |
+| 176-byte rule, type resolved per rule | 15,831 | 5,243,345 | 63,479 | 331 B, 4.01 allocs |
+| 176-byte rule, type resolved once | 15,831 | 4,483,505 | 31,819 | 283 B, 2.01 allocs |
+| 168-byte rule (`extras` boxed) | 15,831 | 4,352,433 | 31,819 | 275 B, 2.01 allocs |
+| **72-byte rule (names interned)** | **15,831** | **2,654,357** | **16,007** | **168 B, 1.01 allocs** |
+| | | **−49.4%** | **−74.8%** | |
+| 176-byte rule, type resolved per rule | 120,000 | 40,391,580 | 480,136 | 337 B, 4.00 allocs |
+| **72-byte rule (names interned)** | **120,000** | **20,041,576** | **120,157** | **167 B, 1.00 allocs** |
+| | | **−50.4%** | **−75.0%** | |
 
-Two allocations and 48 bytes per rule, at every scale, for strings a handful of
-distinct values cover.
+The remaining allocation per rule is the rule's own name, which is the key of
+the map that finds it and has to be stored. The remaining bytes are the `Vec` of
+rules and that map's buckets.
 
-**Peak RSS does not show this.** It moved by 260 kB on the 15,831-rule set, not
-760 kB, because the peak is set by the transient work of loading — the 712 kB
-file read, a parsed JSON document per line — and the allocator hands those freed
-chunks straight back to the live allocations. A freed-then-reused page was
+Two of those rows were the same bug found twice. The middle one is a separate
+defect from the interning: the loader resolved each type *inside* the per-rule
+loop, and `from_json` allocates a fresh `Arc<str>` for every name it reads, so
+every rule inherited a private copy of a string fifteen thousand rules share. It
+was invisible from the struct size and invisible in peak RSS, and it was worth
+14.5% of the rule set on its own.
+
+**Peak RSS shows almost none of this.** The 15,831-rule set moved 260 kB of peak
+RSS for the 760 kB that the type fix removed, and the interning is similarly
+invisible there, because the peak is set by the transient work of loading — the
+712 kB file read, a parsed JSON document per line — and the allocator hands those
+freed chunks straight to the live allocations. A freed-then-reused page was
 already resident. If you are looking for this class of change, count live bytes
 with a `GlobalAlloc`; RSS answers a different question, and the one it answers
 well is the fixed cost above.
 
+`a_rule_is_the_size_the_memory_budget_assumes` pins the struct size, and
 `rules_inheriting_one_type_share_its_names` and
-`a_cgroup_name_inherited_from_a_type_is_shared_too` assert the `Arc` reference
-counts directly, so a return to per-rule resolution fails the suite rather than
-quietly costing 48 bytes a rule.
+`an_attribute_of_the_wrong_type_is_declared_but_not_usable` hold the two
+properties the interning has to keep: names the rules share resolve to the same
+index, and a name declared with nothing usable in it stays distinct from one the
+rule said nothing about, or `"ioclass": null` stops suppressing the type's value.
 
 ## Finding out on your own machine
 

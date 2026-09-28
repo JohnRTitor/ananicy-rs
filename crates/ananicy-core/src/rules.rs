@@ -21,30 +21,208 @@ use {
 /// state into the first would silently re-apply the type's value to a rule that
 /// asked for none.
 ///
-/// It costs nothing: `Option<Option<T>>` is the same size as `Option<i32>` and
-/// the same size as `Option<Arc<str>>`, because `None` is a niche in both.
+/// For a number it costs nothing: `Option<Option<i32>>` is the same size as
+/// `Option<i32>`, because the inner `Option`'s tag leaves a niche the outer one
+/// uses. For a name it did cost something — `Option<Option<Arc<str>>>` is 24
+/// bytes, not the 16 that `Option<Arc<str>>` is, because the inner `Option`
+/// spends the null-pointer niche and the outer one needs a discriminant of its
+/// own. Four of those was 96 bytes of a rule's 168. [`NameAttribute`] is the same
+/// three states in two.
 pub type Attribute<T> = Option<Option<T>>;
+
+/// The first index that names a value; below it are the two non-value states.
+const NAME_FIRST_VALUE: u16 = 2;
+
+/// A name a rule can carry, as an index into a process-wide table.
+///
+/// `ioclass`, `sched`, `cgroup` and `cpuset` are drawn from a few dozen distinct
+/// values across a rule set of any size, and each was a 24-byte
+/// `Option<Option<Arc<str>>>`. A default rule set spends 96 of its 168 bytes per
+/// rule naming a handful of things. This is the same three states — absent,
+/// declared with nothing usable in it, and a value — in two bytes.
+///
+/// Copy, and the table is never pruned, so a rule can hold one without a
+/// lifetime and the accessors can keep handing out `&'static str`. See
+/// [`NAME_TABLE`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct NameAttribute(u16);
+
+impl NameAttribute {
+    /// The key was not in the rule file at all.
+    pub const fn absent() -> Self {
+        Self(0)
+    }
+
+    /// The key was in the rule file with nothing usable in it, which is a
+    /// decision: it suppresses whatever a type would have supplied.
+    pub const fn unusable() -> Self {
+        Self(1)
+    }
+
+    /// Interns `name` and returns the attribute that names it.
+    fn intern(name: &str) -> Self {
+        Self(NAME_TABLE.intern(name))
+    }
+
+    /// Whether the rule file said nothing about this key.
+    ///
+    /// The distinction this preserves is between "absent" and "declared
+    /// unusable", and only inheritance needs it: a rule that wrote `"ioclass":
+    /// null` must keep that rather than take its type's value.
+    pub const fn is_absent(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The name, or `None` for either of the two states that are not a value.
+    ///
+    /// Absent and declared-unusable both answer `None` here, exactly as
+    /// `Attribute::flatten` answered `None` for both. The difference between
+    /// them is only visible to [`Rule::inherit`] and [`Rule::to_json`].
+    pub fn as_str(self) -> Option<&'static str> {
+        match self.0 {
+            0 | 1 => None,
+            n => NAME_TABLE.get((n - NAME_FIRST_VALUE) as usize),
+        }
+    }
+}
+
+/// A type name, as an index into the process-wide name table.
+///
+/// The two-state counterpart to [`NameAttribute`]: a `type` is either a string
+/// the rule file wrote, which names a type, or it is absent, or it is something
+/// else entirely — and something else was already recorded as "no type" rather
+/// than as a declared-but-unusable one, because a type is looked up rather than
+/// applied. Zero means "this rule names no type".
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct TypeNameId(u16);
+
+impl TypeNameId {
+    fn intern(name: &str) -> Self {
+        // The table numbers from 2 (0 and 1 are the two non-value states a
+        // `NameAttribute` needs), and this shifts down by one so that 0 can mean
+        // "names no type" without colliding with a real entry.
+        Self(NAME_TABLE.intern(name) - 1)
+    }
+
+    pub fn as_str(self) -> Option<&'static str> {
+        match self.0 {
+            0 => None,
+            // Back up into the table's own numbering before indexing it.
+            n => NAME_TABLE.get((n - 1) as usize),
+        }
+    }
+
+    pub fn is_none(self) -> bool {
+        self.0 == 0
+    }
+}
+
+/// Every distinct name any rule in this process has carried.
+///
+/// Process-wide, and never pruned, which is what lets a [`NameAttribute`] be a
+/// `Copy` index that stays valid after the rule set that made it is gone — the
+/// accessors then return `&'static str` and no signature changes.
+///
+/// The cost is that a name interned by a rule set that has since been reloaded
+/// away is not freed. That is bounded by the number of *distinct* names ever
+/// seen rather than by the number of rules or reloads, so an operator editing a
+/// cgroup name on every reload accumulates one entry each time: a few dozen
+/// bytes, against a rule set measured in megabytes. Pruning it would mean
+/// reference counting every field of every rule to know when the last one went,
+/// which is not worth the complexity for that.
+///
+/// Loading is single-threaded, so the writes below do not contend in practice;
+/// they are locked because `load_rule_from_string` is public.
+static NAME_TABLE: std::sync::LazyLock<NameTable> = std::sync::LazyLock::new(NameTable::default);
+
+#[derive(Default)]
+struct NameTable {
+    values: RwLock<Vec<&'static str>>,
+    index: RwLock<HashMap<&'static str, u16>>,
+}
+
+impl NameTable {
+    fn intern(&self, name: &str) -> u16 {
+        if let Some(&found) = self
+            .index
+            .read()
+            .expect("the name index is not poisoned")
+            .get(name)
+        {
+            return found;
+        }
+
+        let mut values = self.values.write().expect("the name table is not poisoned");
+        // Re-checked under the write lock: two threads loading at once would
+        // otherwise both see a miss and both append.
+        if let Some(&found) = self
+            .index
+            .read()
+            .expect("the name index is not poisoned")
+            .get(name)
+        {
+            return found;
+        }
+
+        // The two lowest indices are the states that are not values, so a table
+        // entry starts at two.
+        let id = NAME_FIRST_VALUE as usize + values.len();
+        if id > u16::MAX as usize {
+            // 65,533 distinct names in one process. A rule set holding that
+            // many distinct ioclasses, scheds, cgroups and cpusets is far larger
+            // than the memory this saves, and it cannot be reached by accident.
+            // Said once, and the name is recorded as declared-but-unusable
+            // rather than silently dropped or silently becoming the value.
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                error!(
+                    "The rule name table is full; names past this point are recorded as unusable"
+                )
+            });
+            return 1;
+        }
+
+        // Leaked rather than owned by the table's `values`, so that the
+        // `HashMap` key and the stored `&'static str` are the same pointer and
+        // no second copy of the name is kept. See the type's documentation for
+        // why nothing is ever freed.
+        let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+        values.push(leaked);
+        self.index
+            .write()
+            .expect("the name index is not poisoned")
+            .insert(leaked, id as u16);
+        id as u16
+    }
+
+    fn get(&self, id: usize) -> Option<&'static str> {
+        self.values
+            .read()
+            .expect("the name table is not poisoned")
+            .get(id)
+            .copied()
+    }
+}
 
 /// A program rule, resolved against its type.
 ///
 /// A rule used to be held as a `serde_json::Value`, which is a `BTreeMap` whose
 /// node is roughly 700 bytes however few keys it holds -- about 1.2 KB for a
 /// `{"name":..., "type":...}` rule, times fifteen thousand. The typed fields
-/// below make that 176 bytes, with the five names shared as one allocation
-/// between every rule that uses the same one. See `docs/CONFIGURATION.md`
-/// § Memory.
+/// below make that 72 bytes. See `docs/CONFIGURATION.md` § Memory.
 ///
-/// The five names are `Attribute<Arc<str>>` at 24 bytes each, which is 96 of the
-/// 176 — and 24 rather than 16 because the inner `Option` spends the
-/// null-pointer niche and the outer one needs a discriminant of its own. They
-/// hold a few dozen distinct values across fifteen thousand rules, which is why
-/// interning them to indices is the obvious next reduction.
+/// The five names it carries — its `type`, `ioclass`, `sched`, `cgroup` and
+/// `cpuset` — were 96 of that, as `Option<Option<Arc<str>>>` at 24 bytes each,
+/// holding a few dozen distinct values across fifteen thousand rules. They are
+/// [`NameAttribute`]s and a [`TypeNameId`] now, two bytes each, addressed
+/// through [`NAME_TABLE`]. The accessors still hand out `&str`, and `to_json`
+/// still produces the same document, so nothing a caller can observe moved.
 ///
-/// The sharing is real rather than aspirational, and it is load-bearing for the
-/// footprint: `precompute_inheritance` resolves each type once so that every rule
-/// inheriting it references one string. Resolving per rule gives each its own
-/// private allocation, for two extra 32-byte chunks per rule. `docs/MEMORY.md`
-/// § What the names cost has the measurement.
+/// Two properties the representation has to keep, both of which have a test
+/// here. A name the rules share must resolve to the same index, or the sharing
+/// is gone; and a name a rule declared with nothing usable in it must stay
+/// distinct from one it said nothing about, or `"ioclass": null` stops
+/// suppressing the value its type would have supplied.
 ///
 /// What these bytes cost depends on where they are put, which is why they are in
 /// a `Vec` and not in the map that finds them. A hash map's bucket count is the
@@ -58,7 +236,15 @@ pub type Attribute<T> = Option<Option<T>>;
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Rule {
     /// The type this rule inherited from, kept for `dump rules` to report.
-    pub type_name: Option<Box<str>>,
+    ///
+    /// Interned like the four names, and for the same reason: a default rule set
+    /// draws on a couple of dozen distinct type names across fifteen thousand
+    /// rules, and this was the last owned string in the struct at sixteen bytes.
+    ///
+    /// Two states rather than three, because a `type` that is not a string was
+    /// already `None` here and never had the middle one — a rule either names a
+    /// type or does not. Zero means absent; anything else indexes [`NAME_TABLE`].
+    pub type_name: TypeNameId,
     /// `nice`. `-20..=19` on any real system, stored wider so that a rule
     /// carrying a value outside that is clamped by the kernel rather than
     /// wrapping here into a value the author did not write.
@@ -66,22 +252,27 @@ pub struct Rule {
     /// `latency_nice`, which falls back to `nice` when the rule does not say.
     pub latency_nice: Attribute<i32>,
     /// `ioclass`, one of the class names `ionice_get` reports.
-    pub ioclass: Attribute<Arc<str>>,
+    pub ioclass: NameAttribute,
     /// `ionice`, the priority within that class.
     pub ionice: Attribute<i32>,
     /// `sched`, a policy name.
-    pub sched: Attribute<Arc<str>>,
+    pub sched: NameAttribute,
     /// `rtprio`, the priority for a realtime policy.
     pub rtprio: Attribute<u32>,
     /// `oom_score_adj`.
     pub oom_score_adj: Attribute<i32>,
     /// `cgroup`, the name of a cgroup a `.cgroups` rule creates.
-    pub cgroup: Attribute<Arc<str>>,
+    pub cgroup: NameAttribute,
     /// `cpuset`, either a CPU list or an alias the topology resolves.
-    pub cpuset: Attribute<Arc<str>>,
+    pub cpuset: NameAttribute,
     /// Keys this daemon does not implement, kept verbatim so `dump rules` stays
     /// a faithful report of what is on disk.
-    pub extras: Vec<(Box<str>, Value)>,
+    ///
+    /// A boxed slice rather than a `Vec`: nothing appends to this after the rule
+    /// is built, so the capacity a `Vec` carries is eight bytes per rule that
+    /// never gets used — and it is empty for every rule in the shipped set, so
+    /// an empty `Box<[T]>` costs no allocation at all.
+    pub extras: Box<[(Box<str>, Value)]>,
 }
 
 /// Declares a resolved-value accessor for a numeric attribute.
@@ -104,15 +295,16 @@ macro_rules! numeric_accessor {
 
 /// Declares a resolved-value accessor for an attribute that is a name.
 ///
-/// Returns a borrow rather than a clone: the `Rc` is shared with the rule, and
-/// every caller wants to compare it or read it, not to own it.
+/// Returns a borrow rather than a clone: the name lives once in
+/// [`NAME_TABLE`] however many rules name it, and every caller wants to compare
+/// it or read it, not to own it.
 macro_rules! name_accessor {
     ($($(#[$meta:meta])* $name:ident : $field:ident),* $(,)?) => {
         impl Rule {
             $(
                 $(#[$meta])*
                 pub fn $name(&self) -> Option<&str> {
-                    self.$field.as_ref().and_then(|name| name.as_deref())
+                    self.$field.as_str()
                 }
             )*
         }
@@ -128,11 +320,11 @@ impl Rule {
     /// also an implemented one is recorded in both, because the implemented one
     /// is what applies and the other is what `dump rules` has to show.
     fn from_json(value: &Value) -> Self {
-        let string = |key: &str| -> Attribute<Arc<str>> {
+        let string = |key: &str| -> NameAttribute {
             match value.get(key) {
-                None => None,
-                Some(Value::String(text)) => Some(Some(Arc::from(text.as_str()))),
-                Some(_) => Some(None),
+                None => NameAttribute::absent(),
+                Some(Value::String(text)) => NameAttribute::intern(text),
+                Some(_) => NameAttribute::unusable(),
             }
         };
         let number = |key: &str| -> Attribute<i32> {
@@ -163,7 +355,7 @@ impl Rule {
             "cpuset",
         ];
 
-        let extras = value
+        let extras: Box<[(Box<str>, Value)]> = value
             .as_object()
             .map(|object| {
                 object
@@ -175,7 +367,10 @@ impl Rule {
             .unwrap_or_default();
 
         Rule {
-            type_name: value.get("type").and_then(Value::as_str).map(Box::from),
+            type_name: value
+                .get("type")
+                .and_then(Value::as_str)
+                .map_or_else(TypeNameId::default, TypeNameId::intern),
             nice: number("nice"),
             latency_nice: number("latency_nice"),
             ioclass: string("ioclass"),
@@ -203,7 +398,21 @@ impl Rule {
     /// `type_name` is the one field that is not overlaid: the rule's own is the
     /// one that is reported, and the type's is not a thing anybody asks about.
     fn inherit(&mut self, base: &Rule) {
-        macro_rules! overlay {
+        // A `NameAttribute` is only overlaid when the rule said nothing at all.
+        // A key the rule declared with nothing usable in it keeps that, which is
+        // what lets `"ioclass": null` suppress the type's value. The numbers use
+        // `is_none()`, which for `Attribute<T>` means the outer `Option` is
+        // `None` — the same "said nothing" test.
+        macro_rules! overlay_name {
+            ($($field:ident),* $(,)?) => {
+                $(
+                    if self.$field.is_absent() {
+                        self.$field = base.$field;
+                    }
+                )*
+            };
+        }
+        macro_rules! overlay_value {
             ($($field:ident),* $(,)?) => {
                 $(
                     if self.$field.is_none() {
@@ -212,17 +421,8 @@ impl Rule {
                 )*
             };
         }
-        overlay!(
-            nice,
-            latency_nice,
-            ioclass,
-            ionice,
-            sched,
-            rtprio,
-            oom_score_adj,
-            cgroup,
-            cpuset,
-        );
+        overlay_value!(nice, latency_nice, ionice, rtprio, oom_score_adj);
+        overlay_name!(ioclass, sched, cgroup, cpuset);
     }
 
     /// The JSON this rule reports as, which is what `dump rules` prints.
@@ -242,25 +442,30 @@ impl Rule {
         let mut object = serde_json::Map::new();
         object.insert("name".into(), Value::String(name.to_string()));
 
-        if let Some(type_name) = &self.type_name {
+        if let Some(type_name) = self.type_name.as_str() {
             object.insert("type".into(), Value::String(type_name.to_string()));
         }
+
+        // A name attribute carries its own "the key was declared" state now that
+        // it is no longer an `Option` wrapped around the value. Absent
+        // contributes nothing to the loop, which is what `Option::map` arranged
+        // before.
         for (key, attribute) in [
             ("nice", self.nice.as_ref().map(|v| json_of_i32(*v))),
             (
                 "latency_nice",
                 self.latency_nice.as_ref().map(|v| json_of_i32(*v)),
             ),
-            ("ioclass", self.ioclass.as_ref().map(json_of_str)),
+            ("ioclass", if_declared(&self.ioclass).map(json_of_name)),
             ("ionice", self.ionice.as_ref().map(|v| json_of_i32(*v))),
-            ("sched", self.sched.as_ref().map(json_of_str)),
+            ("sched", if_declared(&self.sched).map(json_of_name)),
             ("rtprio", self.rtprio.as_ref().map(|v| json_of_u32(*v))),
             (
                 "oom_score_adj",
                 self.oom_score_adj.as_ref().map(|v| json_of_i32(*v)),
             ),
-            ("cgroup", self.cgroup.as_ref().map(json_of_str)),
-            ("cpuset", self.cpuset.as_ref().map(json_of_str)),
+            ("cgroup", if_declared(&self.cgroup).map(json_of_name)),
+            ("cpuset", if_declared(&self.cpuset).map(json_of_name)),
         ] {
             if let Some(value) = attribute {
                 object.insert(key.into(), value.clone());
@@ -282,10 +487,28 @@ fn json_of_u32(value: Option<u32>) -> Value {
     value.map_or(Value::Null, Value::from)
 }
 
-fn json_of_str(value: &Option<Arc<str>>) -> Value {
-    value
-        .as_ref()
-        .map_or(Value::Null, |value| Value::String(value.to_string()))
+/// A declared name as the dump reports it: the value, or `null` for a key the
+/// rule wrote with nothing usable in it.
+///
+/// The caller only reaches this for a key that was declared, so "absent" is not
+/// a case here — it never got this far.
+fn json_of_name(attribute: &NameAttribute) -> Value {
+    attribute
+        .as_str()
+        .map_or(Value::Null, |name| Value::String(name.to_string()))
+}
+
+/// The attribute, if the rule file said anything at all about that key.
+///
+/// A name is a `NameAttribute` rather than an `Option`, and this is the
+/// `Option` the old field type gave for free: `None` for a key that was absent,
+/// which the loop below skips exactly as it skipped the un-wrapped case.
+fn if_declared(attribute: &NameAttribute) -> Option<&NameAttribute> {
+    if attribute.is_absent() {
+        None
+    } else {
+        Some(attribute)
+    }
 }
 
 numeric_accessor! {
@@ -351,6 +574,11 @@ struct Matcher {
     /// The `name` of the program rule this pattern belongs to. Held so a failure
     /// can name the rule it came from; the pattern's own source is also kept by
     /// the engine, for the same purpose.
+    ///
+    /// Kept as the name rather than as the rule's index in `rules`: the failure
+    /// report below needs the name, and the index would have to be looked back up
+    /// to produce it. A rule set carries a handful of `name_regex` rules, so
+    /// there are a handful of these.
     name: String,
 }
 
@@ -541,7 +769,7 @@ impl Rules {
                 // The type's own `type` key is not inherited: the rule reports
                 // the type it named, and a type cannot itself inherit from a
                 // type.
-                base.type_name = None;
+                base.type_name = TypeNameId::default();
                 (name.as_ref(), base)
             })
             .collect();
@@ -550,7 +778,7 @@ impl Rules {
             // Borrowed, not cloned: the key is the rule's own `type_name`, and
             // building a `TypeName` to look it up would allocate once per rule
             // for a lookup that answers with the type it already names.
-            let Some(type_name) = rule.type_name.as_deref() else {
+            let Some(type_name) = rule.type_name.as_str() else {
                 continue;
             };
             let Some(base) = bases.get(type_name) else {
@@ -860,19 +1088,22 @@ mod rule {
     /// The exact size `docs/MEMORY.md` reasons about, pinned so a change to the
     /// layout is a deliberate one rather than something the budget notices.
     ///
-    /// The ceiling above is a guard rail; this is the number. 176 is
-    /// `Option<Box<str>>` (16) + three `Option<Option<i32>>` (24) + four
-    /// `Option<Option<Arc<str>>>` (96) + `Vec` (24) + one more `Option<Option<i32>>`
-    /// (8) — and the 96 is the interesting part: the inner `Option` spends the
-    /// null-pointer niche, so the outer one needs a real discriminant and the
-    /// pair is 24 bytes rather than 16. Interning the four names to indices is
-    /// what would take this to 84.
+    /// The ceiling above is a guard rail; this is the number. It was 176 while
+    /// the four names were `Option<Option<Arc<str>>>` at 24 bytes each, which
+    /// is 96 of the struct for a few dozen distinct values — the inner `Option`
+    /// spends the null-pointer niche, so the outer one needs a discriminant of
+    /// its own. They are [`NameAttribute`]s now, two bytes each, packed into
+    /// eight alongside the numbers, and `type_name` is a [`TypeNameId`] rather
+    /// than an owned `Box<str>`.
+    ///
+    /// 72 is five `Option<Option<i32>>` (40) + four `NameAttribute` (8) +
+    /// `TypeNameId` (2) + `Box<[(Box<str>, Value)]>` (16), plus padding.
     #[test]
     fn a_rule_is_the_size_the_memory_budget_assumes() {
         assert_eq!(
             std::mem::size_of::<Rule>(),
-            176,
-            "docs/MEMORY.md budgets 176 bytes per rule; if this changed, that \
+            72,
+            "docs/MEMORY.md budgets this per rule; if it changed, that \
              document's numbers and any plan built on them need re-deriving"
         );
     }
@@ -996,34 +1227,28 @@ mod rule {
     /// sharing.
     #[test]
     fn a_shared_name_is_one_allocation() {
-        let value: Arc<str> = Arc::from("Doc-View");
-        let mut rule = parse(r#"{"name":"x"}"#);
-        rule.type_name = Some("Doc-View".into());
-        rule.sched = Some(Some(value.clone()));
-        assert_eq!(
-            rule.sched.as_ref().and_then(|s| s.as_deref()),
-            Some("Doc-View")
-        );
-        assert_eq!(
-            std::sync::Arc::strong_count(&value),
-            2,
-            "the rule holds the one allocation both names came from"
-        );
+        let first = parse(r#"{"name":"x","sched":"batch"}"#);
+        let second = parse(r#"{"name":"y","sched":"batch"}"#);
+        let different = parse(r#"{"name":"z","sched":"idle"}"#);
+
+        assert_eq!(first.sched, second.sched, "one name, one index");
+        assert_ne!(first.sched, different.sched, "and different names differ");
+        assert_eq!(first.sched(), Some("batch"));
     }
 
-    /// The same sharing, reached the way a rule set actually reaches it.
+    /// The sharing, reached the way a rule set actually reaches it.
     ///
-    /// The test above hand-assigns an `Arc` and so proves only that `Arc` can
-    /// share. What a rule set does is inherit every name from a `.types` file,
-    /// so this is the path that has to share: `precompute_inheritance` resolves
-    /// each rule's type and copies the resolved attributes onto it.
+    /// What a rule set does is inherit every name from a `.types` file, so this
+    /// is the path that has to share: `precompute_inheritance` resolves each
+    /// rule's type and the rule ends up holding the same index into
+    /// [`NAME_TABLE`] as every other rule that inherited the same value.
     ///
     /// Three hundred rules naming one type is a fifth of a default rule set, and
-    /// a type that declares an `ioclass` and a `sched` means two shared strings
-    /// per rule. Resolving the type per rule instead of once gives every rule a
-    /// private allocation — measured at two extra 32-byte chunks per rule, which
-    /// is 760 kB across a 15,831-rule set, and does not show up in peak RSS at
-    /// all. `docs/MEMORY.md` § What the names cost has the full figures.
+    /// a type that declares an `ioclass` and a `sched` means two shared names
+    /// per rule. Before the names were interned this was two 32-byte chunks per
+    /// rule of pure duplication — 760 kB across a 15,831-rule set, and
+    /// invisible in peak RSS. `docs/MEMORY.md` § What the names cost has the
+    /// figures.
     #[test]
     fn rules_inheriting_one_type_share_its_names() {
         let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
@@ -1035,23 +1260,27 @@ mod rule {
         }
         rules.precompute_inheritance();
 
-        let (_, rule) = rules.get_rule("p0").expect("p0 has a rule");
-        let strong = Arc::strong_count(
-            rule.sched
-                .as_ref()
-                .and_then(|declared| declared.as_ref())
-                .expect("a sched was inherited"),
-        );
-        assert_eq!(
-            strong, 300,
-            "300 rules inherit 'idle' from one type, so the string they share \
-             must be one allocation with 300 references — not 300 allocations \
-             of the same four bytes"
-        );
+        let (_, first) = rules.get_rule("p0").expect("p0 has a rule");
+        let first_sched = first.sched;
+        let first_ioclass = first.ioclass;
+        let first_cgroup = first.cgroup;
+        assert_eq!(first.sched(), Some("idle"), "and the value is still 'idle'");
+
+        for i in 1..300 {
+            let (_, other) = rules
+                .get_rule(&format!("p{i}"))
+                .expect("every rule resolves");
+            assert_eq!(
+                other.sched, first_sched,
+                "rule p{i} inherited the same sched and must hold the same index"
+            );
+            assert_eq!(other.ioclass, first_ioclass, "rule p{i}, ioclass");
+            assert_eq!(other.cgroup, first_cgroup, "rule p{i}, cgroup");
+        }
     }
 
     /// The same for the cgroup name, which is a third field on the same type and
-    /// would be missed by a test that only looked at `ioclass`.
+    /// would be missed by a test that only looked at `sched`.
     #[test]
     fn a_cgroup_name_inherited_from_a_type_is_shared_too() {
         let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
@@ -1061,14 +1290,17 @@ mod rule {
         }
         rules.precompute_inheritance();
 
-        let (_, rule) = rules.get_rule("q0").expect("q0 has a rule");
-        let strong = Arc::strong_count(
-            rule.cgroup
-                .as_ref()
-                .and_then(|declared| declared.as_ref())
-                .expect("a cgroup was inherited"),
-        );
-        assert_eq!(strong, 50, "one allocation behind all 50 rules");
+        let (_, first) = rules.get_rule("q0").expect("q0 has a rule");
+        let shared = first.cgroup;
+        for i in 1..50 {
+            let (_, other) = rules
+                .get_rule(&format!("q{i}"))
+                .expect("every rule resolves");
+            assert_eq!(
+                other.cgroup, shared,
+                "rule q{i} holds the same cgroup index"
+            );
+        }
     }
 
     /// A rule that overrides the type's name keeps its own, and the rest still
@@ -1087,20 +1319,10 @@ mod rule {
         let (_, b) = rules.get_rule("b").expect("b has a rule");
         assert_eq!(a.ioclass(), Some("idle"));
         assert_eq!(b.ioclass(), Some("best-effort"));
-        let shared = Arc::strong_count(
-            a.ioclass
-                .as_ref()
-                .and_then(|declared| declared.as_ref())
-                .expect("a inherited one"),
+        assert_ne!(
+            a.ioclass, b.ioclass,
+            "an override is its own name, not an alias of the type's"
         );
-        let own = Arc::strong_count(
-            b.ioclass
-                .as_ref()
-                .and_then(|declared| declared.as_ref())
-                .expect("b declared one"),
-        );
-        assert_eq!(shared, 1, "a's value is the only reference left after load");
-        assert_eq!(own, 1, "and b's override is a separate allocation entirely");
     }
 
     /// A rule that declares a name in an unexpected type is treated as declaring
