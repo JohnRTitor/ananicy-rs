@@ -92,7 +92,7 @@ proptest! {
         let mut rules = Rules::new(config);
         let _ = rules.load_rule_from_string(&s);
 
-        for name in rules.get_rules().keys() {
+        for (name, _) in rules.iter_rules() {
             prop_assert!(rules.get_rule(name.as_ref()).is_some());
         }
         prop_assert!(rules.get_rule("ananicy-definitely-not-a-loaded-rule").is_none());

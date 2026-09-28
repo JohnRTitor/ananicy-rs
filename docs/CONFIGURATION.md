@@ -218,29 +218,40 @@ the rule describes the rule as written.
 
 A rule is 176 bytes of fixed-size fields, and the names it shares with other
 rules — its `type`, `ioclass`, `sched`, `cgroup` and `cpuset` — are one
-allocation between all the rules that use them rather than one each.
+allocation between all the rules that use them rather than one each. The rules
+live in one contiguous `Vec` and the map that finds them holds a `u32` index, not
+the rule, so a bucket is 28 bytes rather than 200.
 
-Measured against a default rule set of 15,829 rules, on the same machine and the
-same build, as the difference in peak RSS between loading that set and loading
-none:
+Measured against a synthetic rule set, on the same machine and the same build,
+as peak RSS:
 
-| | Rules | Total |
-|---|---|---|
-| Each rule a parsed JSON document | 18.6 MB | 24.0 MB |
-| Each rule a typed struct | **10.5 MB** | **15.2 MB** |
+| Rules | As `Value` per rule | Rules in the map | Rules in a `Vec` |
+|------:|-------------------:|-----------------:|----------------:|
+| 15,831 | 24.0 MB | 15.6 MB | **10.4 MB** |
+| 30,000 | — | 26.7 MB | **15.4 MB** |
+| 60,000 | — | 49.3 MB | **26.7 MB** |
+| 120,000 | — | — | **49.4 MB** |
 
-Most of the 10.5 MB is the `HashMap` that indexes the rules, which holds each
-rule's 176 bytes inline in a table sized for the next power of two — 6.5 MB of
-it, against 2.8 MB of rules. A `Vec<Rule>` with the map holding indices would be
-about 4.5 MB; it is not done because it trades one obvious invariant — the map
-*is* the rules — for three megabytes in a process capped at 64M.
+The index matters more than it looks, because a hash map's bucket count is the
+next power of two above `count * 8/7`. With the rules in the map, every bucket
+carries 200 bytes, so the set cost steps: **28,673 rules cost 10.7 MB more than
+28,670**, and 57,345 cost 21.2 MB more than 57,342. With the rules in a `Vec` the
+same three rules cost 1.2 MB and 3.1 MB. Nothing about a rule set makes the
+boundary visible, so a user who crosses it sees memory double for no reason.
 
-None of this is an optimisation for its own sake. The earlier version held each
+None of this is an optimisation for its own sake. The original version held each
 rule as a `serde_json::Value`, which put the working set above the `MemoryHigh`
 the shipped unit carried; the kernel then reclaimed the daemon's own pages
 continuously and the daemon spent its life re-reading itself from disk. See
 [SYSTEMD § Why there is no `MemoryHigh`](./SYSTEMD.md#why-there-is-no-memoryhigh)
-for those measurements. `ananicy-rs debug memory` reports the current figures.
+for those measurements.
+
+What all of this scales with is **the number of rules**, not the size of the rule
+set on disk — 2.1 MB of files and 15,831 rules are 10.4 MB of memory, and the
+files themselves are page cache the kernel will reclaim under any pressure.
+Sizing a `MemoryMax` therefore means measuring: the daemon's own fixed cost is
+about 29 MB of a 39.4 MB peak, and the rest is the rule set. `ananicy-rs debug
+memory` reports the current figures.
 
 ## Types (`*.types`)
 

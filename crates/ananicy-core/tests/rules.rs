@@ -772,7 +772,10 @@ fn loading_a_directory_twice_replaces_rather_than_accumulates() {
         rules.size(),
         1,
         "a rule that is no longer on disk must stop being applied: {:?}",
-        rules.get_rules().keys().collect::<Vec<_>>()
+        rules
+            .iter_rules()
+            .map(|(name, _)| name.as_ref())
+            .collect::<Vec<_>>()
     );
     assert_eq!(rules.get_rule("gone"), None, "the deleted rule is gone");
     assert_eq!(rule_of(&rules, "kept")["nice"], 5, "and the edit was taken");

@@ -186,9 +186,10 @@ sets much larger than the default one, and check `ananicy-rs debug memory` befor
 changing it.
 
 The rule set itself was also made cheaper to hold, as a second line of defence: see
-[CONFIGURATION § Memory](./CONFIGURATION.md#memory) for the before and after. That
-is not a substitute for the cap above — 21.4M of steady state is still well over
-16M — but it means the cap has a factor of three in it rather than a hair's
+[CONFIGURATION § Memory](./CONFIGURATION.md#memory) for the before and after,
+including the size at which it steps. That is not a substitute for the cap above —
+roughly 29M of the 39.4M peak is the daemon regardless of how many rules there
+are — but it means the cap has a factor of three in it rather than a hair's
 breadth.
 
 `--memory-stats` reports the same numbers from inside the daemon once a minute, and

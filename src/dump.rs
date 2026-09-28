@@ -14,8 +14,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
     match target {
         DumpTarget::Rules => {
             let sorted: BTreeMap<_, _> = rules
-                .get_rules()
-                .iter()
+                .iter_rules()
                 .map(|(name, rule)| (name.as_ref(), rule.to_json(name.as_ref())))
                 .collect();
             println!(

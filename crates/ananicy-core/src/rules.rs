@@ -31,13 +31,14 @@ pub type Attribute<T> = Option<Option<T>>;
 /// node is roughly 700 bytes however few keys it holds -- about 1.2 KB for a
 /// `{"name":..., "type":...}` rule, times fifteen thousand. The typed fields
 /// below make that 176 bytes, with the five names shared as one allocation
-/// between every rule that uses the same one. Loading a default rule set costs
-/// 10.5 MB instead of 18.6 MB; see `docs/CONFIGURATION.md` § Memory.
+/// between every rule that uses the same one. See `docs/CONFIGURATION.md`
+/// § Memory.
 ///
-/// Most of the 10.5 MB is the `HashMap` holding the rules inline rather than the
-/// rules themselves, so a `Vec<Rule>` with the map holding indices would be
-/// smaller. It is not done: the map being the rules is worth more than the three
-/// megabytes.
+/// What these bytes cost depends on where they are put, which is why they are in
+/// a `Vec` and not in the map that finds them. A hash map's bucket count is the
+/// next power of two above `count * 8/7`, so a per-rule cost inside the map is a
+/// staircase: at 200 bytes a bucket, rule 28,673 cost 10.7 MB more than rule
+/// 28,670. At 28 bytes a bucket it costs 1.2 MB.
 ///
 /// An attribute this daemon does not implement is kept in `extras` rather than
 /// dropped, so `dump rules` still reports what a rule file says. `extras` is
@@ -384,14 +385,21 @@ impl Matcher {
 
 pub struct Rules {
     config: Arc<Config>,
-    /// Program rules, resolved against their types, stored by value.
+    /// Program rule name to its index in `rules`.
     ///
-    /// By value and not behind an `Arc`: the map is read once per process the
-    /// worker sees and never mutated while it is read, so a borrow is enough
-    /// and there is no reason to pay for a reference count on fifteen thousand
-    /// allocations. A rule used to be an `Arc<Value>`, which is what made the
-    /// rule set cost twenty megabytes instead of two.
-    programs: HashMap<RuleName, Rule>,
+    /// The rules themselves are in a `Vec`, not in here, and that is the whole
+    /// point. A `Rule` is 176 bytes, so storing them by value in this map made
+    /// every bucket 200 bytes — and a hash map's bucket count is the next power
+    /// of two above `count * 8/7`, which turns a per-rule cost into a staircase.
+    /// At 15,831 rules the table is 6.5 MB; at 28,673 it becomes 13.1 MB, so
+    /// *one extra rule* cost 10.7 MB. A `u32` index makes the bucket 28 bytes, the
+    /// same steps cost 0.9 MB, and the rules grow continuously in the `Vec`.
+    programs: HashMap<RuleName, u32>,
+    /// The program rules, in the order they were read.
+    ///
+    /// Contiguous so that adding a rule does not have to grow a table, and read
+    /// by index because `programs` already answered with one.
+    rules: Vec<Rule>,
     /// Type definitions, as the JSON they were written as. There are a couple of
     /// dozen of these, so what they cost does not matter, and keeping them as
     /// written means `dump types` is a faithful report of the files.
@@ -401,8 +409,8 @@ pub struct Rules {
     regex_programs: Vec<Matcher>,
     // Which rule a process name resolved to, so the regex scan below runs once
     // per distinct name rather than once per process. It is the *name* that is
-    // remembered rather than the rule, because the rule lives in `programs` and
-    // borrowing it costs nothing while copying it would cost an allocation.
+    // remembered rather than the rule, because the rule is already in `rules` and
+    // copying it out would cost an allocation.
     resolved_cache: Mutex<lru::LruCache<String, Option<RuleName>>>,
 }
 
@@ -420,6 +428,7 @@ impl Rules {
         Self {
             config,
             programs: HashMap::new(),
+            rules: Vec::new(),
             types: HashMap::new(),
             cgroups: HashMap::new(),
             regex_programs: Vec::new(),
@@ -446,6 +455,7 @@ impl Rules {
         // duplicated one is matched against twice for every process — and would
         // keep types and cgroups that no longer exist.
         self.programs.clear();
+        self.rules.clear();
         self.types.clear();
         self.cgroups.clear();
         self.regex_programs.clear();
@@ -491,11 +501,15 @@ impl Rules {
     /// rewrite the type it inherits from, and two rules sharing a type must not
     /// be able to see each other.
     fn precompute_inheritance(&mut self) {
-        for rule in self.programs.values_mut() {
+        // Destructured rather than reaching through `self` for both: `rules` is
+        // borrowed mutably and `types` immutably, and there is no way to ask `self`
+        // for both at once.
+        let Rules { rules, types, .. } = self;
+        for rule in rules.iter_mut() {
             let Some(type_name) = rule.type_name.clone() else {
                 continue;
             };
-            let Some(type_rule) = self.types.get(&TypeName(type_name.to_string())) else {
+            let Some(type_rule) = types.get(&TypeName(type_name.to_string())) else {
                 continue;
             };
             let mut base = Rule::from_json(type_rule);
@@ -588,8 +602,30 @@ impl Rules {
             Ok(value) => {
                 if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
                     let key = RuleName(name.to_string());
-                    Self::note_redefinition(self.programs.contains_key(&key), "rule", name, source);
-                    self.programs.insert(key, Rule::from_json(&value));
+                    let replacing = self.programs.contains_key(&key);
+                    Self::note_redefinition(replacing, "rule", name, source);
+
+                    // Overwrite in place when the name is already there, rather
+                    // than pushing. Appending would leave the superseded rule in
+                    // `rules` with nothing pointing at it: it would still cost
+                    // memory, and `dump rules` — which walks `rules` — would
+                    // print every definition a rule file ever made of that name
+                    // rather than the one that applies. A rule file overriding an
+                    // earlier one is the documented way to change a shipped rule,
+                    // so this path is not hypothetical.
+                    let index = match self.programs.get(&key) {
+                        Some(index) => *index,
+                        None => {
+                            // Reserved and filled in below rather than pushed
+                            // with its value, so the rule is built once.
+                            self.rules.push(Rule::default());
+                            (self.rules.len() - 1) as u32
+                        }
+                    };
+                    if let Some(slot) = self.rules.get_mut(index as usize) {
+                        *slot = Rule::from_json(&value);
+                    }
+                    self.programs.insert(key, index);
 
                     if let Some(regex_str) = value.get("name_regex").and_then(|v| v.as_str()) {
                         match Matcher::compile(regex_str, name) {
@@ -682,23 +718,30 @@ impl Rules {
     }
 
     /// Looks a rule up by the name it is declared under.
+    ///
+    /// The index is bounds-checked rather than assumed: `programs` and `rules` are
+    /// two structures, and the only thing keeping them in step is that they are
+    /// written in one place. A rule that is never indexed by anything is harmless,
+    /// so a stale index is not worth a panic in the middle of a `/proc` walk.
     fn resolve(&self, name: Option<&RuleName>) -> Option<(&RuleName, &Rule)> {
-        name.and_then(|name| self.programs.get_key_value(name))
+        let (name, index) = self.programs.get_key_value(name?)?;
+        let rule = self.rules.get(*index as usize)?;
+        Some((name, rule))
     }
 
     fn find_best_match(&self, target_name: &str) -> Option<RuleName> {
         // 1. Exact match
-        if let Some(rule) = self.programs.get_key_value(target_name) {
-            return Some(rule.0.clone());
+        if let Some((name, _)) = self.programs.get_key_value(target_name) {
+            return Some(name.clone());
         }
 
         // 2. Regex fallback, in rule-file load order, so the first pattern that
         // matches wins exactly as it does in the reference.
         for matcher in &self.regex_programs {
             if matcher.is_match(target_name)
-                && let Some(rule) = self.programs.get_key_value(matcher.name.as_str())
+                && let Some((name, _)) = self.programs.get_key_value(matcher.name.as_str())
             {
-                return Some(rule.0.clone());
+                return Some(name.clone());
             }
         }
 
@@ -706,15 +749,23 @@ impl Rules {
     }
 
     pub fn size(&self) -> usize {
-        self.programs.len()
+        self.rules.len()
     }
 
     pub fn get_cgroups(&self) -> &HashMap<CgroupName, Arc<Value>> {
         &self.cgroups
     }
 
-    pub fn get_rules(&self) -> &HashMap<RuleName, Rule> {
-        &self.programs
+    /// Every program rule, with the name it is declared under.
+    ///
+    /// An iterator rather than the map, because the map holds indices now. It
+    /// walks `programs` and follows each index into `rules`, so it is one pass
+    /// and not one pass per rule; the order is the map's, which is unordered —
+    /// `dump rules` sorts what it gets, so nothing depends on it.
+    pub fn iter_rules(&self) -> impl Iterator<Item = (&RuleName, &Rule)> {
+        self.programs
+            .iter()
+            .filter_map(|(name, index)| self.rules.get(*index as usize).map(|rule| (name, rule)))
     }
 
     pub fn get_types(&self) -> &HashMap<TypeName, Arc<Value>> {
@@ -744,13 +795,12 @@ mod rule {
     /// The whole reason the type exists. A 15,829-rule default rule set cost
     /// about 18.6 MB when each rule was a parsed JSON document, which against the
     /// `MemoryHigh` the shipped unit carried meant the working set did not fit
-    /// and the kernel reclaimed the daemon's own pages continuously. It costs
-    /// about 10.5 MB now, of which the rules themselves are 2.8 MB and the rest
-    /// is the map that indexes them — see the type's documentation.
+    /// and the kernel reclaimed the daemon's own pages continuously.
     ///
     /// This is the size that has to stay under a few hundred bytes. It does not
-    /// pin the total, which is mostly the map, and it is a floor rather than a
-    /// ceiling: a rule has nine attributes and this is what nine of them cost.
+    /// pin the total, because where these bytes live matters as much as how many
+    /// there are — see the type's documentation, and `docs/CONFIGURATION.md`
+    /// § Memory.
     #[test]
     fn a_rule_is_small() {
         let size = std::mem::size_of::<Rule>();
@@ -914,6 +964,73 @@ mod rule {
     fn a_negative_realtime_priority_is_not_usable() {
         assert_eq!(parse(r#"{"name":"x","rtprio":99}"#).rtprio(), Some(99));
         assert_eq!(parse(r#"{"name":"x","rtprio":-1}"#).rtprio(), None);
+    }
+
+    /// The rules live in a `Vec` and the map holds indices into it, so a name
+    /// defined twice has to overwrite the rule already at its index rather than
+    /// append. Appending would leave the superseded rule in the `Vec` with
+    /// nothing pointing at it: still costing memory, and printed by `dump rules`
+    /// as if it were a rule in force. A rule file overriding an earlier one is
+    /// the documented way to change a shipped rule, and the default rule set does
+    /// it three times.
+    #[test]
+    fn a_redefined_rule_replaces_rather_than_accumulates() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        rules.load_rule_from_string(r#"{"name":"x","nice":1}"#);
+        rules.load_rule_from_string(r#"{"name":"y","nice":2}"#);
+        assert!(rules.load_rule_from_string(r#"{"name":"x","nice":9}"#));
+
+        assert_eq!(rules.size(), 2, "three definitions, two names");
+        assert_eq!(
+            rules.get_rule("x").expect("x is there").1.nice(),
+            Some(9),
+            "the last definition is the one in force"
+        );
+        assert_eq!(rules.get_rule("y").expect("y is there").1.nice(), Some(2));
+
+        // And nothing superseded is left behind for a report to walk into.
+        // Compared unordered, because the iterator walks a map.
+        let mut reported: Vec<_> = rules
+            .iter_rules()
+            .map(|(name, rule)| (name.as_ref().to_string(), rule.nice()))
+            .collect();
+        reported.sort();
+        assert_eq!(
+            reported,
+            vec![("x".to_string(), Some(9)), ("y".to_string(), Some(2))],
+            "one entry per name, whatever the files said"
+        );
+    }
+
+    /// The two structures have to agree, which is the one invariant this layout
+    /// introduces. Every index the map holds has to name a rule that exists, and
+    /// every rule has to be named by some index.
+    #[test]
+    fn every_rule_is_reachable_and_every_index_resolves() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        for i in 0..500 {
+            assert!(rules.load_rule_from_string(&format!(r#"{{"name":"p{i}"}}"#)));
+        }
+        // Redefine a third of them, so some indices are reused.
+        for i in 0..500 {
+            if i % 3 == 0 {
+                assert!(rules.load_rule_from_string(&format!(r#"{{"name":"p{i}","nice":5}}"#)));
+            }
+        }
+
+        assert_eq!(rules.size(), 500, "redefinitions do not add rules");
+        for i in 0..500 {
+            let (name, rule) = rules
+                .get_rule(&format!("p{i}"))
+                .expect("every rule resolves");
+            assert_eq!(name.as_ref(), format!("p{i}"), "and to its own name");
+            assert_eq!(rule.nice(), (i % 3 == 0).then_some(5));
+        }
+        assert_eq!(
+            rules.iter_rules().count(),
+            500,
+            "and nothing in the vector is unreachable"
+        );
     }
 }
 
