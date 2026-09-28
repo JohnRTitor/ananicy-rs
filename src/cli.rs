@@ -15,7 +15,7 @@ pub enum DumpTarget {
 
 const DUMP_TARGET_NAMES: [&str; 5] = ["rules", "types", "cgroups", "proc", "autogroup"];
 
-const DEBUG_TARGET_NAMES: [&str; 1] = ["cgroups"];
+const DEBUG_TARGET_NAMES: [&str; 2] = ["cgroups", "memory"];
 
 impl FromStr for DumpTarget {
     type Err = String;
@@ -62,6 +62,7 @@ fn debug_completer(input: &Option<String>) -> Vec<(&'static str, Option<&'static
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DebugTarget {
     Cgroups,
+    Memory,
     Unknown(String),
 }
 
@@ -71,6 +72,7 @@ impl FromStr for DebugTarget {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "cgroups" => DebugTarget::Cgroups,
+            "memory" => DebugTarget::Memory,
             other => DebugTarget::Unknown(other.to_string()),
         })
     }
@@ -175,6 +177,13 @@ pub struct Args {
     #[bpaf(long, argument("BPF_MIN_US"))]
     /// Minimum microseconds for BPF intervals
     pub bpf_min_us: Option<u32>,
+    #[bpaf(long)]
+    /// Report memory usage, paging and reclaim counters once a minute
+    ///
+    /// The counters that show a daemon being made to re-fetch its own pages
+    /// live in cgroupfs rather than in the process, so without this there is
+    /// nothing in the log to tell an idle daemon from a thrashing one.
+    pub memory_stats: bool,
     #[bpaf(short, long)]
     /// Enable verbose output
     pub verbose: bool,

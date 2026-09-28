@@ -16,7 +16,7 @@ pub(crate) fn run(target: &DumpTarget, rules: &Rules) {
             let sorted: BTreeMap<_, _> = rules
                 .get_rules()
                 .iter()
-                .map(|(k, v)| (k.as_ref(), v.as_ref()))
+                .map(|(name, rule)| (name.as_ref(), rule.to_json(name.as_ref())))
                 .collect();
             println!(
                 "{}",
@@ -62,13 +62,13 @@ fn get_process_info_map(
 
     while let Ok(p) = rx_dump.recv() {
         let pid = p.identity.pid.0;
-        let rule = rules.get_rule(&p.name);
-        let rule_name = rule
-            .as_ref()
-            .and_then(|r| r.get("name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        // The name the rule was *declared* under, which is not necessarily the
+        // process' name: a `name_regex` rule matches processes it is not named
+        // after, and it is the declared name that identifies which rule applied.
+        let rule_name = rules
+            .get_rule(&p.name)
+            .map(|(rule_name, _)| rule_name.as_ref().to_string())
+            .unwrap_or_default();
 
         let exe = read_link(format!("/proc/{}/exe", pid))
             .map(|p| p.to_string_lossy().into_owned())

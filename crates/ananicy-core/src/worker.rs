@@ -1,5 +1,8 @@
 use {
-    crate::{cgroup::CgroupIdentity, config::ConfigSnapshot, cpuset::CpuSet, spawn_named_thread},
+    crate::{
+        cgroup::CgroupIdentity, config::ConfigSnapshot, cpuset::CpuSet, rules::Rule,
+        spawn_named_thread,
+    },
     std::{
         sync::{
             atomic::{AtomicBool, Ordering::SeqCst},
@@ -11,7 +14,6 @@ use {
 
 use {
     crate::{config::Config, process::Process, rules::SharedRules},
-    serde_json::Value,
     std::{collections::HashMap, sync::Arc, thread::JoinHandle},
     tracing::{debug, error, info, warn},
 };
@@ -169,7 +171,7 @@ impl Worker {
             }
 
             let rules = self.rules.get();
-            let rule = rules.get_rule(lookup_name);
+            let rule = rules.get_rule(lookup_name).map(|(_, rule)| rule);
             let is_realtime = self.platform.is_realtime(p.identity.pid.0);
 
             if let Some(rule) = rule {
@@ -187,7 +189,7 @@ impl Worker {
                 match self.apply_rule(
                     &p,
                     &tids,
-                    &rule,
+                    rule,
                     &cfg,
                     is_realtime,
                     is_affected_by_cgroup_bug,
@@ -284,7 +286,7 @@ impl Worker {
         &self,
         p: &Process,
         tids: &[i32],
-        rule: &Value,
+        rule: &Rule,
         cfg: &ConfigSnapshot,
         is_realtime: bool,
         is_affected_by_cgroup_bug: bool,
@@ -299,16 +301,13 @@ impl Worker {
         let mut partial_failure = None;
 
         if cfg.apply_nice
-            && let Some(nice) = rule.get("nice").and_then(|v| v.as_i64())
+            && let Some(nice) = rule.nice()
         {
             debug!(
                 "Setting priority of {}({}) to {}",
                 p.name, p.identity.pid.0, nice
             );
-            match self
-                .platform
-                .set_priority(p.identity.pid.0, tids, nice as i32)
-            {
+            match self.platform.set_priority(p.identity.pid.0, tids, nice) {
                 Ok(()) => applied_any = true,
                 Err(e) => {
                     partial_failure.get_or_insert(e);
@@ -344,35 +343,28 @@ impl Worker {
                 }
             }
         }
-
-        if cfg.apply_latnice {
-            let latnice_val = rule
-                .get("latency_nice")
-                .and_then(|v| v.as_i64())
-                .or_else(|| rule.get("nice").and_then(|v| v.as_i64()))
-                .map(|n| n as i32);
-
-            if let Some(latnice) = latnice_val {
-                debug!(
-                    "Setting latency nice of {}({}) to {}",
-                    p.name, p.identity.pid.0, latnice
-                );
-                match self
-                    .platform
-                    .set_latency_nice(p.identity.pid.0, tids, latnice)
-                {
-                    Ok(()) => applied_any = true,
-                    Err(e) => {
-                        partial_failure.get_or_insert(e);
-                    }
+        if cfg.apply_latnice
+            && let Some(latnice) = rule.effective_latency_nice()
+        {
+            debug!(
+                "Setting latency nice of {}({}) to {}",
+                p.name, p.identity.pid.0, latnice
+            );
+            match self
+                .platform
+                .set_latency_nice(p.identity.pid.0, tids, latnice)
+            {
+                Ok(()) => applied_any = true,
+                Err(e) => {
+                    partial_failure.get_or_insert(e);
                 }
             }
         }
 
         if cfg.apply_sched
-            && let Some(sched) = rule.get("sched").and_then(|v| v.as_str())
+            && let Some(sched) = rule.sched()
         {
-            let rtprio = rule.get("rtprio").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            let rtprio = rule.rtprio().unwrap_or(1);
             debug!(
                 "Setting scheduler of {}({}) to {}",
                 p.name, p.identity.pid.0, sched
@@ -389,9 +381,9 @@ impl Worker {
         }
 
         if cfg.apply_ionice
-            && let Some(ioclass) = rule.get("ioclass").and_then(|v| v.as_str())
+            && let Some(ioclass) = rule.ioclass()
         {
-            let ionice = rule.get("ionice").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ionice = rule.ionice().unwrap_or(0);
             debug!(
                 "Setting ioclass of {}({}) to {}",
                 p.name, p.identity.pid.0, ioclass
@@ -408,16 +400,13 @@ impl Worker {
         }
 
         if cfg.apply_oom_score_adj
-            && let Some(oom_adj) = rule.get("oom_score_adj").and_then(|v| v.as_i64())
+            && let Some(oom_adj) = rule.oom_score_adj()
         {
             debug!(
                 "Setting OOM score adjustment of {}({}) to {}",
                 p.name, p.identity.pid.0, oom_adj
             );
-            match self
-                .platform
-                .set_oom_score_adj(p.identity.pid.0, oom_adj as i32)
-            {
+            match self.platform.set_oom_score_adj(p.identity.pid.0, oom_adj) {
                 Ok(()) => applied_any = true,
                 Err(e) => {
                     partial_failure.get_or_insert(e);
@@ -435,11 +424,11 @@ impl Worker {
             // recording a failure would warn on every realtime process on every
             // cgroup-v2 host, and would suppress the applied-rule line that the
             // reference still prints.
-            if cfg.apply_cgroups && rule.get("cgroup").and_then(|v| v.as_str()).is_some() {
+            if cfg.apply_cgroups && rule.cgroup().is_some() {
                 debug!("Skipping cgroup for realtime process {}", p.name);
             }
         } else if cfg.apply_cgroups
-            && let Some(cgroup) = rule.get("cgroup").and_then(|v| v.as_str())
+            && let Some(cgroup) = rule.cgroup()
         {
             debug!(
                 "Adding process {}({}) to cgroup {}",
@@ -454,7 +443,7 @@ impl Worker {
         }
 
         if cfg.apply_cpuset
-            && let Some(raw_cpuset) = rule.get("cpuset").and_then(|v| v.as_str())
+            && let Some(raw_cpuset) = rule.cpuset()
         {
             let mut cpuset_str = raw_cpuset;
             let mut skip_cpuset = false;

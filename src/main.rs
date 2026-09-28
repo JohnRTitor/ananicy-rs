@@ -19,6 +19,7 @@ mod debug;
 mod disks;
 mod dump;
 mod ipc;
+mod memstats;
 mod monitor;
 mod panics;
 mod runtime;
@@ -121,6 +122,10 @@ fn main() {
         exit(1);
     }
 
+    // Before anything is built on top of them, so the figure below is the rule
+    // set's own cost and not this process' plus the event sources'.
+    memstats::report("loading the rules");
+
     let _ipc_guard = match ipc::check_singleton() {
         Ok(guard) => guard,
         Err(e) => {
@@ -171,6 +176,10 @@ fn main() {
     // Only the running daemon has use for this, so `dump` and `debug` skip it —
     // the same place the original Ananicy ran its version of the check.
     disks::check_disk_schedulers_if_enabled(config.get().check_disks_schedulers);
+
+    if args.memory_stats {
+        memstats::start_periodic(shutdown_flag.clone());
+    }
 
     runtime::run(
         config.clone(),

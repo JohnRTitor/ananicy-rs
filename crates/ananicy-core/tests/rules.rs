@@ -41,12 +41,17 @@ fn rules_dir(entries: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
     (directory, path)
 }
 
+/// The rule for `name`, as the JSON `dump rules` would report it.
+///
+/// The JSON is the report format, not the storage format: rules are held as
+/// typed fields now, so this round-trips through `to_json` to give the
+/// assertions below one shape to work with.
 fn rule_of(rules: &Rules, name: &str) -> serde_json::Value {
     rules
         .get_rule(name)
         .unwrap_or_else(|| panic!("no rule for {name}"))
-        .as_ref()
-        .clone()
+        .1
+        .to_json(name)
 }
 
 #[test]

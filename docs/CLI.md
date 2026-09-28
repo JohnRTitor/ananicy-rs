@@ -105,6 +105,7 @@ still behaves the same way.
 - `--benchmark`: Run the daemon in benchmark mode for performance profiling.
 - `--benchmark-count <BENCHMARK_COUNT>`: Number of iterations to run in benchmark mode.
 - `--bpf-min-us <BPF_MIN_US>`: Minimum microseconds for BPF intervals.
+- `--memory-stats`: Report memory usage, paging and reclaim counters once a minute. The counters that distinguish a daemon that is merely using memory from one that is being made to re-fetch it — `memory.events:high`, `pgmajfault`, `workingset_refault_file`, swap in and out — live in cgroupfs, one level above anything the process can see about itself, so without this there is nothing in the log to tell the two apart. See `docs/SYSTEMD.md` § *Why there is no `MemoryHigh`* for what those numbers looked like when this was not visible.
 - `-v, --verbose`: Enable verbose output. With the `bpf` event source this also turns on the eBPF loader's own diagnostics, which is the only place the reason for a refused load or attach is printed.
 
 The active `loglevel` and per-event application flags are reloaded live. `check_freq` is captured when the manual scanner starts, so changing it requires a daemon restart; rule, type, and cgroup files also require a restart.
@@ -119,6 +120,7 @@ The active `loglevel` and per-event application flags are reloaded live. `check_
   - `proc`: Dump process information cache.
   - `autogroup`: Dump autogroup status.
 - `debug cgroups`: Dump diagnostic information about the system's cgroup mounts.
+- `debug memory`: Dump this process' own memory footprint — the heap from `/proc/self/status`, and `memory.current`, `memory.high`, `memory.max`, the `memory.stat` breakdown, the page-fault and refault counters and the block-device totals from the cgroup this process is in. It is the same data `--memory-stats` logs once a minute, taken on demand, and it is the fastest way to answer whether a daemon's I/O is the kernel making it re-fetch its own pages. Reports "nothing to report" when the numbers are healthy, and `n/a` per field on a host with no unified cgroup hierarchy rather than failing.
 - `completions <shell>`: Generate shell completions (supported shells: `bash`, `zsh`, `fish`, `elvish`).
 
 Example:

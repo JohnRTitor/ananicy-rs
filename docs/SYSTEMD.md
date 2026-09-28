@@ -125,7 +125,7 @@ exists for us rather than for systemd, so this is the reasoning:
 | `RestrictNamespaces` | `cgroup` | We never create a cgroup namespace; `Delegate=yes` does not require one, since managing cgroups is `mkdir` plus file writes |
 | `CapabilityBoundingSet` | `CAP_SYS_NICE`, `CAP_SYS_RESOURCE`, `CAP_DAC_READ_SEARCH`, `CAP_SYS_ADMIN`, `CAP_DAC_OVERRIDE` | Exactly what setting `nice`/`ionice`/`oom_score_adj`/`latency_nice` and writing cgroupfs needs |
 | `Nice`, `OOMScoreAdjust` | `-5`, `-999` | Keeps the daemon itself from being starved or OOM-killed while it manages everyone else |
-| `MemoryHigh`, `MemoryMax` | `16M`, `64M` | We idle between events; a runaway allocation should not take the machine with it |
+| `MemoryHigh`, `MemoryMax` | *(unset)*, `128M` | A hard cap on the whole cgroup, well above the measured ~40M peak, so a runaway allocation is still OOM-killed. **`MemoryHigh` is deliberately absent** — see below |
 | `ExecReload` | `ananicy-rs --reload` | Configuration reload without dropping events (see below) |
 | `Restart`, `RestartSec` | `always`, `10` | Survives crashes; `SuccessExitStatus=143` (`128 + SIGTERM`) keeps a deliberate stop from being logged as a failure |
 | `StartLimitIntervalSec`, `StartLimitBurst` | `60`, `5` | Stops a restart loop from thrashing the machine |
@@ -140,9 +140,58 @@ The settings not in the table — `PrivateTmp`, `PrivateDevices`, `ProtectHome`,
 `ProtectSystem`, `ProtectClock`, `ProtectHostname`, `ProtectKernelLogs`,
 `ProtectKernelModules`, `NoNewPrivileges`, `MemoryDenyWriteExecute`,
 `LockPersonality`, `RestrictRealtime`, `RestrictSUIDSGID` — are stock hardening with
-no daemon-specific reasoning behind them. They are listed in the unit file itself.
+no daemon-specific reasoning behind it. They are listed in the unit file itself.
+
+### Why there is no `MemoryHigh`
+
+The unit used to carry `MemoryHigh=16M` alongside `MemoryMax=64M`, and it produced
+a permanent I/O storm that had nothing to do with what the daemon does. It is worth
+recording, because `MemoryHigh` looks like a safety limit and is not one: exceeding
+it does not fail anything, it makes the kernel *reclaim*.
+
+This cgroup has almost nothing reclaimable in it. Reclaim can only throw away the
+daemon's own page cache — its mapped text, the rules it read at start-up — and swap
+out its own heap. With `MemoryHigh` set below the working set, every page the daemon
+touched was immediately discarded and fetched again, continuously. The evidence from
+a 15,829-rule rule set on a 12-core host:
+
+| | |
+|---|---|
+| `memory.events` `high` | 126,903, with `max` at 0 — throttled a quarter of a million times, never once hit the hard cap |
+| cgroup `memory.pressure` `full avg300` | 15.9% — stalled almost one time in six |
+| `memory.stat` `pgfault` / `pgmajfault` | 96,048 / 86,413 — **90% of all page faults went to disk** |
+| `memory.stat` `workingset_refault_file` | 693,548, against 81,632 for anonymous memory |
+| Root filesystem `io.stat` `rbytes` | 3.66 GB in 20 minutes, 59,278 reads averaging 62 KB |
+| `zram0` `wbytes` / `rbytes` | 343 MB written, 325 MB read back — the heap, cycled ~19 times |
+
+The 62 KB average read is the tell: that is readahead against our own executable and
+libraries, not any file the daemon is reading on purpose. Nothing about `anonicy.d`
+or procfs changed, and `/proc` reads never reach the block layer at all, so no
+amount of tuning the rule engine or the BPF event rate would have helped.
+
+It was expensive in a second, worse way. The daemon spent its life in `D` state, and
+start-up took minutes rather than seconds: the log showed "BPF Monitor initialized
+successfully" at 18:52:19, "BPF monitor successfully started" at 18:54:07, and
+"Running initial procfs full scan" at 18:54:42. A daemon whose start-up is dominated
+by fetching its own pages is not going to tune anything promptly.
+
+`MemoryMax=128M` keeps the protection that matters — a runaway allocation is still
+OOM-killed rather than taking the machine with it — and is roughly three times the
+working set it was throttling against, so reaching it means something has actually
+gone wrong. If you load far more rules than a default rule set carries, raise it.
+
+The rule set itself was also made cheaper to hold, as a second line of defence: see
+[CONFIGURATION § Memory](./CONFIGURATION.md#memory) for the before and after. That
+is not a substitute for the cap above — 10.5 MB of rules plus a 5 MB baseline is
+still more than 16M — but it means the limit above has an order of magnitude of
+room rather than a factor of two.
+
+`--memory-stats` reports the same numbers from inside the daemon once a minute, and
+`ananicy-rs debug memory` on demand, so a regression of this kind shows up in the
+journal or on the spot rather than needing `cgroupfs` attached by hand.
 
 ## Delegation, from the operator's side
+
 
 `Delegate=yes` in our unit is what enables cgroup support. The daemon then
 discovers its delegated root from `/proc/self/cgroup` and refuses cgroup

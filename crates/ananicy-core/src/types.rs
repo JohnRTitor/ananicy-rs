@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{borrow::Borrow, fmt, hash::Hash};
 
 /// Represents a process ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,6 +26,21 @@ pub struct RuleName(pub String);
 
 impl AsRef<str> for RuleName {
     fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Lets a rule be looked up by the process name it is being matched against,
+/// without building a `RuleName` to do it.
+///
+/// Every rule the worker resolves arrives as a `&str` — the basename of a
+/// process' `argv[0]` — and the map is keyed by `RuleName`. Without this, each of
+/// those lookups allocates a `String` and then throws it away, which on a
+/// machine that forks a lot is a per-process allocation on the one path that is
+/// supposed to be cheap. `Borrow` is what tells `HashMap` the two are the same
+/// key, and the `Hash`/`Eq` impls come along with the type so they agree.
+impl Borrow<str> for RuleName {
+    fn borrow(&self) -> &str {
         &self.0
     }
 }

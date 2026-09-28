@@ -4,6 +4,7 @@ use {ananicy_core::worker::PlatformError, std::time::Duration};
 pub mod abi;
 pub mod cgroup;
 pub mod cgroups;
+pub mod memstats;
 pub mod mounts;
 pub mod netlink;
 pub mod priority;

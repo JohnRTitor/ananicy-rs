@@ -202,6 +202,47 @@ Loading continues past both, so one bad line does not cost you the rest of the f
 - `cgroup`: Put the process in the specified cgroup.
 - `type`: Set the type of the rule. All options defined in the type will be used as if written explicitly in the rule, although you can override each option if needed.
 
+An attribute written with nothing usable in it — `null`, or a number written as a
+string — *suppresses* the value its type would otherwise supply, rather than
+inheriting it. `{"name": "x", "type": "T", "nice": null}` is a rule that does not
+set `nice`, which is what an RFC 7396 merge of the rule onto `T` gives and is what
+`ananicy-cpp` does.
+
+Attributes this daemon does not implement are kept and reported: they are not
+applied, and they are neither lost from `dump rules` nor counted as the reason a
+rule did nothing. `name_regex` is one of them in the sense that it is a matching
+directive rather than a tunable, but it is kept with the rule so that a report of
+the rule describes the rule as written.
+
+### Memory
+
+A rule is 176 bytes of fixed-size fields, and the names it shares with other
+rules — its `type`, `ioclass`, `sched`, `cgroup` and `cpuset` — are one
+allocation between all the rules that use them rather than one each.
+
+Measured against a default rule set of 15,829 rules, on the same machine and the
+same build, as the difference in peak RSS between loading that set and loading
+none:
+
+| | Rules | Total |
+|---|---|---|
+| Each rule a parsed JSON document | 18.6 MB | 24.0 MB |
+| Each rule a typed struct | **10.5 MB** | **15.2 MB** |
+
+Most of the 10.5 MB is the `HashMap` that indexes the rules, which holds each
+rule's 176 bytes inline in a table sized for the next power of two — 6.5 MB of
+it, against 2.8 MB of rules. A `Vec<Rule>` with the map holding indices would be
+about 4.5 MB; it is not done because it trades one obvious invariant — the map
+*is* the rules — for three megabytes in a process with a hundred megabytes of
+headroom.
+
+None of this is an optimisation for its own sake. The earlier version held each
+rule as a `serde_json::Value`, which put the working set above the `MemoryHigh`
+the shipped unit carried; the kernel then reclaimed the daemon's own pages
+continuously and the daemon spent its life re-reading itself from disk. See
+[SYSTEMD § Why there is no `MemoryHigh`](./SYSTEMD.md#why-there-is-no-memoryhigh)
+for those measurements. `ananicy-rs debug memory` reports the current figures.
+
 ## Types (`*.types`)
 
 To avoid repeating yourself, you can add types in `.types` files.

@@ -28,21 +28,37 @@ pub(crate) fn run(
     {
         use {ananicy_bpf::BpfMonitor, std::sync::atomic::Ordering};
         info!("Attempting to start BPF monitor...");
+        // Not `while` in a way that re-runs the initial scan. The netlink path
+        // below guards its own with `is_first`; this one did not, so a perf
+        // buffer that kept failing was followed by a full `/proc` walk every
+        // second — a `/proc` walk per restart, from a loop whose whole purpose
+        // is to recover from a failure.
+        let mut is_first = true;
         loop {
             match BpfMonitor::new(bpf_min_us, verbose) {
                 Ok(mut bpf) => {
                     info!("BPF monitor successfully started.");
                     let tx_clone = tx.clone();
-                    let tx_scan = tx.clone();
-                    info!("Running initial procfs full scan");
-                    // Not fatal: this is a head start, and the periodic scan
-                    // covers the same ground. Losing it delays tuning by one
-                    // interval, which is a better outcome than refusing to run.
-                    if let Err(e) = spawn_named_thread!("ananicy-init", move || {
-                        ProcfsScanner::full_scan(tx_scan);
-                    }) {
-                        warn!("{e}");
+                    if is_first {
+                        is_first = false;
+                        let tx_scan = tx.clone();
+                        info!("Running initial procfs full scan");
+                        // Not fatal: this is a head start, and the periodic scan
+                        // covers the same ground. Losing it delays tuning by one
+                        // interval, which is a better outcome than refusing to
+                        // run.
+                        if let Err(e) = spawn_named_thread!("ananicy-init", move || {
+                            ProcfsScanner::full_scan(tx_scan);
+                            // The one point where the footprint is at its largest:
+                            // the rule set, the BPF maps and a pass over every
+                            // process in one go. Reported so a limit that is too
+                            // low for it is visible at start-up.
+                            crate::memstats::report("the initial procfs scan");
+                        }) {
+                            warn!("{e}");
+                        }
                     }
+
                     bpf.listen(tx_clone, shutdown_flag.clone());
 
                     if shutdown_flag.load(Ordering::SeqCst) {
@@ -67,6 +83,9 @@ pub(crate) fn run(
     {
         use ananicy_platform::netlink::NetlinkMonitor;
         info!("Attempting to start Netlink monitor...");
+        // The same guard the BPF path uses, and for the same reason: this loop
+        // is also a recovery path, and a recovery that re-walks all of `/proc`
+        // on every attempt is worse than the failure it is recovering from.
         let mut is_first = true;
         loop {
             match NetlinkMonitor::new() {
@@ -79,6 +98,7 @@ pub(crate) fn run(
                         info!("Running initial procfs full scan");
                         if let Err(e) = spawn_named_thread!("ananicy-init", move || {
                             ProcfsScanner::full_scan(tx_scan);
+                            crate::memstats::report("the initial procfs scan");
                         }) {
                             warn!("{e}");
                         }
@@ -90,6 +110,7 @@ pub(crate) fn run(
                             e
                         );
                         ProcfsScanner::full_scan(tx_clone.clone());
+                        crate::memstats::report("a netlink error recovery scan");
                         thread::sleep(Duration::from_secs(1));
                         continue;
                     }

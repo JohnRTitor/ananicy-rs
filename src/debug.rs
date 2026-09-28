@@ -14,9 +14,64 @@ use {
 pub(crate) fn run(target: &DebugTarget, systemd_status: &str) {
     match target {
         DebugTarget::Cgroups => print_debug_cgroups(systemd_status),
+        DebugTarget::Memory => print_debug_memory(),
         // Print nothing for unrecognized targets.
         // An unrecognized debug sub-action is silently ignored, and the process still exits successfully.
         DebugTarget::Unknown(_) => {}
+    }
+}
+
+/// Prints what this process' own memory is doing, and where it is charged.
+///
+/// The heap figures come from `/proc/self/status` and the rest from cgroupfs, and
+/// the two are printed together because on their own neither is enough: a heap
+/// that looks comfortably resident can be almost entirely swapped out, and a
+/// cgroup under `memory.high` can be doing thousands of disk reads a minute while
+/// reporting a small `memory.current`.
+fn print_debug_memory() {
+    let snapshot = ananicy_platform::memstats::Snapshot::read();
+    match &snapshot.cgroup {
+        Some(path) => println!("Cgroup: {}", path.display()),
+        None => println!("Cgroup: <none: no unified hierarchy, or it is not visible here>"),
+    }
+
+    for (what, value) in [
+        ("Heap (VmData)", snapshot.vm_data),
+        ("Resident (VmRSS)", snapshot.vm_rss),
+        ("Swapped (VmSwap)", snapshot.vm_swap),
+        ("Own text (VmExe)", snapshot.vm_exe),
+        ("Libraries (VmLib)", snapshot.vm_lib),
+        ("cgroup memory.current", snapshot.current),
+        ("cgroup memory.high", snapshot.high),
+        ("cgroup memory.max", snapshot.max),
+        ("cgroup anon", snapshot.anon),
+        ("cgroup file", snapshot.file),
+        ("cgroup kernel", snapshot.kernel),
+        ("cgroup slab", snapshot.slab),
+        ("pgfault", snapshot.pgfault),
+        ("pgmajfault", snapshot.pgmajfault),
+        ("workingset_refault_file", snapshot.refault_file),
+        ("workingset_refault_anon", snapshot.refault_anon),
+        ("pswpout", snapshot.pswpout),
+        ("pswpin", snapshot.pswpin),
+        ("memory.events:high", snapshot.high_events),
+        ("memory.events:max", snapshot.max_events),
+        ("io.stat read", snapshot.read_bytes),
+        ("io.stat written", snapshot.written_bytes),
+    ] {
+        match value {
+            Some(value) => println!("{what:<30} {value}"),
+            None => println!("{what:<30} n/a"),
+        }
+    }
+
+    let findings = snapshot.findings();
+    if findings.is_empty() {
+        println!("\nNothing to report: this process is not being made to re-fetch its own memory.");
+    } else {
+        for finding in findings {
+            println!("\n{finding}");
+        }
     }
 }
 
@@ -154,10 +209,15 @@ mod tests {
 
     #[test]
     fn debug_target_unknown_is_infallible_and_silent() {
-        // "debug cgroups" is recognized...
+        // "cgroups" is recognized...
         assert_eq!(
             "cgroups".parse::<DebugTarget>().unwrap(),
             DebugTarget::Cgroups
+        );
+        // "memory" too.
+        assert_eq!(
+            "memory".parse::<DebugTarget>().unwrap(),
+            DebugTarget::Memory
         );
         // ...anything else parses successfully too (never errors), with a
         // silent no-op for unrecognized debug sub-actions.
@@ -171,5 +231,14 @@ mod tests {
             &DebugTarget::Unknown("nonsense".to_string()),
             "disabled (test)",
         );
+    }
+
+    /// System test: the memory report has to survive a host that has none of
+    /// the files it wants, and it has to print something either way — the point
+    /// of the sub-action is the numbers, so printing nothing is a failure even
+    /// when the numbers are unavailable.
+    #[test]
+    fn the_memory_report_prints_on_a_host_without_cgroups() {
+        print_debug_memory();
     }
 }

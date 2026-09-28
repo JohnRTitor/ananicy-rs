@@ -21,13 +21,16 @@ const volatile pid_t targ_pid = 0;
 const volatile pid_t targ_tgid = 0;
 const volatile uid_t targ_uid = INVALID_UID;
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 10240);
-    __type(key, u32);
-    __type(value, u64);
-} start SEC(".maps");
-
+/* No `start` map.
+ *
+ * The reference declares one — a 10,240-entry hash of pid -> timestamp — and
+ * never reads it back. BPF_MAP_TYPE_HASH allocates its element pool up front, so
+ * an unused map of that size is still a few hundred kilobytes of kernel memory
+ * charged to this daemon's cgroup for the life of the process, and unlike the
+ * rule set it is memory reclaim cannot give back: it raises the floor under
+ * everything else. Every event gets a timestamp from `bpf_ktime_get_ns()` and
+ * carries it in the event itself, which is why nothing ever needed the map.
+ */
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
