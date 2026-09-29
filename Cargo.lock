@@ -34,6 +34,7 @@ name = "ananicy-core"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "foldhash",
  "lru",
  "proptest",
  "regexr",
@@ -52,6 +53,7 @@ name = "ananicy-platform"
 version = "0.1.0"
 dependencies = [
  "ananicy-core",
+ "foldhash",
  "libc",
  "lru",
  "neli",

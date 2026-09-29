@@ -13,6 +13,7 @@ libc = { workspace = true }
 rustix = { workspace = true, features = ["process", "fs", "net", "event", "time", "thread"] }
 neli.workspace = true
 lru.workspace = true
+foldhash.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 

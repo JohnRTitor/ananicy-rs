@@ -62,7 +62,7 @@ type CacheEntry = (u64, Option<CgroupIdentity>, Instant);
 
 pub struct CachingCgroupResolver<R: CgroupProcessResolver> {
     inner: R,
-    cache: RwLock<LruCache<i32, CacheEntry>>,
+    cache: RwLock<LruCache<i32, CacheEntry, crate::PidHasher>>,
     ttl: Duration,
 }
 
@@ -72,7 +72,7 @@ impl<R: CgroupProcessResolver> CachingCgroupResolver<R> {
 
         Self {
             inner,
-            cache: RwLock::new(LruCache::new(capacity)),
+            cache: RwLock::new(LruCache::with_hasher(capacity, crate::PidHasher::default())),
             ttl,
         }
     }

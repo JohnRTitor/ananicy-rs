@@ -29,6 +29,7 @@ walkdir = "2.5.0"
 # would be an arch-dependent difference in behaviour bought for nothing.
 regexr = "0.5.0"
 lru.workspace = true
+foldhash.workspace = true
 rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]

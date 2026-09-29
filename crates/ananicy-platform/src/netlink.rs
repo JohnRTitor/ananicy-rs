@@ -204,7 +204,7 @@ impl Identity {
 /// Bounded so a long-running daemon under process churn cannot grow it without
 /// limit; eviction only costs a redundant report of a still-live pid.
 struct ReportedNames {
-    seen: lru::LruCache<i32, Identity>,
+    seen: lru::LruCache<i32, Identity, crate::PidHasher>,
 }
 
 /// How many pids' last-reported identities are remembered. Comfortably above the
@@ -216,9 +216,10 @@ const REPORTED_NAMES_CAPACITY: usize = 8192;
 impl ReportedNames {
     fn new() -> Self {
         Self {
-            seen: lru::LruCache::new(
+            seen: lru::LruCache::with_hasher(
                 std::num::NonZeroUsize::new(REPORTED_NAMES_CAPACITY)
                     .unwrap_or(std::num::NonZeroUsize::MIN),
+                crate::PidHasher::default(),
             ),
         }
     }

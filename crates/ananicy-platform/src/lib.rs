@@ -25,6 +25,18 @@ pub struct LinuxPlatform {
     cgroup_resolver: cgroup::process::CachingCgroupResolver<LinuxCgroupResolver>,
 }
 
+/// The hasher for the caches keyed by pid.
+///
+/// `foldhash` rather than `std`'s `RandomState`, and unlike the maps in
+/// `ananicy-core` there is no security argument either way here: the key is a
+/// 4-byte integer, so there is no string for an adversary to collide and
+/// nothing to defend — a process that could aim the hash of its own pid could
+/// already do anything at all. The only consideration is speed, and this is the
+/// faster one.
+///
+/// See `docs/MEMORY.md` § Hashing for the same trade on the name-keyed maps.
+pub type PidHasher = foldhash::quality::RandomState;
+
 impl LinuxPlatform {
     pub fn new() -> Self {
         let version = get_cgroup_info().version;

@@ -27,14 +27,16 @@ struct ExeFailure {
     count: u8,
 }
 
-static EXE_FAIL_CACHE: OnceLock<Mutex<LruCache<i32, ExeFailure>>> = OnceLock::new();
+static EXE_FAIL_CACHE: OnceLock<Mutex<LruCache<i32, ExeFailure, crate::PidHasher>>> =
+    OnceLock::new();
 const COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES: u8 = 5;
 const MAX_EXE_FAIL_CACHE_SIZE: usize = 256;
 
-fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, ExeFailure>> {
+fn get_exe_fail_cache() -> &'static Mutex<LruCache<i32, ExeFailure, crate::PidHasher>> {
     EXE_FAIL_CACHE.get_or_init(|| {
-        Mutex::new(LruCache::new(
+        Mutex::new(LruCache::with_hasher(
             NonZeroUsize::new(MAX_EXE_FAIL_CACHE_SIZE).unwrap(),
+            crate::PidHasher::default(),
         ))
     })
 }

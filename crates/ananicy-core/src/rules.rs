@@ -138,7 +138,7 @@ static NAME_TABLE: std::sync::LazyLock<NameTable> = std::sync::LazyLock::new(Nam
 #[derive(Default)]
 struct NameTable {
     values: RwLock<Vec<&'static str>>,
-    index: RwLock<HashMap<&'static str, u16>>,
+    index: RwLock<HashMap<&'static str, u16, NameHasher>>,
 }
 
 impl NameTable {
@@ -759,6 +759,29 @@ impl Matcher {
     }
 }
 
+/// The hasher for every map on the rule-matching path.
+///
+/// `foldhash::quality` rather than `std`'s `RandomState` (SipHash-1-3) or
+/// `foldhash::fast`, and the reason is a trade rather than a free win. A process
+/// name is the basename of `argv[0]`, which is a `MAX_ARG_STRLEN` string any
+/// local process writes itself, so it is the one key in this daemon an
+/// adversary picks. SipHash is the only one of the three that is not
+/// attackable; `fast` is the fastest and the least resistant, and `quality` is
+/// the middle. `quality` is chosen because the difference is not visible on
+/// this path — an uncached lookup is 79 ns and a cache hit is 8 ns, and
+/// hashing 3-15 bytes is a small part of either — while the cost of handing an
+/// unprivileged local process a lever on a hash table is not.
+///
+/// On the maps keyed by pid (`ReportedNames`, the cgroup resolver, the
+/// `/proc/<pid>/exe` failure cache) there is nothing to attack — the key is a
+/// 4-byte integer, and an adversary who could aim it has already won — so
+/// those use it too, for the speed.
+pub type RuleHasher = foldhash::quality::RandomState;
+
+/// The name table's index, which is a set of names rather than of process
+/// names: these come from rule files, and are interned once at load.
+pub type NameHasher = foldhash::quality::RandomState;
+
 pub struct Rules {
     config: Arc<Config>,
     /// Program rule name to its index in `rules`.
@@ -770,7 +793,7 @@ pub struct Rules {
     /// At 15,831 rules the table is 6.5 MB; at 28,673 it becomes 13.1 MB, so
     /// *one extra rule* cost 10.7 MB. A `u32` index makes the bucket 28 bytes, the
     /// same steps cost 0.9 MB, and the rules grow continuously in the `Vec`.
-    programs: HashMap<RuleName, u32>,
+    programs: HashMap<RuleName, u32, RuleHasher>,
     /// The program rules, in the order they were read.
     ///
     /// Contiguous so that adding a rule does not have to grow a table, and read
@@ -814,7 +837,7 @@ pub struct Rules {
     // a capacity only `push` would use, plus whatever the allocator's size
     // class rounded the copy up to. Over 5 000 entries that is a table of
     // slack, in a map whose entries are never grown.
-    resolved_cache: Mutex<lru::LruCache<Box<str>, Option<u32>>>,
+    resolved_cache: Mutex<lru::LruCache<Box<str>, Option<u32>, RuleHasher>>,
 }
 
 /// The longest process name the resolved-rule cache will remember.
@@ -830,14 +853,15 @@ impl Rules {
     pub fn new(config: Arc<Config>) -> Self {
         Self {
             config,
-            programs: HashMap::new(),
+            programs: HashMap::default(),
             rules: Vec::new(),
-            types: HashMap::new(),
-            cgroups: HashMap::new(),
+            types: HashMap::default(),
+            cgroups: HashMap::default(),
             regex_programs: Vec::new(),
             regex_first_bytes: Some(FirstByteSet::default()),
-            resolved_cache: Mutex::new(lru::LruCache::new(
+            resolved_cache: Mutex::new(lru::LruCache::with_hasher(
                 NonZeroUsize::new(5000).unwrap_or(NonZeroUsize::MIN),
+                RuleHasher::default(),
             )),
         }
     }

@@ -37,6 +37,13 @@ license = "GPL-3.0-only"
 ananicy-bpf = { path = "crates/ananicy-bpf" }
 ananicy-core = { path = "crates/ananicy-core" }
 ananicy-platform = { path = "crates/ananicy-platform" }
+# The hasher for the rule map, the name table and the per-pid LRU caches.
+#
+# Already in the tree: `lru` pulls in `hashbrown`, which pulls this in, so
+# naming it directly adds no new crate to the build. `quality` rather than
+# `fast` — see `docs/MEMORY.md` § Hashing for why the slower one is the right
+# default on a path keyed by a process name.
+foldhash = "0.2.0"
 libc = "0.2.189"
 lru = "0.18.3"
 neli = "0.7.4"
