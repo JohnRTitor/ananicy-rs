@@ -20,23 +20,6 @@ pub fn get_max_number_of_cpus() -> u32 {
     })
 }
 
-/// The mask `get_max_number_of_cpus()` bytes wide, built from a `CpuSet`.
-fn mask_from(cpuset: &CpuSet, num_cpus: u32) -> Vec<u8> {
-    let num_bytes = (num_cpus as usize) / 8;
-    let mut mask = vec![0u8; num_bytes];
-    // Lends the set's CPUs rather than collecting them: this is a per-process
-    // path, and the list it was building was discarded as soon as the mask was
-    // filled in.
-    for cpu in cpuset.cores() {
-        if cpu < num_cpus {
-            let byte_idx = (cpu / 8) as usize;
-            let bit_idx = cpu % 8;
-            mask[byte_idx] |= 1 << bit_idx;
-        }
-    }
-    mask
-}
-
 /// A `sched_setaffinity(2)` on one thread.
 fn set_affinity_for(tid: i32, mask: &[u8]) -> io::Result<()> {
     let ret =
@@ -120,9 +103,12 @@ pub fn set_affinity(pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), Platf
         return Ok(());
     }
 
-    let num_cpus = get_max_number_of_cpus();
-    let num_bytes = (num_cpus as usize) / 8;
-    let mask = mask_from(cpuset, num_cpus);
+    // The mask comes from the set rather than being derived from it here. It
+    // is a pure function of the set and the CPU count, and this runs for every
+    // process a `cpuset` rule touches, so deriving it per call meant building
+    // the same bytes from the same set over and over.
+    let mask = cpuset.kernel_mask();
+    let num_bytes = mask.len();
 
     if let Err(failure) = apply_to_tids(tids, &mask) {
         return match failure {

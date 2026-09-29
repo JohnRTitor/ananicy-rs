@@ -384,3 +384,93 @@ fn test_roundtrip_single_values() {
     assert!(parsed.is_some());
     assert_eq!(parsed.unwrap().to_string(), "1,3,5");
 }
+
+/// The kernel mask has to agree with the set, bit for bit.
+///
+/// This is the layout `sched_setaffinity(2)` reads, and it is now built by
+/// `CpuSet` rather than derived from the set at the call site — so a
+/// disagreement here would move every CPU in the set to a different bit and
+/// pin processes to the wrong cores, with no error from the syscall to say so.
+/// The width matters for the same reason: the kernel requires `len` to be at
+/// least the size of its own `cpumask`, so a short mask is `EINVAL` and a
+/// correct set is silently not applied.
+///
+/// Width is `ceil(max_cores / 8)` whole bytes, so every CPU the set can hold
+/// has a byte to live in. The first width here is therefore 1, not 8: a set
+/// narrower than a byte used to produce a zero-length mask that could not
+/// express its own highest CPU, and the mask used to be `max_cores / 8` bytes
+/// with a `cpu < max_cores` guard, which indexed past the end of that buffer
+/// for any machine whose CPU count was not a multiple of eight. That was
+/// unreachable only because `get_max_number_of_cpus` floors at 1024, which is
+/// a multiple of eight; these widths are chosen to pin the rounding.
+#[test]
+fn the_kernel_mask_agrees_with_the_set() {
+    for max_cores in [1u32, 7, 8, 9, 63, 64, 65, 1024, 1026, 8192] {
+        let mut set = CpuSet::new(max_cores);
+        // A scattered selection rather than a contiguous run, so every bit
+        // position within a word is exercised — including 0 and 63, which are
+        // the ones a `u64` shift gets wrong when it is written as `1 << n`.
+        for cpu in [0u32, 1, 7, 8, 31, 32, 63, 64, 65, 127, 128] {
+            if cpu < max_cores {
+                set.set_cpu(cpu);
+            }
+        }
+
+        let mask = set.kernel_mask();
+        assert_eq!(
+            mask.len(),
+            (max_cores as usize).div_ceil(8),
+            "the mask must be ceil(max_cores/8) bytes wide for {max_cores} CPUs"
+        );
+
+        for cpu in 0..max_cores {
+            let bit_is_set = mask[cpu as usize / 8] & (1 << (cpu % 8)) != 0;
+            assert_eq!(
+                bit_is_set,
+                set.has_cpu(cpu),
+                "CPU {cpu} disagrees between the set and the kernel mask \
+                 (max_cores = {max_cores})"
+            );
+        }
+    }
+}
+
+/// Every set CPU, and only a set CPU, is in the mask.
+#[test]
+fn the_kernel_mask_holds_exactly_the_sets_cpus() {
+    let parsed = CpuSet::parse("0-3,8-11", 1024).expect("a valid cpuset");
+    let mask = parsed.kernel_mask();
+    let from_mask: Vec<u32> = (0..1024u32)
+        .filter(|&cpu| mask[cpu as usize / 8] & (1 << (cpu % 8)) != 0)
+        .collect();
+    assert_eq!(
+        from_mask,
+        parsed.get_cores(),
+        "reading the mask back must give the set the parser was given"
+    );
+}
+
+/// A machine with no CPU slots is not a panic.
+#[test]
+fn a_set_with_no_cpu_slots_has_an_empty_mask() {
+    let set = CpuSet::new(0);
+    assert!(set.is_empty(), "nothing is in a set with no slots");
+    assert!(set.kernel_mask().is_empty());
+    assert!(!set.has_cpu(0), "there is no CPU 0 to have");
+}
+
+/// A set narrower than a byte can still express its CPUs, which it could not
+/// before the mask width was rounded up.
+#[test]
+fn a_set_narrower_than_a_byte_still_expresses_its_cpus() {
+    let mut set = CpuSet::new(1);
+    set.set_cpu(0);
+    assert!(set.has_cpu(0), "CPU 0 is in the set");
+    let mask = set.kernel_mask();
+    assert_eq!(
+        mask.len(),
+        1,
+        "one CPU still needs the one byte it lives in"
+    );
+    assert_eq!(mask[0] & 1, 1, "and CPU 0 is in it");
+}
