@@ -1,6 +1,6 @@
 use {
     ananicy_core::{process::Process, types::Pid},
-    std::{io::ErrorKind::PermissionDenied, sync::mpsc::Sender},
+    std::{borrow::Cow, fmt::Write as _, io::ErrorKind::PermissionDenied, sync::mpsc::Sender},
 };
 
 use {
@@ -94,10 +94,10 @@ fn remembered_budget(entry: &ExeFailure, observed: Option<u64>) -> Option<u8> {
 /// (deleted)` resolves to `"foo "` there and to `"foo"` here — and a rule written
 /// as `{"name": "foo"}` therefore matches here and not there. This daemon's
 /// answer is the correct one; see `docs/COMPATIBILITY.md` §5.1.
-fn strip_deleted_suffix(name: &str) -> String {
+fn strip_deleted_suffix(name: &str) -> &str {
     match name.find(" (deleted)") {
-        Some(index) => name[..index].to_string(),
-        None => name.to_string(),
+        Some(index) => &name[..index],
+        None => name,
     }
 }
 
@@ -106,16 +106,24 @@ fn strip_deleted_suffix(name: &str) -> String {
 /// A Windows-style path is only rewritten when it ends in `.exe`, because that
 /// is the case where a backslash is a separator rather than a legal character
 /// in a Unix file name.
-fn arg_basename(arg: &str) -> String {
-    let name = if arg.ends_with(".exe") {
-        arg.replace('\\', "/")
-    } else {
-        arg.to_string()
-    };
+///
+/// Borrowed whenever it can be, which is every Unix path and every bare name —
+/// the overwhelming majority of `argv[0]` values there are. Only a `.exe`
+/// argument needs the backslash rewrite, and that allocates, which is what
+/// [`Cow`] is here to say. It used to allocate unconditionally, twice per
+/// argument in the `resolve_argv_name` path below.
+fn arg_basename(arg: &str) -> Cow<'_, str> {
+    if arg.ends_with(".exe") {
+        let rewritten = arg.replace('\\', "/");
+        return match rewritten.rfind('/') {
+            Some(slash_idx) => Cow::Owned(rewritten[slash_idx + 1..].to_string()),
+            None => Cow::Owned(rewritten),
+        };
+    }
 
-    match name.rfind('/') {
-        Some(slash_idx) => name[slash_idx + 1..].to_string(),
-        None => name,
+    match arg.rfind('/') {
+        Some(slash_idx) => Cow::Borrowed(&arg[slash_idx + 1..]),
+        None => Cow::Borrowed(arg),
     }
 }
 
@@ -142,7 +150,11 @@ fn arg_basename(arg: &str) -> String {
 /// One behaviour does change, and it is a correction rather than a regression:
 /// `sh /path/script` is now matched as `script` rather than as `sh`. The program
 /// being run is the script, and the interpreter is not what a rule names.
-fn resolve_argv_name(argv0: &str, script: Option<&str>, comm: Option<&str>) -> String {
+fn resolve_argv_name<'a>(
+    argv0: &'a str,
+    script: Option<&'a str>,
+    comm: Option<&'a str>,
+) -> Cow<'a, str> {
     let name = arg_basename(argv0);
 
     let (Some(script), Some(comm)) = (script, comm) else {
@@ -150,11 +162,52 @@ fn resolve_argv_name(argv0: &str, script: Option<&str>, comm: Option<&str>) -> S
     };
 
     let comm = comm.trim();
-    if !comm.is_empty() && comm != name && arg_basename(script).starts_with(comm) {
-        return arg_basename(script);
+    // Basenamed once, not twice. The two calls were a test-then-use pair over
+    // the same argument, and for a `.exe` argument — the one shape where
+    // `arg_basename` allocates — the second call redid the backslash rewrite
+    // and threw the first result away.
+    let script = arg_basename(script);
+    if !comm.is_empty() && comm != name && script.starts_with(comm) {
+        return script;
     }
 
     name
+}
+
+/// The `/proc/<pid>` directory, for building the several paths read out of it.
+///
+/// `get_command_from_pid` reads up to three files under one process' directory
+/// and used to `format!` a fresh `String` for each of them, so the identical
+/// `/proc/<pid>` prefix was built and thrown away up to four times per call.
+/// The prefix is the part that does not vary; only the file name does.
+///
+/// The returned path borrows this buffer, so it is valid until the next
+/// `file()` call. Every caller uses it for exactly one `fs` call and drops it,
+/// which is what makes the single buffer safe rather than merely convenient.
+struct ProcPath {
+    buffer: String,
+    /// Where the directory ends, so a file name can be swapped in and out.
+    dir_len: usize,
+}
+
+impl ProcPath {
+    fn new(pid: i32) -> Self {
+        // 48 bytes covers `/proc/` plus a 10-digit pid plus the longest file
+        // name used here (`cgroup.procs` is 12, `oom_score_adj` is 13), with
+        // room to spare, so `file` never has to grow the buffer.
+        let mut buffer = String::with_capacity(48);
+        // Cannot fail: writing an `i32` into a `String` does not allocate.
+        let _ = write!(buffer, "/proc/{pid}");
+        let dir_len = buffer.len();
+        Self { buffer, dir_len }
+    }
+
+    fn file(&mut self, name: &str) -> &str {
+        self.buffer.truncate(self.dir_len);
+        self.buffer.push('/');
+        self.buffer.push_str(name);
+        &self.buffer
+    }
 }
 
 /// Tries to determine the effective process name exactly as C++ ananicy did:
@@ -162,10 +215,10 @@ fn resolve_argv_name(argv0: &str, script: Option<&str>, comm: Option<&str>) -> S
 /// 2. `/proc/<pid>/exe` (readlink basename, trimming ` (deleted)`)
 /// 3. `/proc/<pid>/comm` (fallback)
 pub fn get_command_from_pid(pid: i32) -> String {
-    let proc_dir = format!("/proc/{}", pid);
+    let mut path = ProcPath::new(pid);
 
     // 1. Try cmdline
-    if let Ok(cmdline_bytes) = fs::read(format!("{}/cmdline", proc_dir))
+    if let Ok(cmdline_bytes) = fs::read(path.file("cmdline"))
         && !cmdline_bytes.is_empty()
     {
         // The first two non-empty arguments. A process that rewrote its argv[0]
@@ -186,9 +239,9 @@ pub fn get_command_from_pid(pid: i32) -> String {
             let script = args.next().map(String::from_utf8_lossy);
             let comm = script
                 .as_ref()
-                .map(|_| fs::read_to_string(format!("{}/comm", proc_dir)).unwrap_or_default());
+                .map(|_| fs::read_to_string(path.file("comm")).unwrap_or_default());
 
-            return resolve_argv_name(&argv0, script.as_deref(), comm.as_deref());
+            return resolve_argv_name(&argv0, script.as_deref(), comm.as_deref()).into_owned();
         }
     }
 
@@ -199,7 +252,7 @@ pub fn get_command_from_pid(pid: i32) -> String {
     let exe_failures = exe_failures_for(pid);
 
     if exe_failures < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
-        match fs::read_link(format!("{}/exe", proc_dir)) {
+        match fs::read_link(path.file("exe")) {
             Ok(exe_target) => {
                 // Success, clear any stored failure count
                 if exe_failures > 0
@@ -208,7 +261,7 @@ pub fn get_command_from_pid(pid: i32) -> String {
                     cache.pop(&pid);
                 }
                 if let Some(file_name) = exe_target.file_name() {
-                    return strip_deleted_suffix(&file_name.to_string_lossy());
+                    return strip_deleted_suffix(&file_name.to_string_lossy()).to_owned();
                 }
             }
             Err(e) => {
@@ -228,10 +281,10 @@ pub fn get_command_from_pid(pid: i32) -> String {
     }
 
     // 3. Try comm
-    if let Ok(comm) = fs::read_to_string(format!("{}/comm", proc_dir)) {
-        let comm_trimmed = comm.trim().to_string();
+    if let Ok(comm) = fs::read_to_string(path.file("comm")) {
+        let comm_trimmed = comm.trim();
         if !comm_trimmed.is_empty() {
-            return comm_trimmed;
+            return comm_trimmed.to_owned();
         }
     }
 
