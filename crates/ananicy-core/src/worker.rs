@@ -171,7 +171,7 @@ impl Worker {
             }
 
             let rules = self.rules.get();
-            let rule = rules.get_rule(lookup_name).map(|(_, rule)| rule);
+            let rule = rules.get_rule(lookup_name);
             let is_realtime = self.platform.is_realtime(p.identity.pid.0);
 
             if let Some(rule) = rule {

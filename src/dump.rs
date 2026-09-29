@@ -65,7 +65,7 @@ fn get_process_info_map(
         // process' name: a `name_regex` rule matches processes it is not named
         // after, and it is the declared name that identifies which rule applied.
         let rule_name = rules
-            .get_rule(&p.name)
+            .get_rule_with_name(&p.name)
             .map(|(rule_name, _)| rule_name.as_ref().to_string())
             .unwrap_or_default();
 

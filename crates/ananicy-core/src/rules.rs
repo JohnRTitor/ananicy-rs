@@ -648,10 +648,27 @@ pub struct Rules {
     // Store fallback regex rules if enabled, in rule-file load order
     regex_programs: Vec<Matcher>,
     // Which rule a process name resolved to, so the regex scan below runs once
-    // per distinct name rather than once per process. It is the *name* that is
-    // remembered rather than the rule, because the rule is already in `rules` and
-    // copying it out would cost an allocation.
-    resolved_cache: Mutex<lru::LruCache<String, Option<RuleName>>>,
+    // per distinct name rather than once per process.
+    //
+    // The value is the rule's index and nothing else. It used to be an
+    // `Option<RuleName>`, and that cost an allocation per miss to clone a name
+    // out of `programs` which `resolve` then had to look up again to get back
+    // the `&RuleName` it started from. An index is four bytes, is `Copy`, and
+    // turns `resolve` into a bounds-checked `Vec` index.
+    //
+    // The name itself is deliberately *not* here. It cannot be: a borrow of
+    // `programs` cannot be stored in a field of the same `Rules`, and
+    // interning every rule name is the change `NameTable` would have to be
+    // widened for — a `u16` table already at its cap. `get_rule_with_name`,
+    // which is the only caller that needs it, does the lookup instead; it is
+    // the `dump` path and is not hot.
+    //
+    // The key is a `Box<str>` rather than a `String`. A cache entry's contents
+    // never change once written, and a `String` spends eight bytes per entry on
+    // a capacity only `push` would use, plus whatever the allocator's size
+    // class rounded the copy up to. Over 5 000 entries that is a table of
+    // slack, in a map whose entries are never grown.
+    resolved_cache: Mutex<lru::LruCache<Box<str>, Option<u32>>>,
 }
 
 /// The longest process name the resolved-rule cache will remember.
@@ -958,19 +975,22 @@ impl Rules {
         self.load_rule_from_named(line, None)
     }
 
-    /// The rule a process of this name gets, and the name it was declared under.
+    /// The rule a process of this name gets.
     ///
-    /// Both, because they can differ: a `name_regex` rule is declared under one
-    /// name and matches others, and `dump proc` reports the rule a process
-    /// matched, not the name the process was called. A borrow rather than a copy
-    /// — nothing here is mutated while a worker is reading it, and a reference
-    /// costs no allocation.
-    pub fn get_rule(&self, name: &str) -> Option<(&RuleName, &Rule)> {
+    /// Just the rule. The name it was *declared* under is a second thing a
+    /// caller might want, and only one caller does — see
+    /// [`Rules::get_rule_with_name`]. Carrying it here cost a `String` on every
+    /// cache miss, and a second hash in `resolve` to turn that name back into
+    /// the `&RuleName` the lookup had started from.
+    ///
+    /// A borrow rather than a copy — nothing here is mutated while a worker is
+    /// reading it, and a reference costs no allocation.
+    pub fn get_rule(&self, name: &str) -> Option<&Rule> {
         // 0. Check cache
         if let Ok(mut cache) = self.resolved_cache.lock()
             && let Some(cached) = cache.get(name)
         {
-            return self.resolve(cached.as_ref());
+            return self.resolve(*cached);
         }
 
         let best_match = self.find_best_match(name);
@@ -982,39 +1002,68 @@ impl Rules {
         // the shipped unit. A name that long is not a program name and no rule
         // can match it usefully, so it is answered without being remembered. The
         // lookup itself still happens, so the answer is the same either way.
-        let cacheable = name.len() <= MAX_CACHEABLE_NAME;
-        if cacheable && let Ok(mut cache) = self.resolved_cache.lock() {
-            cache.put(name.to_string(), best_match.clone());
+        //
+        // `Box::from` is the one allocation left on this path, and it is the key:
+        // it has to be owned, because the cache outlives the caller's `&str`. It
+        // is exact — no capacity, and no slack for a `String` to round up.
+        if name.len() <= MAX_CACHEABLE_NAME
+            && let Ok(mut cache) = self.resolved_cache.lock()
+        {
+            cache.put(Box::from(name), best_match.map(|(_, index)| index));
         }
 
-        self.resolve(best_match.as_ref())
+        self.resolve(best_match.map(|(_, index)| index))
     }
 
-    /// Looks a rule up by the name it is declared under.
+    /// The rule a process of this name gets, *and* the name it was declared
+    /// under.
+    ///
+    /// Both, because they can differ: a `name_regex` rule is declared under one
+    /// name and matches others, and `dump proc` reports the rule a process
+    /// matched, not the name the process was called.
+    ///
+    /// Deliberately not memoised. The cache stores an index because that is all
+    /// [`Rules::get_rule`] needs, and this path is the one caller that needs the
+    /// name back — so it takes the match directly rather than paying a lookup
+    /// to reconstruct something the cache no longer holds. It is a diagnostic
+    /// path: `dump` runs it once per process in a full `/proc` walk, and the
+    /// worker never calls it.
+    pub fn get_rule_with_name(&self, name: &str) -> Option<(&RuleName, &Rule)> {
+        let (rule_name, index) = self.find_best_match(name)?;
+        Some((rule_name, self.resolve(Some(index))?))
+    }
+
+    /// The rule at a cached index.
     ///
     /// The index is bounds-checked rather than assumed: `programs` and `rules` are
     /// two structures, and the only thing keeping them in step is that they are
     /// written in one place. A rule that is never indexed by anything is harmless,
     /// so a stale index is not worth a panic in the middle of a `/proc` walk.
-    fn resolve(&self, name: Option<&RuleName>) -> Option<(&RuleName, &Rule)> {
-        let (name, index) = self.programs.get_key_value(name?)?;
-        let rule = self.rules.get(*index as usize)?;
-        Some((name, rule))
+    fn resolve(&self, index: Option<u32>) -> Option<&Rule> {
+        self.rules.get(index? as usize)
     }
 
-    fn find_best_match(&self, target_name: &str) -> Option<RuleName> {
+    /// The rule a name matches, as the name it is declared under and the index
+    /// of the rule. Both are borrowed from `programs`, where the exact match
+    /// matched.
+    ///
+    /// It used to return an owned `RuleName`, which meant cloning the name out
+    /// of the map on every miss — and then `resolve` looked the same name up
+    /// again to get back the `&RuleName` it had started from. Three hashes and
+    /// two allocations where one hash and none are enough.
+    fn find_best_match(&self, target_name: &str) -> Option<(&RuleName, u32)> {
         // 1. Exact match
-        if let Some((name, _)) = self.programs.get_key_value(target_name) {
-            return Some(name.clone());
+        if let Some((name, &index)) = self.programs.get_key_value(target_name) {
+            return Some((name, index));
         }
 
         // 2. Regex fallback, in rule-file load order, so the first pattern that
         // matches wins exactly as it does in the reference.
         for matcher in &self.regex_programs {
             if matcher.is_match(target_name)
-                && let Some((name, _)) = self.programs.get_key_value(matcher.name.as_str())
+                && let Some((name, &index)) = self.programs.get_key_value(matcher.name.as_str())
             {
-                return Some(name.clone());
+                return Some((name, index));
             }
         }
 
@@ -1163,7 +1212,7 @@ mod rule {
             assert!(rules.load_rule_from_string(written), "{written} is a rule");
             rules.precompute_inheritance();
 
-            let (_, rule) = rules.get_rule("x").expect("the rule is there");
+            let rule = rules.get_rule("x").expect("the rule is there");
             assert_eq!(
                 rule.nice(),
                 None,
@@ -1189,7 +1238,7 @@ mod rule {
         rules.load_rule_from_string(r#"{"name":"x","type":"T","nice":-7,"ionice":0}"#);
         rules.precompute_inheritance();
 
-        let (_, rule) = rules.get_rule("x").expect("the rule is there");
+        let rule = rules.get_rule("x").expect("the rule is there");
         assert_eq!(rule.nice(), Some(-7), "the rule overrides the type");
         assert_eq!(rule.ionice(), Some(0), "including a zero, which is a value");
         assert_eq!(
@@ -1260,14 +1309,14 @@ mod rule {
         }
         rules.precompute_inheritance();
 
-        let (_, first) = rules.get_rule("p0").expect("p0 has a rule");
+        let first = rules.get_rule("p0").expect("p0 has a rule");
         let first_sched = first.sched;
         let first_ioclass = first.ioclass;
         let first_cgroup = first.cgroup;
         assert_eq!(first.sched(), Some("idle"), "and the value is still 'idle'");
 
         for i in 1..300 {
-            let (_, other) = rules
+            let other = rules
                 .get_rule(&format!("p{i}"))
                 .expect("every rule resolves");
             assert_eq!(
@@ -1290,10 +1339,10 @@ mod rule {
         }
         rules.precompute_inheritance();
 
-        let (_, first) = rules.get_rule("q0").expect("q0 has a rule");
+        let first = rules.get_rule("q0").expect("q0 has a rule");
         let shared = first.cgroup;
         for i in 1..50 {
-            let (_, other) = rules
+            let other = rules
                 .get_rule(&format!("q{i}"))
                 .expect("every rule resolves");
             assert_eq!(
@@ -1315,8 +1364,8 @@ mod rule {
         rules.load_rule_from_string(r#"{"name":"b","type":"BG","ioclass":"best-effort"}"#);
         rules.precompute_inheritance();
 
-        let (_, a) = rules.get_rule("a").expect("a has a rule");
-        let (_, b) = rules.get_rule("b").expect("b has a rule");
+        let a = rules.get_rule("a").expect("a has a rule");
+        let b = rules.get_rule("b").expect("b has a rule");
         assert_eq!(a.ioclass(), Some("idle"));
         assert_eq!(b.ioclass(), Some("best-effort"));
         assert_ne!(
@@ -1365,11 +1414,11 @@ mod rule {
 
         assert_eq!(rules.size(), 2, "three definitions, two names");
         assert_eq!(
-            rules.get_rule("x").expect("x is there").1.nice(),
+            rules.get_rule("x").expect("x is there").nice(),
             Some(9),
             "the last definition is the one in force"
         );
-        assert_eq!(rules.get_rule("y").expect("y is there").1.nice(), Some(2));
+        assert_eq!(rules.get_rule("y").expect("y is there").nice(), Some(2));
 
         // And nothing superseded is left behind for a report to walk into.
         // Compared unordered, because the iterator walks a map.
@@ -1403,8 +1452,11 @@ mod rule {
 
         assert_eq!(rules.size(), 500, "redefinitions do not add rules");
         for i in 0..500 {
+            // `get_rule_with_name` rather than `get_rule`: the assertion is
+            // about the name a rule resolves to, which is the thing the hot
+            // path no longer carries.
             let (name, rule) = rules
-                .get_rule(&format!("p{i}"))
+                .get_rule_with_name(&format!("p{i}"))
                 .expect("every rule resolves");
             assert_eq!(name.as_ref(), format!("p{i}"), "and to its own name");
             assert_eq!(rule.nice(), (i % 3 == 0).then_some(5));
@@ -1550,7 +1602,7 @@ mod shared_rules {
         let current = shared.get();
         let rule = current.get_rule("cached").expect("the rule is still there");
         assert_eq!(
-            rule.1.nice(),
+            rule.nice(),
             Some(9),
             "the reloaded value must be what is read, not the cached earlier one"
         );

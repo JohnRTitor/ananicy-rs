@@ -50,7 +50,6 @@ fn rule_of(rules: &Rules, name: &str) -> serde_json::Value {
     rules
         .get_rule(name)
         .unwrap_or_else(|| panic!("no rule for {name}"))
-        .1
         .to_json(name)
 }
 

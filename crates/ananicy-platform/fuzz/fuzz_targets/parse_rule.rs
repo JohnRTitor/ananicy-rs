@@ -43,14 +43,29 @@ fuzz_target!(|data: &[u8]| {
 
     // Everything that was stored is still reachable under the name it declared.
     for (name, rule) in rules.iter_rules() {
-        // `get_rule` answers with the name and the rule; only the rule is being
-        // compared, and the name it comes back with is the key it was asked for.
-        let resolved = rules.get_rule(name.as_ref()).map(|(_, resolved)| resolved);
+        // `get_rule` answers with the rule; the name it is asked for is the key
+        // it was stored under, so it comes back unchanged. `get_rule_with_name`
+        // is the variant that also reports the name the rule was *declared*
+        // under, which for a `name_regex` rule is not the name asked for.
+        let resolved = rules.get_rule(name.as_ref());
         assert_eq!(
             resolved,
             Some(rule),
             "{} is stored but not resolvable",
             name.as_ref()
+        );
+        let (declared, same) = rules
+            .get_rule_with_name(name.as_ref())
+            .expect("a stored name resolves with its declared name too");
+        assert_eq!(
+            declared.as_ref(),
+            name.as_ref(),
+            "the declared name of an exact match is the name asked for"
+        );
+        assert_eq!(
+            same,
+            rule,
+            "and it is the same rule either way"
         );
     }
 });
