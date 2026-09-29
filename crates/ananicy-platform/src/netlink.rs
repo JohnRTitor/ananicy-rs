@@ -89,6 +89,54 @@ fn to_io_error(e: &neli::err::SocketError) -> io::Error {
     }
 }
 
+/// The pid an event says to go and read `/proc` for, if it says to go at all.
+///
+/// Every event this returns a pid for costs a full
+/// [`get_command_from_pid`] — two or three procfs reads, ~10 us — and the
+/// ordinary way a program starts delivers three events for the same pid, so
+/// which ones are worth that read is the whole cost of the listener.
+///
+/// `Exec` and `Comm` are the two that answer it. `Fork` is not, and this is
+/// the change: at `Fork` time the child has not run `execve`, so its `mm` —
+/// and therefore its `/proc/<pid>/cmdline`, `/proc/<pid>/exe` and
+/// `/proc/<pid>/comm` — is still a copy of the parent's, and the read
+/// *cannot* return the child's name. It returns the parent's, which the
+/// child already inherits every attribute of, because `fork(2)` copies nice,
+/// latency_nice, `sched`/`rtprio`, ioclass/ionice, `oom_score_adj`, cgroup
+/// membership and affinity from parent to child. Applying the parent's rule to
+/// a forked child is therefore idempotent: it re-writes the values the child
+/// already has, and writing a pid to a `cgroup.procs` it already belongs to
+/// does nothing.
+///
+/// The behaviour change is that a process which forks and never execs — a
+/// shell subshell, a background job — is no longer reported at all. It keeps
+/// its parent's tuning, which is what it would have been given anyway, so the
+/// observable result is unchanged; what is gone is the redundant
+/// re-application. `docs/COMPATIBILITY.md` records it.
+///
+/// Note what this is *not*: the old filter's bug. Deduplicating on "the pid
+/// differs from the last one" discarded the `Exec` in exactly the case it
+/// mattered, because a `fork()` immediately followed by an `execve()` produces
+/// `FORK(p)` then `EXEC(p)` and the second was dropped as a repeat. A shell
+/// running one command got the *shell's* rule and the command's never ran.
+/// [`ReportedNames`] is the filter that fixed that, and it is unchanged here:
+/// this function decides whether an event is worth reading, and the filter
+/// still decides whether a second event for the same pid is a repeat.
+fn pid_to_classify(event: &ProcEvent) -> Option<i32> {
+    let pid = match event {
+        ProcEvent::Exec { process_pid, .. } | ProcEvent::Comm { process_pid, .. } => *process_pid,
+        // See above: the read is of the parent's, not the child's.
+        ProcEvent::Fork { .. } => return None,
+        // Exit carries nothing to classify, and neither does anything else
+        // this daemon has a use for. It can be handled here if one appears.
+        _ => return None,
+    };
+
+    // The swapper/idle thread is PID 0. It is not a process, and matching a
+    // rule against it is never what anyone meant.
+    (pid != 0).then_some(pid)
+}
+
 pub struct NetlinkMonitor {
     sock: NlSocketHandle,
 }
@@ -313,38 +361,9 @@ impl NetlinkMonitor {
                         continue;
                     };
 
-                    // A `Fork` event and the `Exec` that follows it name the *same*
-                    // pid, and they do not carry the same thing. At `Fork` time the
-                    // child has not run `execve` yet, so its `mm` — and therefore
-                    // its `/proc/<pid>/cmdline`, `/proc/<pid>/exe` and
-                    // `/proc/<pid>/comm` — is still a copy of the parent's, and
-                    // `get_command_from_pid` answers with the *parent's* name. The
-                    // `Exec` event is the first and only notification that carries
-                    // the name the rule engine is meant to match on.
-                    //
-                    // De-duplicating on "the pid differs from the previous one"
-                    // therefore threw the `Exec` away in exactly the case it
-                    // mattered: a `fork()` immediately followed by an `execve()`
-                    // produces `FORK(p)` then `EXEC(p)`, and the second is dropped
-                    // because the first has just set the marker. A shell that runs
-                    // a single command gets the *shell's* rule applied and the
-                    // command's own rule never runs. `ReportedNames` is the filter
-                    // that replaces it.
-                    let pid = match payload.payload().event {
-                        ProcEvent::Exec { process_pid, .. }
-                        | ProcEvent::Comm { process_pid, .. } => process_pid,
-                        ProcEvent::Fork { child_pid, .. } => child_pid,
-                        // Exit carries nothing to classify. It can be handled
-                        // here if a use for it appears.
-                        ProcEvent::Exit { .. } => continue,
-                        _ => continue,
-                    };
-
-                    // The swapper/idle thread is PID 0. It is not a process, and
-                    // matching a rule against it is never what anyone meant.
-                    if pid == 0 {
+                    let Some(pid) = pid_to_classify(&payload.payload().event) else {
                         continue;
-                    }
+                    };
 
                     let name = get_command_from_pid(pid);
                     if !reported.should_report(pid, &name) {
@@ -397,26 +416,159 @@ impl Drop for NetlinkMonitor {
 mod tests {
     use super::*;
 
-    /// The bug this filter exists to prevent, reproduced from a real event
-    /// stream: a child is forked, sleeps, and only then execs.
+    /// A pid reported under one name and then under a different one is reported
+    /// again. This is the property the filter has to keep, and the bug it
+    /// prevents was that deduplicating on "the pid differs from the last one"
+    /// discarded the second report: a `fork()` immediately followed by an
+    /// `execve()` produces `FORK(p)` then `EXEC(p)`, so a shell that runs a
+    /// single command got the *shell's* rule applied and the command's own rule
+    /// never ran.
     ///
-    /// `/proc/<child>/cmdline` at the `Fork` event is the parent's copy, because
-    /// `fork(2)` gives the child the parent's `mm` and the `execve(2)` has not
-    /// run yet. `get_command_from_pid` therefore answers `slowexec`. The `Exec`
-    /// that follows is the only event that ever says `sleep`.
+    /// It reads the same two names a real `fork`→`exec` pair would, because the
+    /// filter is what decides that they are different — but the listener no
+    /// longer calls it for the `Fork` at all. See [`pid_to_classify`], and
+    /// `the_fork_event_is_not_worth_reading_proc_for` for that half.
     #[test]
     fn the_exec_that_follows_a_fork_is_not_thrown_away() {
         let mut reported = ReportedNames::new();
 
         assert!(
             reported.should_report(4242, "slowexec"),
-            "the fork is reported, under the name visible at that moment"
+            "the first sighting of a pid is always reported"
         );
         assert!(
             reported.should_report(4242, "sleep"),
             "the exec that renames the process must be reported too, or the \
              process is tuned with its parent's rule for the rest of its life"
         );
+    }
+
+    /// The `Fork` event is not worth a `/proc` read, and this is why: at `Fork`
+    /// time the child has not run `execve`, so its `mm` is still the parent's
+    /// and `/proc/<child>/cmdline` is the parent's copy. The read cannot return
+    /// the child's name.
+    ///
+    /// It used to be made anyway, so a normal program start cost three of them —
+    /// `fork` + `exec` + `comm` — for one that mattered. `get_command_from_pid`
+    /// is ~10 us, which is more than the entire rule lookup this daemon does to
+    /// decide what to do with the result.
+    #[test]
+    fn the_fork_event_is_not_worth_reading_proc_for() {
+        assert_eq!(
+            pid_to_classify(&ProcEvent::Fork {
+                parent_pid: 100,
+                parent_tgid: 100,
+                child_pid: 4242,
+                child_tgid: 4242,
+            }),
+            None,
+            "a forked child still shares its parent's mm, so the read is of the \
+             parent's name and tells us nothing about the child"
+        );
+    }
+
+    /// The other half of the same sequence: the `Exec` that follows a `Fork` is
+    /// the one event that carries the child's real name, and it has to survive.
+    ///
+    /// This is the regression guard for the change above. Skipping the `Fork` is
+    /// only safe because the `Exec` is still read; if a later change stopped
+    /// reading it, a process started by `sh -c` would never be seen and would
+    /// keep the shell's rule for its whole life.
+    #[test]
+    fn the_exec_after_a_skipped_fork_is_still_read() {
+        let exec = ProcEvent::Exec {
+            process_pid: 4242,
+            process_tgid: 4242,
+        };
+        assert_eq!(
+            pid_to_classify(&exec),
+            Some(4242),
+            "the exec is the only event that carries the name the rule engine \
+             matches on, so it must never be skipped"
+        );
+    }
+
+    /// The kernel emits a `Comm` after every `execve`, and the name it resolves
+    /// to is the one the `Exec` already produced, so `ReportedNames` drops it.
+    /// Both are still read, because the filter cannot know what the name will
+    /// be without reading — which is why this is a filter question and not a
+    /// `pid_to_classify` one.
+    #[test]
+    fn a_comm_event_is_read_and_deduplicated_rather_than_skipped() {
+        assert_eq!(
+            pid_to_classify(&ProcEvent::Comm {
+                process_pid: 4242,
+                process_tgid: 4242,
+                comm: *b"sleep\0\0\0\0\0\0\0\0\0\0\0",
+            }),
+            Some(4242),
+            "comm is a rename, and a process can rename itself without execing, \
+             so it is worth a read"
+        );
+    }
+
+    /// PID 0 is the swapper/idle thread. It is not a process, and matching a
+    /// rule against it is never what anyone meant, so it is filtered before the
+    /// read rather than after it.
+    #[test]
+    fn the_idle_thread_is_not_read_either() {
+        assert_eq!(
+            pid_to_classify(&ProcEvent::Exec {
+                process_pid: 0,
+                process_tgid: 0,
+            }),
+            None
+        );
+    }
+
+    /// Events this daemon has no use for, checked so that adding a `ProcEvent`
+    /// variant to the connector library does not silently start being read.
+    #[test]
+    fn events_with_nothing_to_classify_are_skipped() {
+        for event in [
+            ProcEvent::Exit {
+                exit_code: 0,
+                exit_signal: 0,
+                process_pid: 1,
+                process_tgid: 1,
+                parent_pid: 0,
+                parent_tgid: 0,
+            },
+            ProcEvent::Uid {
+                process_pid: 1,
+                process_tgid: 1,
+                ruid: 0,
+                euid: 0,
+            },
+            ProcEvent::Gid {
+                process_pid: 1,
+                process_tgid: 1,
+                rgid: 0,
+                egid: 0,
+            },
+            ProcEvent::Sid {
+                process_pid: 1,
+                process_tgid: 1,
+            },
+            ProcEvent::Ptrace {
+                process_pid: 1,
+                process_tgid: 1,
+                tracer_pid: 0,
+                tracer_tgid: 0,
+            },
+            ProcEvent::Coredump {
+                process_pid: 1,
+                process_tgid: 1,
+                parent_pid: 0,
+                parent_tgid: 0,
+            },
+        ] {
+            assert_eq!(
+                pid_to_classify(&event),
+                None,
+                "{event:?} carries nothing this daemon acts on"
+            );
+        }
     }
 
     /// The ordinary `fork` → `exec` → `comm` sequence resolves to the same name
