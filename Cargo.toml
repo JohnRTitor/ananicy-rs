@@ -51,6 +51,22 @@ tracing = "0.1.44"
 harness = false
 name = "rules"
 
+# Not criterion, and deliberately so. This reports live bytes and live
+# allocations for a loaded rule set — the two columns `docs/MEMORY.md` keeps a
+# table of — and it has a `main` of its own rather than a criterion group. It
+# measures a quantity, not a duration; `benches/rules.rs` owns timing.
+[[bench]]
+harness = false
+name = "alloc"
+
+# `get_command_from_pid` is on the per-process-event path, and the part of it
+# this crate owns — building the `/proc/<pid>` path and the string handling
+# around the two files it reads — is what this measures. The syscall cost
+# belongs to the kernel.
+[[bench]]
+harness = false
+name = "procfs"
+
 [dependencies]
 ananicy-bpf = { workspace = true, optional = true }
 ananicy-core = { workspace = true }

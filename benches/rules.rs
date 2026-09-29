@@ -129,6 +129,46 @@ fn bench_rules_match(c: &mut Criterion) {
     });
 }
 
+/// The two halves of `get_rule` that a cache hit and a cache miss actually
+/// take, against a rule set large enough for both to be real.
+///
+/// `rules_get_cache_miss` above measures a lookup against an *empty* rule set
+/// repeating one name, so it never misses the cache and never reaches the
+/// regex loop. It is the cost of the bookkeeping and nothing else. These two are
+/// the numbers `Rules::get_rule` has to be judged on: the first is what every
+/// process pays once its name is in the 5 000-entry cache, and the second is
+/// what a name outside that cache pays, on a path that runs the whole `name_regex`
+/// scan and then writes a cache entry.
+///
+/// The pool is deliberately larger than the cache, so nearly every iteration
+/// misses, and the rule set carries `count` distinct `name_regex` rules so the
+/// scan is the variable being changed rather than a fixed cost.
+fn bench_rules_cache(c: &mut Criterion) {
+    for count in [1usize, 100] {
+        let rules = rules_with(count);
+        let pool = miss_pool();
+        let mut group = c.benchmark_group(format!("rules_get_cache_{count}_rules"));
+
+        // A single name, looked up repeatedly: the first iteration misses and
+        // every one after it is a cache hit, so this measures the hit path
+        // alone — one lock, one hash, one bounds-checked index.
+        group.bench_function("hit", |b| b.iter(|| rules.get_rule(black_box("pipewire"))));
+
+        // The same rule set over the pool, so nearly every iteration misses and
+        // pays the full uncached path.
+        group.bench_function("miss", |b| {
+            let mut i = 0usize;
+            b.iter(|| {
+                let name = &pool[i % pool.len()];
+                i += 1;
+                rules.get_rule(black_box(name.as_str()))
+            })
+        });
+
+        group.finish();
+    }
+}
+
 /// The regex path, which `rules_get_cache_miss` never reaches because it runs
 /// against an empty rule set.
 fn bench_rules_regex(c: &mut Criterion) {
@@ -207,6 +247,7 @@ criterion_group!(
     benches,
     bench_cpuset_parse,
     bench_rules_match,
+    bench_rules_cache,
     bench_rules_regex,
     bench_rules_regex_full_scan,
     bench_rules_regex_compile
