@@ -80,6 +80,59 @@ jobs:
       - name: Test
         run: sudo -E env "PATH=$PATH" cargo test --locked --all-targets --all-features
 
+  # Runs the benches and uploads the result; does not gate the build.
+  #
+  # Deliberately not a gate. Criterion on a shared runner is noisy at the
+  # several-percent level — enough that a threshold produces a red build a
+  # couple of times a month for a change that is not a regression, and a flaky
+  # gate trains people to re-run it rather than read it. The value here is the
+  # record: `docs/MEMORY.md` argues its numbers from measurement, and a
+  # measurement nobody can reproduce after the fact is an assertion with extra
+  # steps. The numbers land in this job's log and in the uploaded
+  # `criterion` HTML, where a change's own before/after can be read off.
+  bench:
+    runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No `components` and no `--all-features`, deliberately. The bench targets
+      # use `ananicy-core` and `ananicy-platform` and nothing that the `bpf`
+      # feature gates, so building them with it would make this job depend on
+      # libbpf and clang being installed for no benefit. It also means this job
+      # does not need `rustfmt`, which the `test` job needs only because the
+      # `bpf` build script runs libbpf-cargo and formats the skeleton it
+      # generates.
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+      - name: Build benches
+        run: cargo bench --locked --no-run
+      # The memory bench, which is the one `docs/MEMORY.md` quotes: live bytes
+      # and live allocations per rule. Not criterion, and not a duration, so it
+      # is not gated on a threshold either — it is printed and read.
+      - name: Rule set footprint
+        run: cargo bench --locked --bench alloc
+      # Shortened from criterion's defaults (3 s warm-up, 5 s measurement per
+      # case) so the job finishes; the numbers are for reading, not for
+      # resolving a 5% difference.
+      - name: Timings
+        run: >-
+          cargo bench --locked --bench rules --
+          --warm-up-time 1 --measurement-time 2
+      - name: Process name resolution
+        run: >-
+          cargo bench --locked --bench procfs --
+          --warm-up-time 1 --measurement-time 2
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion
+          path: target/criterion
+          retention-days: 30
+
   matrix-distro:
     strategy:
       fail-fast: false

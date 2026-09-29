@@ -95,6 +95,57 @@ every rule inherited a private copy of a string fifteen thousand rules share. It
 was invisible from the struct size and invisible in peak RSS, and it was worth
 14.5% of the rule set on its own.
 
+## Those numbers are measured now, and how
+
+`cargo bench --bench alloc` prints the last two rows of that table from a
+counting `GlobalAlloc`: live bytes and live allocation count, taken as a delta
+around a full load, over a rule set generated to the shape of the shipped one.
+It reproduces the 72-byte row from scratch — 160 B/rule and 1.00 allocs/rule
+against the table's 168 and 1.01 — so those figures are re-derivable rather
+than asserted. The generator is used in preference to reading `/etc/ananicy.d`
+because a benchmark that measures whatever is installed measures the machine
+rather than the code, and stops being comparable the day upstream changes.
+
+`cargo bench --bench rules` owns timing. The two that matter for a change here
+are `rules_get_cache_{1,100}_rules/{hit,miss}`; the older
+`rules_get_cache_miss` measures a lookup against an *empty* rule set repeating
+one name, so it never misses the cache and never reaches the regex loop.
+
+Two lessons from building these, both of which cost a wrong conclusion first:
+
+- **A measurement taken against the wrong tree is worse than none.** The
+  instrument read 3.96 allocs/rule and appeared to contradict the table above.
+  The table was right; the branch was not — it predated the interning work, and
+  `docs/MEMORY.md` on that branch does not have these rows at all. The only
+  reason it was caught is that a published number existed to contradict it.
+- **A benchmark's first case in a group pays setup.** A combined run once
+  reported the 1-rule cache *hit* at 14.7 ns while the 100-rule hit measured
+  8.2 ns, which is not something a hasher can do. Re-run alone, both are 8.2
+  ns. A real regression there would have looked identical.
+
+## Hashing
+
+`std`'s `RandomState` is SipHash-1-3, which is a deliberate choice for keys an
+adversary picks and a slow one for keys that are 3-15 bytes. This daemon has
+both kinds of key, and they get different answers.
+
+The rule map, the name table, and the resolved-rule cache are keyed on a process
+name, which is the basename of `argv[0]` — a `MAX_ARG_STRLEN` string any local
+process writes itself. That is the one key here an adversary chooses, so these
+use `foldhash::quality`: faster than SipHash on short keys, and not the cheapest
+option available. `foldhash::fast` would be faster still and is the one to
+avoid, because degrading a lookup into a bucket-chain walk costs a local
+process a few microseconds and costs the daemon a rule set's worth of
+comparisons. The middle option is worth the few nanoseconds it gives up.
+
+The caches keyed by pid — `ReportedNames`, the cgroup resolver, the
+`/proc/<pid>/exe` failure cache — use it too, for the opposite reason: their
+keys are 4-byte integers, so there is no string to collide and nothing to
+defend.
+
+Nothing new enters the build for any of this. `lru` pulls in `hashbrown`, which
+pulls in `foldhash`, so the crate was already compiled before it was named.
+
 **Peak RSS shows almost none of this.** The 15,831-rule set moved 260 kB of peak
 RSS for the 760 kB that the type fix removed, and the interning is similarly
 invisible there, because the peak is set by the transient work of loading — the
@@ -110,6 +161,39 @@ well is the fixed cost above.
 properties the interning has to keep: names the rules share resolve to the same
 index, and a name declared with nothing usable in it stays distinct from one the
 rule said nothing about, or `"ioclass": null` stops suppressing the type's value.
+
+## Where the time goes, which is not where the memory is
+
+The table above is about a rule set held in memory. The per-process path is a
+different budget and a different ranking, and the two do not agree.
+
+| | |
+|---|---:|
+| `get_command_from_pid` | 10.3 µs |
+| `rules_get_cache_100_rules/miss` | 1.19 µs |
+| `rules_get_cache_1_rules/miss` | 60 ns |
+| `rules_get_cache_1_rules/hit` | 8.2 ns |
+| `cpuset_parse` | 51 ns |
+
+Resolving a process name costs **170x an entire uncached rule lookup** and
+**1300x a cached one**. It is the dominant cost in the daemon by a wide
+margin, and it is `cargo bench --bench procfs`.
+
+That function is syscall-bound, not allocation-bound: four `fs` calls on
+procfs are open/read/close each, and those are the 10 µs. The lever is
+therefore *fewer syscalls*, not cheaper bookkeeping around them — which is
+why the fix that mattered there was to stop reading `/proc` for a `Fork`
+event that cannot have a name yet, rather than the one that stopped
+rebuilding the same `/proc/<pid>` path four times. The latter removed four
+allocations and bought 3%; it was kept because those allocations are real
+under a `MemoryHigh`, not because it was fast.
+
+The rule-matching numbers are only large for a rule set with many
+`name_regex` rules. The shipped set has exactly one, which is why the
+100-rule row is three orders of magnitude above the 1-rule row and why the
+two have moved independently throughout: hashing and the `Vec`→bitset
+changes show up in the 1-rule row, the regex scan and its prefilter show up
+in the 100-rule row, and the shipped daemon only ever runs the first.
 
 ## Finding out on your own machine
 
