@@ -569,6 +569,117 @@ impl Rule {
 /// the process out. This type exists rather than a bare `Vec<(Regex, String)>` so
 /// that the engine stays behind `compile` and `is_match`, which makes the limits
 /// and the budget arm below the only places a pattern can reach.
+/// The bytes a name has to begin with for a pattern to match it at all.
+///
+/// 256 bits, so a membership test is one load and a shift, and the whole set
+/// is two cache lines. This is the *prefilter's* type and it exists for one
+/// reason: a scan that runs every `name_regex` for every uncached process name
+/// is linear in the number of regex rules, and at 100 of them the scan is the
+/// entire cost of an uncached lookup.
+///
+/// The invariant this type has to keep is one-sided, and it is the whole
+/// safety argument: **a prefilter may only ever reject a name that provably
+/// cannot match.** The failure mode of getting it wrong is not a wrong answer,
+/// which a test would catch — it is a rule that silently stops applying to
+/// some process names, which looks identical to a rule that has stopped
+/// working at all. So the set is only ever built from the one pattern shape
+/// whose required prefix is unambiguous, and everything else gets no prefilter
+/// and is always run. See [`anchored_first_byte`].
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct FirstByteSet([u64; 4]);
+
+impl FirstByteSet {
+    fn insert(&mut self, byte: u8) {
+        self.0[usize::from(byte) / 64] |= 1 << (byte % 64);
+    }
+
+    fn union_with(&mut self, other: &Self) {
+        for (mine, theirs) in self.0.iter_mut().zip(other.0.iter()) {
+            *mine |= *theirs;
+        }
+    }
+
+    fn contains(&self, byte: u8) -> bool {
+        self.0[usize::from(byte) / 64] & (1 << (byte % 64)) != 0
+    }
+
+    /// Whether a name beginning with `byte` is still worth trying.
+    fn admits(&self, byte: u8) -> bool {
+        self.contains(byte)
+    }
+}
+
+/// The first byte every match of `pattern` must begin with, or `None` if the
+/// pattern does not say so unambiguously.
+///
+/// `None` is the answer for every pattern except a literal directly after a
+/// leading `^`, and it is the answer that makes this safe. For `^` followed by
+/// a plain character, a match can only begin at the start of the name — `regexr`
+/// compiles `^` to a start-of-text anchor, not a start-of-line one, so the
+/// pattern's own leading `^` cannot match after a newline in the name — and
+/// that character's first UTF-8 byte is the name's first byte. That is a
+/// *superset* of the possible first bytes, so testing it can never reject a
+/// name that would have matched.
+///
+/// What is refused, and why each is a case where the answer is not a single
+/// known byte:
+///
+/// * an unanchored pattern (`gcc-.*`) matches anywhere in the name, so its
+///   first byte says nothing about the name's;
+/// * a metacharacter after the `^` — a class (`^[a-z]`), a group
+///   (`^(?:a|b)`), `.`, an escape, a quantifier — describes a *set* of first
+///   bytes, or none at all, and extracting that set soundly is where this kind
+///   of optimisation usually goes wrong. `.` in particular can match any byte
+///   but one, so the set would be "everything";
+/// * a quantified literal, which is the case that got this written wrong the
+///   first time. `^m?` does not require an `m` — `?` allows zero occurrences —
+///   so `^m?\w+ode$` matches `node`, and a prefilter built on "a match starts
+///   with `m`" rejects it. Only an *unquantified* literal is a required
+///   prefix, and `+` is refused alongside `?` and `*` not because it is
+///   unsound but because a pattern like `^m+` is vanishingly rare next to the
+///   ones this does catch, and one fewer thing to reason about is worth more
+///   than it costs;
+/// * a leading `(?...)` group, which is what turns multi-line mode on. With
+///   `(?m)`, `^` *does* match after a newline, and a name like `"x\napp"`
+///   would match `^app` — so a prefilter built on the assumption above would
+///   reject a name that matches. Refusing the group is what keeps that sound;
+/// * a `^` with nothing after it, which matches the empty string and so
+///   constrains no byte.
+///
+/// Only a *leading* `^` is trusted, and a `(?m)` later in the pattern cannot
+/// change it: flags take effect for the atoms parsed after them, and this
+/// parser has already stopped at the second character.
+fn anchored_first_byte(pattern: &str) -> Option<u8> {
+    let mut chars = pattern.chars();
+    if chars.next()? != '^' {
+        return None;
+    }
+    let literal = chars.next()?;
+    if matches!(
+        literal,
+        // Every metacharacter a bare pattern position can hold, plus `(` and
+        // `)` for an inline flag group, plus the two anchors.
+        '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+    ) {
+        return None;
+    }
+    // The literal is only a required prefix if it cannot be quantified away.
+    if chars
+        .next()
+        .is_some_and(|c| matches!(c, '?' | '*' | '+' | '{'))
+    {
+        return None;
+    }
+    // The first *byte* of the character's UTF-8 encoding, so a multi-byte
+    // literal is compared the way the name's bytes actually are.
+    let mut encoded = [0u8; 4];
+    literal
+        .encode_utf8(&mut encoded)
+        .as_bytes()
+        .first()
+        .copied()
+}
+
 struct Matcher {
     compiled: regexr::Regex,
     /// The `name` of the program rule this pattern belongs to. Held so a failure
@@ -580,6 +691,13 @@ struct Matcher {
     /// to produce it. A rule set carries a handful of `name_regex` rules, so
     /// there are a handful of these.
     name: String,
+    /// The bytes this pattern's matches must begin with, or `None` for no
+    /// prefilter.
+    ///
+    /// `None` is the common case and is not a pessimisation to be fixed: a
+    /// prefilter that guesses is worse than none at all, for the reason
+    /// [`anchored_first_byte`] spends most of its comment on.
+    first_bytes: Option<FirstByteSet>,
 }
 
 impl Matcher {
@@ -596,7 +714,25 @@ impl Matcher {
         Ok(Self {
             compiled: regexr::RegexBuilder::new(pattern).build()?,
             name: name.to_string(),
+            first_bytes: anchored_first_byte(pattern).map(|byte| {
+                let mut set = FirstByteSet::default();
+                set.insert(byte);
+                set
+            }),
         })
+    }
+
+    /// Whether `name` is worth handing to the engine at all.
+    ///
+    /// A name with no bytes cannot be shown to be impossible by a required
+    /// first byte, and neither can anything else this knows nothing about, so
+    /// both are passed through: the engine is the thing that decides, and a
+    /// prefilter's only power is to skip it when the answer is already known.
+    fn may_match(&self, name: &str) -> bool {
+        match (self.first_bytes, name.as_bytes().first()) {
+            (Some(bytes), Some(first)) => bytes.admits(*first),
+            (Some(_), None) | (None, _) => true,
+        }
     }
 
     /// Whether `name` matches. Every engine `regexr` can pick is linear in the
@@ -647,6 +783,16 @@ pub struct Rules {
     cgroups: HashMap<CgroupName, Arc<Value>>,
     // Store fallback regex rules if enabled, in rule-file load order
     regex_programs: Vec<Matcher>,
+    /// Every first byte any prefiltered `name_regex` can match at, or `None` if
+    /// any one of them has no prefilter.
+    ///
+    /// This is the union, so one test rejects the whole scan for the names that
+    /// match nothing at all — which, on a rule set with a community's worth of
+    /// `name_regex` rules and a process population that mostly matches none of
+    /// them, is the case that decides the cost. `None` once any pattern cannot
+    /// be reasoned about, and it never recovers for the life of the list,
+    /// because adding a pattern can only ever make the union less selective.
+    regex_first_bytes: Option<FirstByteSet>,
     // Which rule a process name resolved to, so the regex scan below runs once
     // per distinct name rather than once per process.
     //
@@ -689,6 +835,7 @@ impl Rules {
             types: HashMap::new(),
             cgroups: HashMap::new(),
             regex_programs: Vec::new(),
+            regex_first_bytes: Some(FirstByteSet::default()),
             resolved_cache: Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(5000).unwrap_or(NonZeroUsize::MIN),
             )),
@@ -716,6 +863,10 @@ impl Rules {
         self.types.clear();
         self.cgroups.clear();
         self.regex_programs.clear();
+        // The union goes back to empty rather than to "no prefilter": the list
+        // it summarises is empty, so it constrains nothing, and a later load
+        // that only adds prefilterable patterns should get one.
+        self.regex_first_bytes = Some(FirstByteSet::default());
         if let Ok(mut cache) = self.resolved_cache.lock() {
             cache.clear();
         }
@@ -919,7 +1070,24 @@ impl Rules {
 
                     if let Some(regex_str) = value.get("name_regex").and_then(|v| v.as_str()) {
                         match Matcher::compile(regex_str, name) {
-                            Ok(matcher) => self.regex_programs.push(matcher),
+                            Ok(matcher) => {
+                                // Widening the union is four `u64` ors, or —
+                                // once any pattern has refused a prefilter —
+                                // nothing for the rest of this list's life. A
+                                // pattern that compiles but cannot be reasoned
+                                // about does not cost itself its prefilter, it
+                                // costs the whole union, deliberately.
+                                self.regex_first_bytes =
+                                    match (self.regex_first_bytes, matcher.first_bytes) {
+                                        (Some(union), Some(set)) => {
+                                            let mut next = union;
+                                            next.union_with(&set);
+                                            Some(next)
+                                        }
+                                        (Some(_), None) | (None, _) => None,
+                                    };
+                                self.regex_programs.push(matcher);
+                            }
                             // The rule is already in `programs`, so a pattern
                             // this daemon cannot compile costs the process its
                             // regex matching and nothing else: it still matches
@@ -1059,8 +1227,24 @@ impl Rules {
 
         // 2. Regex fallback, in rule-file load order, so the first pattern that
         // matches wins exactly as it does in the reference.
+        //
+        // Two prefilters, both of which can only ever skip the engine for a name
+        // that provably does not match. The first is one test for the whole scan
+        // and answers "could any pattern match this name at all", which is the
+        // question for a name that matches nothing. The second is per pattern,
+        // and answers "could this one", for the name that got past the first.
+        if let Some(union) = &self.regex_first_bytes
+            && target_name
+                .as_bytes()
+                .first()
+                .is_some_and(|first| !union.admits(*first))
+        {
+            return None;
+        }
+
         for matcher in &self.regex_programs {
-            if matcher.is_match(target_name)
+            if matcher.may_match(target_name)
+                && matcher.is_match(target_name)
                 && let Some((name, &index)) = self.programs.get_key_value(matcher.name.as_str())
             {
                 return Some((name, index));
@@ -1606,5 +1790,197 @@ mod shared_rules {
             Some(9),
             "the reloaded value must be what is read, not the cached earlier one"
         );
+    }
+}
+
+#[cfg(test)]
+mod prefilter {
+    use {super::*, crate::config::ConfigSnapshot};
+
+    /// The whole safety argument in one test: for every pattern that gets a
+    /// prefilter, and every name the corpus says it must match, the prefilter
+    /// must not reject the name.
+    ///
+    /// `the_whole_ananicy_name_regex_corpus_still_matches` in
+    /// `tests/rules.rs` already catches this end-to-end, and it caught the
+    /// first version of this — `^m?\w+ode$` was prefilted on `m`, and `node`
+    /// stopped matching. This states the invariant directly rather than relying
+    /// on a distant test happening to cover a given shape.
+    #[test]
+    fn a_prefilter_never_rejects_a_name_the_pattern_matches() {
+        let corpus: &[(&str, &[&str])] = &[
+            (r"^java[0-9.]*$", &["java", "java17", "java.1.0"]),
+            (r"^app.*$", &["app", "app-helper", "appother", "app\n"]),
+            (r"^bash(?!_script)", &["bash", "bashx", "bash-", "bash_"]),
+            (r"^Steam.*$", &["Steam", "Steam.exe"]),
+            (
+                r"^firefox(-bin|-esr)?$",
+                &["firefox", "firefox-bin", "firefox-esr"],
+            ),
+            (
+                r"^VirtualBox(Headless)?VM$",
+                &["VirtualBoxVM", "VirtualBoxHeadlessVM"],
+            ),
+            (r"^sshd(-session)?$", &["sshd", "sshd-session"]),
+            (
+                r"^kworker/[0-9]+-[0-9]+$",
+                &["kworker/0-1", "kworker/12-345"],
+            ),
+            // The two that a first attempt got wrong, kept here so the shape
+            // that broke stays covered: a quantified leading literal, and a
+            // pattern whose only match does not begin with its first atom.
+            (r"^m?\w+ode$", &["node", "mode", "mnode"]),
+            (r"^(java|javaw)[0-9.]*$", &["java", "javaw", "javaw17"]),
+            (r"^.*-wrapped$", &[".foo-wrapped", "-wrapped"]),
+            (r"^.*\.exe$", &["setup.exe", ".exe"]),
+            (r"gcc-.*", &["gcc-aarch64", "/usr/bin/gcc-aarch64"]),
+        ];
+
+        for (pattern, matches) in corpus {
+            let matcher = Matcher::compile(pattern, "probe")
+                .unwrap_or_else(|e| panic!("{pattern:?} should compile: {e}"));
+            for name in *matches {
+                assert!(
+                    matcher.may_match(name),
+                    "{pattern:?} matches {name:?}, so its prefilter must admit \
+                     it — a prefilter that rejects a matching name makes the \
+                     rule silently stop applying"
+                );
+            }
+        }
+    }
+
+    /// The shapes that must *not* get a prefilter, each with the reason.
+    ///
+    /// Asserting the absence is the other half of the safety argument: a
+    /// future change that widens the extraction has to come here and justify
+    /// each of these, rather than quietly making the union a guess.
+    #[test]
+    fn only_an_unquantified_literal_after_a_leading_anchor_is_prefilterable() {
+        let prefilterable: &[(&str, Option<u8>)] = &[
+            (r"^java[0-9.]*$", Some(b'j')),
+            (r"^app.*$", Some(b'a')),
+            (r"^Steam.*$", Some(b'S')),
+            (r"^sshd(-session)?$", Some(b's')),
+            // Unquantified, so the first byte really is required.
+            (r"^m\w+ode$", Some(b'm')),
+            // A multi-byte literal is compared as the first byte it encodes.
+            (r"^école$", Some(0xc3)),
+        ];
+        for (pattern, expected) in prefilterable {
+            assert_eq!(
+                anchored_first_byte(pattern),
+                *expected,
+                "{pattern:?} should yield a required first byte"
+            );
+        }
+
+        let refused: &[&str] = &[
+            // Unanchored: matches anywhere, so the name's first byte is
+            // unrelated to the pattern's.
+            r"gcc-.*",
+            // A set of first bytes, not one.
+            r"^[a-z]+",
+            r"^(?:gimp|inkscape)$",
+            r"^.",
+            r"^\\w+ode",
+            // A quantified literal is not a required prefix. `^m?` allows zero
+            // occurrences, so `node` matches `^m?\w+ode$` and a prefilter on
+            // `m` rejects it. This is the case the corpus test caught.
+            r"^m?\w+ode$",
+            r"^a*",
+            r"^a{2}",
+            // Multi-line mode would make `^` match after a newline in the name,
+            // so `^app` could match `"x\napp"`. Refusing the group is what
+            // keeps the anchor meaning start-of-text.
+            r"(?m)^app.*$",
+            r"(?i)^app.*$",
+            // Nothing to constrain: an empty pattern, or one that matches only
+            // the empty string.
+            r"",
+            r"^",
+        ];
+        for pattern in refused {
+            assert_eq!(
+                anchored_first_byte(pattern),
+                None,
+                "{pattern:?} must not be prefiltered: the engine decides, not \
+                 this"
+            );
+        }
+    }
+
+    /// The whole-scan prefilter is the union over every pattern, and it is
+    /// given up entirely the moment one pattern cannot be reasoned about.
+    ///
+    /// The give-up is not a pessimisation to be fixed later: a union computed
+    /// over an unknown pattern's first bytes is a set that can be too narrow,
+    /// which is the one direction this is not allowed to be wrong in.
+    #[test]
+    fn the_union_is_given_up_when_any_pattern_cannot_be_prefiltered() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+
+        // Every pattern is prefilterable, so the union exists.
+        assert!(rules.load_rule_from_string(r#"{"name":"a","name_regex":"^apple.*"}"#));
+        assert!(rules.load_rule_from_string(r#"{"name":"b","name_regex":"^banana"}"#));
+        assert!(
+            rules.regex_first_bytes.is_some(),
+            "both patterns are anchored literals, so the union survives"
+        );
+
+        // A name starting with neither is rejected by the union alone.
+        assert!(rules.get_rule("cherry").is_none());
+
+        // One unanchorable pattern takes the whole union down with it.
+        assert!(rules.load_rule_from_string(r#"{"name":"c","name_regex":"gcc-.*"}"#));
+        assert!(
+            rules.regex_first_bytes.is_none(),
+            "an unanchored pattern makes every other pattern's prefilter \
+             unusable, so the union is abandoned"
+        );
+        // And the scan still works, which is the point of giving it up rather
+        // than computing a narrower one.
+        assert!(rules.get_rule("apple-pie").is_some());
+        assert!(rules.get_rule("gcc-aarch64").is_some());
+    }
+
+    /// A second load that only clears the list gets its union back.
+    ///
+    /// The union is the one piece of state derived from `regex_programs`, and
+    /// `load_directory` clears that list in place. If the union were not reset
+    /// with it, a reload would keep rejecting names that the new rule set is
+    /// perfectly willing to match.
+    #[test]
+    fn a_reload_starts_the_union_over_again() {
+        let mut rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
+        assert!(rules.load_rule_from_string(r#"{"name":"a","name_regex":"gcc-.*"}"#));
+        assert!(rules.regex_first_bytes.is_none(), "gcc-* is unanchorable");
+
+        let (dir, path) = {
+            let d = tempfile::tempdir().expect("a rules directory");
+            std::fs::write(
+                d.path().join("a.rules"),
+                "{\"name\": \"kworker\", \"name_regex\": \"^kworker/[0-9]+$\"}\n",
+            )
+            .expect("a rule file");
+            let p = d.path().to_path_buf();
+            (d, p)
+        };
+        rules.load_directory(&path);
+
+        assert!(
+            rules.regex_first_bytes.is_some(),
+            "the unanchorable pattern is gone with the rest of the old set"
+        );
+        assert!(
+            rules.get_rule("kworker/0").is_some(),
+            "and a name the new set matches is not rejected by a stale union"
+        );
+        assert!(
+            rules.get_rule("gcc-aarch64").is_none(),
+            "the old rule is gone"
+        );
+
+        drop(dir);
     }
 }
