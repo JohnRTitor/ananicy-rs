@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ea205aa000e69523831cc2f7e746db7ebc7106a17e3b412a2b341137808dc6fd # shrinks to max_cores = 1, edits = []
+cc 48cc2aa4bd601665d2908e580575685a1a25f18ded16dd31cf6c566c078fc667 # shrinks to s = "", max_cores = 1
+cc 4ad1738b576cf05ed58a1fa007588a0b6d18041a2fce2751cf616f8d06b63481 # shrinks to cores = []

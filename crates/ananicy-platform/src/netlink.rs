@@ -595,6 +595,155 @@ mod tests {
         );
     }
 
+    /// The two decisions that decide what the worker is told, exercised
+    /// together over a real event sequence.
+    ///
+    /// `pid_to_classify` and `ReportedNames` answer different questions — is
+    /// this event worth a `/proc` read, and is this a repeat — and every other
+    /// test here exercises one or the other in isolation. That is the shape of
+    /// the bug `ReportedNames` was written to fix: the old filter
+    /// deduplicated on "the pid differs from the last one" and threw the
+    /// `Exec` away as a repeat of the `Fork` that had just set the marker, so a
+    /// shell running one command got the shell's rule and the command's own
+    /// never ran. Neither half looks wrong on its own; the interaction does.
+    ///
+    /// The name a pid resolves to is stood in for rather than read from
+    /// `/proc`, because the real read is what this test is trying not to
+    /// perform — and because the property under test is the *scheduling* of
+    /// reads and reports, not what is in any of them. The kernel's claim being
+    /// relied on is the one the comment above `pid_to_classify` argues: at
+    /// `Fork` the child is still a copy of the parent, so the read would say
+    /// `bash`.
+    fn run_event_sequence(sequence: &[(ProcEvent, &str)]) -> (Vec<i32>, Vec<String>) {
+        let mut reported = ReportedNames::new();
+        let mut reads = Vec::new();
+        let mut handed_to_worker = Vec::new();
+
+        for (event, name) in sequence {
+            let Some(pid) = pid_to_classify(event) else {
+                continue;
+            };
+            reads.push(pid);
+            if reported.should_report(pid, name) {
+                handed_to_worker.push((*name).to_owned());
+            }
+        }
+        (reads, handed_to_worker)
+    }
+
+    fn fork(parent: i32, child: i32) -> ProcEvent {
+        ProcEvent::Fork {
+            parent_pid: parent,
+            parent_tgid: parent,
+            child_pid: child,
+            child_tgid: child,
+        }
+    }
+
+    fn exec(pid: i32) -> ProcEvent {
+        ProcEvent::Exec {
+            process_pid: pid,
+            process_tgid: pid,
+        }
+    }
+
+    fn comm(pid: i32, name: &str) -> ProcEvent {
+        let mut bytes = [0u8; 16];
+        let raw = name.as_bytes();
+        let len = raw.len().min(15);
+        bytes[..len].copy_from_slice(&raw[..len]);
+        ProcEvent::Comm {
+            process_pid: pid,
+            process_tgid: pid,
+            comm: bytes,
+        }
+    }
+
+    /// A normal `sh -c sleep`: three events, two reads, one report, and the
+    /// name reported is the child's.
+    #[test]
+    fn a_normal_program_start_is_read_twice_and_reported_once() {
+        let (reads, reported) = run_event_sequence(&[
+            (fork(100, 4242), "bash"),      // what /proc would say: the parent's
+            (exec(4242), "sleep"),          // and now the child's own name
+            (comm(4242, "sleep"), "sleep"), // the kernel's echo of the exec
+        ]);
+
+        assert_eq!(
+            reads,
+            vec![4242, 4242],
+            "the fork is not read; the exec and the comm are, because only \
+             those can carry the child's name"
+        );
+        assert_eq!(
+            reported,
+            vec!["sleep".to_owned()],
+            "and the process is handed to the worker once, under its own name"
+        );
+    }
+
+    /// The regression this whole arrangement exists for: a child that forks,
+    /// waits, and only then execs. If the `Exec` is ever mistaken for a repeat
+    /// of the `Fork` — which is what the old "same pid as last time" filter
+    /// did — the process is tuned with its parent's rule for the rest of its
+    /// life, and nothing in the log says so.
+    #[test]
+    fn an_exec_that_follows_a_fork_is_never_mistaken_for_a_repeat() {
+        // The events that arrive, in order. The gap between the fork and the
+        // exec is what the kernel connector does not report, so the listener
+        // sees exactly this: nothing at all, then the exec.
+        let (reads, reported) = run_event_sequence(&[(exec(4242), "sleep")]);
+
+        assert_eq!(reads, vec![4242], "the exec is read");
+        assert_eq!(
+            reported,
+            vec!["sleep".to_owned()],
+            "and it is a first sighting, so it reaches the worker -- no prior \
+             event exists to have made it a repeat"
+        );
+    }
+
+    /// A process that renames itself without execing is a second sighting, and
+    /// must be reported: `prctl(PR_SET_NAME)` produces a `Comm` and no `Exec`,
+    /// and if `Comm` were dropped as an echo of an exec that never happened,
+    /// the new name would never be matched.
+    #[test]
+    fn a_self_rename_without_an_exec_is_still_reported() {
+        let (reads, reported) = run_event_sequence(&[
+            (exec(4242), "long-original-name"),
+            (comm(4242, "renamed"), "renamed"),
+        ]);
+
+        assert_eq!(reads, vec![4242, 4242], "both are read");
+        assert_eq!(
+            reported,
+            vec!["long-original-name".to_owned(), "renamed".to_owned()],
+            "and the rename is a second report, not a repeat: the name changed"
+        );
+    }
+
+    /// A fork that never execs — a shell subshell, a background job — is no
+    /// longer reported at all.
+    ///
+    /// This is the behaviour change, stated as a test so it is a decision on
+    /// the record rather than a consequence nobody wrote down. The child's
+    /// tuning is unaffected: `fork(2)` copies nice, latency_nice,
+    /// `sched`/`rtprio`, ioclass/ionice, `oom_score_adj`, cgroup membership and
+    /// affinity from parent to child, so re-applying the parent's rule to it
+    /// wrote values it already had. What is gone is the redundant write. See
+    /// `docs/COMPATIBILITY.md` §5.
+    #[test]
+    fn a_fork_that_never_execs_is_not_reported() {
+        let (reads, reported) = run_event_sequence(&[(fork(100, 4242), "bash")]);
+
+        assert!(reads.is_empty(), "nothing is read for it");
+        assert!(
+            reported.is_empty(),
+            "and nothing reaches the worker; the child keeps what the fork \
+             gave it, which is the parent's own settings"
+        );
+    }
+
     /// A process that renames itself with `prctl(PR_SET_NAME)` while keeping its
     /// `argv[0]`, and therefore while `get_command_from_pid` keeps answering
     /// with the same string, is not re-reported: the rule engine matched on

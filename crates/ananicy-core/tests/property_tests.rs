@@ -33,6 +33,91 @@ proptest! {
         prop_assert_eq!(reparsed, parsed);
     }
 
+    /// The serialize/parse round trip, at widths that straddle the bitset's
+    /// word boundary.
+    ///
+    /// `CpuSet` holds its CPUs in `u64` words, and the parser, the serializer
+    /// and the kernel mask each translate between a bit index and a byte index
+    /// at a different point. At a width of exactly 64 — which is what
+    /// `MAX_CORES` is, and what the round trip above always uses — every CPU is
+    /// in the first word and there is no second word to get wrong. Widths of
+    /// 65, 66 and 128 are where a bit index that is computed rather than looked
+    /// up stops agreeing with one that is.
+    ///
+    /// The CPUs are chosen rather than parsed from random text, and that is the
+    /// part that took a second attempt. Feeding random strings at a width of
+    /// 65 looks like it covers the second word and does not: the string has to
+    /// happen to spell "64", and a proptest string almost never does, so the
+    /// test passed against a deliberately broken `has_cpu` that read only the
+    /// first word. `the_kernel_mask_is_whole_bytes_and_holds_every_cpu` caught
+    /// that mutation on `max_cores = 65`; this one did not. Naming the boundary
+    /// CPUs explicitly is what makes the name true.
+    #[test]
+    fn cpuset_round_trips_at_every_word_boundary(
+        max_cores in prop::sample::select(vec![1u32, 7, 8, 9, 63, 64, 65, 66, 127, 128, 129, 1023, 1024, 1025]),
+        extra in prop::collection::vec(0u32..1100, 0..24),
+    ) {
+        // Every position where a word boundary, a byte boundary, and a word
+        // index computed rather than looked up disagree: 0 and 1 either side
+        // of 8, 63 and 64, 64 and 65, 127 and 128, and the machine's own floor.
+        let boundary = [
+            0u32, 1, 7, 8, 9, 31, 32, 33, 63, 64, 65, 66, 127, 128, 129, 255, 256, 511, 512,
+            1023, 1024, 1025,
+        ];
+        let mut built = CpuSet::new(max_cores);
+        for cpu in boundary.into_iter().chain(extra) {
+            built.set_cpu(cpu);
+        }
+        if built.is_empty() {
+            return Ok(());
+        }
+
+        let serialized = built.to_string();
+        let reparsed = CpuSet::parse(&serialized, max_cores)
+            .expect("a serialized CPU set must parse back");
+        // `Display` first, by reference: equality of the set implies equality
+        // of its description, but the fuzz target this mirrors asserted it
+        // separately and it is a distinct claim — that `Display` is a function
+        // of the set rather than of anything about the order the two were
+        // built in.
+        prop_assert_eq!(&reparsed.to_string(), &serialized);
+        prop_assert_eq!(
+            &reparsed,
+            &built,
+            "round trip through {:?} changed the set, at max_cores = {}",
+            serialized,
+            max_cores
+        );
+    }
+
+    /// A successful parse never yields an empty set.
+    ///
+    /// This is the one claim `fuzz/fuzz_targets/parse_cpuset.rs` makes that no
+    /// test here made, and it is a contract rather than a tautology: a set
+    /// with no CPUs in it means "do not touch this process' affinity", and
+    /// `set_affinity` returns `Ok` for it without writing anything. So an empty
+    /// set returned where a real one was written silently drops the rule
+    /// instead of failing it, which is the failure mode the fuzzer was
+    /// checking for and the reason a set that is not useful must not be an
+    /// answer the parser can give.
+    #[test]
+    fn a_parsed_cpuset_is_never_empty(s in "\\PC*", max_cores in 1u32..300) {
+        let Some(parsed) = CpuSet::parse(&s, max_cores) else {
+            return Ok(());
+        };
+        prop_assert!(
+            !parsed.is_empty(),
+            "parse({:?}, {}) returned an empty set, which means \
+             'leave affinity alone' rather than 'set it to these CPUs'",
+            s,
+            max_cores
+        );
+        prop_assert!(
+            !parsed.get_cores().is_empty(),
+            "the set and its own CPU list disagree about being empty"
+        );
+    }
+
     /// A successful parse can never select a CPU outside the advertised range.
     #[test]
     fn cpuset_parse_respects_the_cpu_bound(
