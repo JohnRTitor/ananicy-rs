@@ -123,6 +123,52 @@ Two lessons from building these, both of which cost a wrong conclusion first:
   8.2 ns, which is not something a hasher can do. Re-run alone, both are 8.2
   ns. A real regression there would have looked identical.
 
+## Two invariants that are properties, not lists
+
+Two of the optimisations in this tree are only correct if a small function is
+right about *every* input, and both got it wrong once. They are worth writing
+down together because the failure is the same and it is quiet.
+
+The `name_regex` prefilter decides, before entering the engine, that a name
+cannot match a pattern. Getting that wrong does not produce a wrong answer —
+it produces a rule that silently stops applying to some process names, which
+looks identical to a rule that has stopped working at all. The first version
+prefilted `^m?\w+ode$` on `m`, and `?` allows zero occurrences, so `node`
+matches that pattern and was rejected.
+
+The CPU mask's width was `max_cores / 8` with its bits set behind a
+`cpu < max_cores` guard, so any machine whose CPU count is not a multiple of
+eight had a mask one byte too short for its own highest CPU, and naming that
+CPU indexed past the end of the buffer — a panic inside rule application.
+Unreachable only because `get_max_number_of_cpus` floors at 1024.
+
+Both were caught by tests, which is the good part. But both guards were
+*lists* — eleven patterns that should and should not be prefilterable, ten CPU
+widths — and a list is the wrong shape for a function whose job is universal
+correctness. Writing the prefilter is exactly how `^m?` got through: eleven
+shapes considered, quantifiers not among them. A second such bug is caught by
+a different list, and the third by neither.
+
+So both are now stated as properties, and each was checked by reintroducing the
+bug and watching it fail:
+
+- `a_prefilter_only_ever_rejects_a_name_the_pattern_does_not_match` generates
+  patterns from the constructs that make a required first byte hard — anchors,
+  quantifiers, classes, groups, inline flag groups, multi-byte literals —
+  crossed with names from an alphabet containing the patterns' own literals,
+  and asserts the one-sided invariant `!may_match(name) => !is_match(name)`.
+  With the quantifier check removed it fails on `pattern = "^a?"`,
+  `subject = "b"`.
+- `the_kernel_mask_is_whole_bytes_and_holds_every_cpu` covers every width in
+  `0..600` rather than ten chosen ones, asserting both that the mask is
+  `ceil(max_cores / 8)` bytes and that it agrees with the set on every CPU. With
+  the width reverted to `/ 8` it panics, which is the original defect.
+
+The rule this establishes: a guard for a universal invariant is a property, and
+a property that has never been seen failing is not known to work. Both of
+these were run against a deliberately reintroduced bug before being accepted.
+
+
 ## Hashing
 
 `std`'s `RandomState` is SipHash-1-3, which is a deliberate choice for keys an

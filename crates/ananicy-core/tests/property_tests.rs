@@ -70,6 +70,77 @@ proptest! {
         }
     }
 
+    /// The kernel mask is a whole number of bytes wide, and every CPU the set
+    /// can hold is expressible in one.
+    ///
+    /// This is the invariant behind a real panic that was in `mask_from` and
+    /// came with it into `CpuSet`: the mask was `max_cores / 8` bytes with its
+    /// bits set behind a `cpu < max_cores` guard, so a machine whose CPU count
+    /// is not a multiple of eight had a mask one byte too short for its own
+    /// highest CPU, and naming that CPU indexed past the end of the buffer. It
+    /// was unreachable only because `get_max_number_of_cpus` floors at 1024,
+    /// which is a multiple of eight.
+    ///
+    /// `the_kernel_mask_agrees_with_the_set` in `tests/cpuset.rs` pins that at
+    /// ten widths I picked, which is a list rather than a property, and a list
+    /// is what let the first version of this through. This covers every width
+    /// in range instead, so the width formula cannot be wrong again for a
+    /// width nobody thought of — which is the only width it was wrong for
+    /// before.
+    #[test]
+    fn the_kernel_mask_is_whole_bytes_and_holds_every_cpu(
+        max_cores in 0u32..600,
+        // Indices deliberately range wider than `max_cores`: out-of-range
+        // `set_cpu` is a documented no-op, and a mask that honoured it would
+        // be a different defect.
+        edits in prop::collection::vec((0u32..700, prop::bool::ANY), 0..48),
+    ) {
+        let mut set = CpuSet::new(max_cores);
+        for (cpu, on) in edits {
+            if on {
+                set.set_cpu(cpu);
+            } else {
+                set.clear_cpu(cpu);
+            }
+        }
+
+        let mask = set.kernel_mask();
+        // `prop_assert*` expands its message through `concat!`, which is a
+        // macro and so cannot capture variables implicitly — every message here
+        // passes its arguments explicitly.
+        prop_assert_eq!(
+            mask.len(),
+            (max_cores as usize).div_ceil(8),
+            "a mask for {} CPUs must be ceil({}/8) bytes",
+            max_cores,
+            max_cores
+        );
+
+        for cpu in 0..max_cores {
+            let in_mask = mask[cpu as usize / 8] & (1 << (cpu % 8)) != 0;
+            prop_assert_eq!(
+                in_mask,
+                set.has_cpu(cpu),
+                "CPU {} disagrees between the set and the mask, at max_cores = {}",
+                cpu,
+                max_cores
+            );
+        }
+
+        // And nothing outside the machine is in the mask, which is what the
+        // `max_cores` bound is for: a rule may name a CPU the machine does not
+        // have, and the syscall has to report that rather than have the mask
+        // quietly widen.
+        for cpu in max_cores..(max_cores + 8).min(mask.len() as u32 * 8) {
+            prop_assert!(
+                !mask[cpu as usize / 8] & (1 << (cpu % 8)) != 0,
+                "CPU {} is beyond max_cores = {} and must not be set",
+                cpu,
+                max_cores
+            );
+        }
+    }
+
     /// Arbitrary text must never panic the rule loader, and a line is either
     /// fully accepted into exactly one of the three rule maps or rejected
     /// without changing any of them.

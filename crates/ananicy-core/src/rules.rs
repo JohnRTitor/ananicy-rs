@@ -2008,3 +2008,116 @@ mod prefilter {
         drop(dir);
     }
 }
+
+/// The prefilter's invariant, over generated patterns and generated names.
+///
+/// The tests above are lists — eleven patterns that should be prefilterable,
+/// twelve that should not — and a list is the wrong shape of guard for a
+/// function whose entire job is to be right about *every* pattern. Writing
+/// `anchored_first_byte` is exactly how `^m?\w+ode$` got through: eleven
+/// shapes considered, quantifiers not among them. A second bug of that kind
+/// would be caught by a different list, and the third by neither.
+///
+/// So the invariant is stated as a property instead, and it is the
+/// one-sided one that matters: **a prefilter may only ever reject a name the
+/// pattern does not match.** `!may_match(name) => !is_match(name)` is the
+/// whole safety argument, and it is checked here against patterns built from
+/// the constructs that make it hard — anchors, quantifiers, character
+/// classes, groups, inline flag groups, and multi-byte literals — crossed
+/// with names drawn from an alphabet that includes the patterns' own
+/// literals, so a name that matches but does not begin with the pattern's
+/// first atom actually occurs.
+///
+/// An engine that refuses a pattern leaves nothing to check, so those cases
+/// are vacuous rather than failing; `regexr` declines a good many constructs
+/// deliberately, which is itself covered above.
+#[cfg(test)]
+mod prefilter_property {
+    use {super::*, proptest::prelude::*};
+
+    /// Pattern fragments chosen for the shapes that make a required first
+    /// byte hard to establish, rather than for realism. Every one of these
+    /// can appear after the leading literal, and several of them can make a
+    /// match start somewhere other than where the pattern starts.
+    fn pattern() -> impl Strategy<Value = String> {
+        let anchor = prop::sample::select(vec!["^", "^", "^", "", "(?m)", "(?i)", "(?s)"]);
+        let literal = prop::sample::select(vec![
+            "a", "b", "m", "n", "o", "d", "e", "j", "x", "é", "S", "-", // literals
+            ".", "*", "?", "[", "(", "\\", "+", "{", // metacharacters
+        ]);
+        let quantifier = prop::sample::select(vec!["", "", "?", "*", "+", "{2}", "{1,3}", "{0,2}"]);
+        let tail = prop::sample::select(vec![
+            "", "", "", // bare literal
+            ".*", "\\w+", "\\d*", // wildcard and shorthand classes
+            "[a-z]*", "[^a-z]*", "[0-9]+", // explicit classes, incl. negated
+            "(a|b)", "(?:ab)*", // groups and alternation
+            "(?!x)", "(?=x)", // lookaround
+            "-wrapped", "\\.exe$", "ode$", // real tails from the corpus
+        ]);
+        (anchor, literal, quantifier, tail).prop_map(|(a, l, q, t)| format!("{a}{l}{q}{t}"))
+    }
+
+    /// Names built from the same alphabet the patterns draw their literals
+    /// from, plus the characters that make an anchor behave differently —
+    /// a newline, a `.`, a leading `.` for the NixOS wrapper shape.
+    fn name() -> impl Strategy<Value = String> {
+        prop::collection::vec(
+            prop::sample::select(vec![
+                'a', 'b', 'c', 'm', 'n', 'o', 'd', 'e', 'j', 'S', 'x', '-', '.', '\n',
+            ]),
+            0..8,
+        )
+        .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    proptest! {
+        #[test]
+        fn a_prefilter_only_ever_rejects_a_name_the_pattern_does_not_match(
+            pattern in pattern(),
+            subject in name(),
+        ) {
+            let Ok(matcher) = Matcher::compile(&pattern, "probe") else {
+                // The engine declined it, so there is no matcher to reason
+                // about. Vacuous, and not a failure.
+                return Ok(());
+            };
+            prop_assume!(matcher.is_match(&subject));
+            // The assumption above is the whole test: this name *does* match.
+            // A prefilter that rejects it makes the rule silently stop
+            // applying to this name, which is the failure this exists for and
+            // the one no end-to-end test would attribute correctly.
+            prop_assert!(
+                matcher.may_match(&subject),
+                "pattern {pattern:?} matches {subject:?}, so its prefilter must \\
+                 admit it -- may_match said no"
+            );
+        }
+    }
+
+    /// The second half of the argument, which is cheap and worth having
+    /// separately: a prefilter must not *help* wrongly either. Rejecting a
+    /// name the pattern would have matched is silent, but admitting one it
+    /// would not is merely wasted work, and the engine still decides. This
+    /// states that the prefilter is allowed to be pessimistic and only
+    /// pessimistic — never optimistic about a match.
+    #[test]
+    fn a_prefilter_is_pessimistic_about_matching_and_exact_about_not() {
+        for pattern in [r"^java[0-9.]*$", r"^app.*$", r"^m?\w+ode$", r"gcc-.*"] {
+            let Ok(matcher) = Matcher::compile(pattern, "probe") else {
+                continue;
+            };
+            for subject in ["java", "java17", "app", "node", "mode", "gcc-x", "zzz", ""] {
+                if !matcher.is_match(subject) {
+                    // Not a match: the prefilter may or may not reject it.
+                    // Nothing to assert -- this arm is documentation of what is
+                    // permitted, not a claim that needs testing.
+                    continue;
+                }
+                assert!(
+                    matcher.may_match(subject),
+                    "{pattern:?} matches {subject:?}; the prefilter must admit it"
+                );
+            }
+        }
+    }
+}
