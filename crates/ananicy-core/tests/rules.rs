@@ -955,3 +955,65 @@ fn a_rule_that_replaces_nothing_is_silent() {
 
     drop(directory);
 }
+
+/// Everything a rule set stores is reachable under the name it was stored
+/// under, and the two lookup paths agree.
+///
+/// This is the property `fuzz/fuzz_targets/parse_rule.rs` checks, stated here
+/// as well because a fuzz target is not part of `cargo test` and a property
+/// that only runs under a fuzzer is a property that quietly stops holding.
+/// `get_rule` and `get_rule_with_name` answer the same question and were
+/// separated in the commit that removed the last two allocations from the
+/// matching path, so "they agree" is no longer a tautology.
+#[test]
+fn a_stored_rule_resolves_the_same_way_through_both_lookups() {
+    // Names that only exist in one map, and rules carrying a `name_regex` so
+    // the answer is a match rather than an exact-name hit.
+    let mut rules = rules();
+    for line in [
+        r#"{"name":"exact","type":"Game","nice":3}"#,
+        r#"{"name":"java","name_regex":"^java[0-9.]*$","nice":7}"#,
+        r#"{"name":"only-a-type","nice":1}"#,
+        r#"{"name":"unmatched","name_regex":"^nothing$","nice":2}"#,
+        r#"{"name":"crlf","nice":4}"#,
+    ] {
+        assert!(rules.load_rule_from_string(line), "loading {line}");
+    }
+
+    for (name, rule) in rules.iter_rules() {
+        assert_eq!(
+            rules.get_rule(name.as_ref()),
+            Some(rule),
+            "{} is stored but does not resolve to the rule it is",
+            name.as_ref()
+        );
+        let (declared, same) = rules
+            .get_rule_with_name(name.as_ref())
+            .unwrap_or_else(|| panic!("{} does not resolve with a name", name.as_ref()));
+        assert_eq!(
+            declared.as_ref(),
+            name.as_ref(),
+            "an exact lookup must report the name it was asked for"
+        );
+        assert_eq!(same, rule, "and both lookups must reach the same rule");
+    }
+
+    // A `name_regex` rule is declared under one name and matches others, which
+    // is the whole reason the name-carrying variant exists. It has to reach the
+    // rule, and it has to report the *declared* name rather than the one asked
+    // for.
+    let (declared, rule) = rules
+        .get_rule_with_name("java17")
+        .expect("java17 matches the java rule's name_regex");
+    assert_eq!(declared.as_ref(), "java", "the declared name, not 'java17'");
+    assert_eq!(
+        rule.nice(),
+        Some(7),
+        "and the rule that name_regex selected"
+    );
+    assert_eq!(
+        rules.get_rule("java17").map(|r| r.nice()),
+        Some(Some(7)),
+        "the hot path reaches the same rule without carrying the name"
+    );
+}
