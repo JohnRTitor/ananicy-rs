@@ -93,6 +93,25 @@ fn bench_cgroup_resolution(c: &mut Criterion) {
     c.bench_function("process_cgroup", |b| {
         b.iter(|| platform.process_cgroup(black_box(pid)))
     });
+
+    // The same call against a resolver that has never seen this pid.
+    //
+    // This is the one production actually takes, and the gap is the point.
+    // `process_cgroup` is called exactly once per matched process — from
+    // `set_cpu_weight`, the only caller — and `CachingCgroupResolver` is keyed
+    // on pid. A new process has a new pid, so the entry is never there and the
+    // lookup is always a miss. The warm figure above is a cache hit that
+    // production does not take; it can only occur when one pid is resolved
+    // twice inside the one-second TTL, which the netlink dedup prevents except
+    // for a process reported by both the start-up `/proc` walk and a netlink
+    // event.
+    //
+    // Measured: 7.4 us warm against 20.6 us cold, a factor of 2.8. Both
+    // get_start_time reads on the cold path are the difference, and neither of
+    // them is doing useful work there.
+    c.bench_function("process_cgroup_cold", |b| {
+        b.iter(|| LinuxPlatform::new().process_cgroup(black_box(pid)))
+    });
 }
 
 criterion_group!(
