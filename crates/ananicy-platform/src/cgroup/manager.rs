@@ -162,11 +162,8 @@ impl CgroupManager {
         }
         seen.put(target.to_path_buf(), ());
         warn!(
-            "Cgroup {} has no {}, so the cpu weight implied by a rule's nice value \
-             cannot be applied to it. The nice value itself was applied. The cgroup \
-             needs the cpu controller in its parent's cgroup.subtree_control; if it is \
-             one of ours, that is the unit's delegation at fault, and restarting the \
-             daemon will not fix it.",
+            "Cgroup {} has no {}: nice applied, implied cpu weight skipped. \
+             Needs +cpu in the parent's cgroup.subtree_control.",
             target.display(),
             file.file_name().unwrap_or_default().to_string_lossy(),
         );

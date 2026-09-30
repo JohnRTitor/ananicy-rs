@@ -19,7 +19,11 @@
 //! not which program is being measured.
 
 use {
-    ananicy_platform::procfs::get_command_from_pid,
+    ananicy_core::worker::PlatformActions,
+    ananicy_platform::{
+        LinuxPlatform,
+        procfs::{get_command_from_pid, get_start_time, get_tgid, get_tids},
+    },
     criterion::{Criterion, black_box, criterion_group, criterion_main},
 };
 
@@ -49,5 +53,53 @@ fn bench_command_from_dead_pid(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_command_from_pid, bench_command_from_dead_pid);
+/// The two other procfs reads on the per-process path, measured because they
+/// were the two nobody had measured.
+///
+/// `get_start_time` reads `/proc/<pid>/stat` and is the validity check behind
+/// the cgroup resolver's cache, the pid-reuse guard behind `move_pid`, and
+/// the attribution check behind the `/proc/<pid>/exe` failure budget — so a
+/// single process with a rule can pay for it several times over, and each
+/// payment is a file read and a parse.
+///
+/// `get_tids` is a `readdir` of `/proc/<pid>/task` and runs once for every
+/// process that matched a rule, before a single attribute is applied. It is
+/// the same shape of cost as `get_command_from_pid` and was never in anyone's
+/// profile.
+fn bench_other_procfs_reads(c: &mut Criterion) {
+    let pid = std::process::id() as i32;
+
+    c.bench_function("get_start_time", |b| {
+        b.iter(|| get_start_time(black_box(pid)))
+    });
+
+    c.bench_function("get_tids", |b| b.iter(|| get_tids(black_box(pid)).ok()));
+}
+
+/// The cgroup-resolution path, which is the one that decides whether a
+/// process' `nice` is mirrored into `cpu.weight`.
+///
+/// `apply_cpu_weight` is on by default and fires for any rule carrying a
+/// `nice`, so this is on the path of nearly every matched process — and it
+/// reads `/proc/<pid>/stat` to validate the cache before consulting it. The
+/// cache exists to avoid a `/proc/<pid>/cgroup` read, so the interesting
+/// question is which of the two costs more.
+fn bench_cgroup_resolution(c: &mut Criterion) {
+    let pid = std::process::id() as i32;
+    let platform = LinuxPlatform::new();
+
+    c.bench_function("get_tgid", |b| b.iter(|| get_tgid(black_box(pid))));
+
+    c.bench_function("process_cgroup", |b| {
+        b.iter(|| platform.process_cgroup(black_box(pid)))
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_command_from_pid,
+    bench_command_from_dead_pid,
+    bench_other_procfs_reads,
+    bench_cgroup_resolution
+);
 criterion_main!(benches);
