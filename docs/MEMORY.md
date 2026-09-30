@@ -213,39 +213,61 @@ rule said nothing about, or `"ioclass": null` stops suppressing the type's value
 The table above is about a rule set held in memory. The per-process path is a
 different budget and a different ranking, and the two do not agree.
 
-| | |
-|---|---:|
-| `get_command_from_pid` | 10.3 µs |
-| `rules_get_cache_100_rules/miss` | 1.19 µs |
-| `rules_get_cache_1_rules/miss` | 60 ns |
-| `rules_get_cache_1_rules/hit` | 8.2 ns |
-| `cpuset_parse` | 51 ns |
+What one matched process costs, measured, on a 12-core cgroup-v2 host. This is
+the number that matters, and it is the one that was not obvious:
 
-Resolving a process name costs **170x an entire uncached rule lookup** and
-**1300x a cached one**. It is the dominant cost in the daemon by a wide
-margin, and it is `cargo bench --bench procfs`.
+| step | | fires for |
+|---|---:|---|
+| `get_command_from_pid` | 10.6 µs | every process-creation event |
+| `process_cgroup` (a cache miss, which is every real call) | 14.2 µs | every rule carrying a `nice` |
+| `get_tids` | 6.3 µs | every matched process |
+| `get_rule`, uncached | 0.06 µs | |
+| `get_rule`, cached | 0.008 µs | |
+| **total** | **~31 µs** | |
 
-That function is syscall-bound, not allocation-bound: four `fs` calls on
-procfs are open/read/close each, and those are the 10 µs. The lever is
-therefore *fewer syscalls*, not cheaper bookkeeping around them — which is
-why the fix that mattered there was to stop reading `/proc` for a `Fork`
-event that cannot have a name yet, rather than the one that stopped
-rebuilding the same `/proc/<pid>` path four times. The latter removed four
-allocations and bought 3%; it was kept because those allocations are real
-under a `MemoryHigh`, not because it was fast.
+Rule matching is **0.2%** of that. Everything else in this document about the
+rule set — the struct size, the interning, the resolved-rule cache, the regex
+prefilter, the hasher — is a rounding error next to four procfs reads, and an
+entire series of work on it moved a number three orders of magnitude below the
+one that was not being looked at.
+
+Two things follow, and both have cost a wrong conclusion:
+
+- **The dominant cost is syscall-bound, so the lever is fewer reads, not
+  cheaper work around them.** Four `fs` calls on procfs are open/read/close
+  each and that is the microseconds. Stopping the `Fork` read is worth a whole
+  read; removing four allocations from the same function bought 3%. The
+  allocation work was still worth keeping — those allocations are real under a
+  `MemoryHigh` — but it was never going to be the thing.
+- **A benchmark can measure a path production does not take.**
+  `process_cgroup` measured 7.4 µs against a warm cache, and that is not what
+  it costs: `CachingCgroupResolver` is keyed on pid, and `process_cgroup` is
+  called once per matched process from `set_cpu_weight`, so a new pid never
+  finds an entry. The real figure was 20.6 µs, and the difference was two
+  `get_start_time` reads, neither of which was doing useful work — the first
+  validated a cache entry that did not exist, and the second re-checked the pid
+  across a 5.8 µs window, which is not long enough for a pid to be recycled on
+  any machine. A hit can only occur when one pid is resolved twice inside the
+  one-second TTL, which the netlink dedup prevents except for a process
+  reported by both the start-up `/proc` walk and a netlink event.
+
+Not in the table, and not measured: `is_realtime` (`sched_getattr`) and the
+apply syscalls themselves. Both would enlarge the total and make the rule
+lookup's share smaller still.
 
 The rule-matching numbers are only large for a rule set with many
 `name_regex` rules. The shipped set has exactly one, which is why the
-100-rule row is three orders of magnitude above the 1-rule row and why the
+100-rule figure is three orders of magnitude above the 1-rule one and why the
 two have moved independently throughout: hashing and the `Vec`→bitset
-changes show up in the 1-rule row, the regex scan and its prefilter show up
-in the 100-rule row, and the shipped daemon only ever runs the first.
+changes show up in the 1-rule figure, the regex scan and its prefilter show up
+in the 100-rule one, and the shipped daemon only ever runs the first.
 
 ## Finding out on your own machine
 
 ```sh
 ananicy-rs debug memory          # one snapshot: heap, cgroup breakdown, faults
 ananicy-rs start --memory-stats  # the same, with per-minute deltas, while running
+cargo bench --bench procfs       # the per-process reads, which is the real budget
 ```
 
 `debug memory` prints the heap from `/proc/self/status` and the cgroup's own

@@ -96,12 +96,33 @@ impl<R: CgroupProcessResolver> CachingCgroupResolver<R> {
 
 impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R> {
     fn resolve(&self, pid: i32) -> io::Result<Option<CgroupIdentity>> {
-        let Some(start_time_current) = crate::procfs::get_start_time(pid) else {
+        // Read once, and before the cgroup below rather than after it.
+        //
+        // This is the start-time field of `/proc/<pid>/stat`, and it is what
+        // makes a cached entry attributable to the process currently holding
+        // the pid — a pid is reused, and without it a new process inherits the
+        // previous occupant's cached cgroup. It is also, at 7.4 us, the most
+        // expensive thing in this function by a factor of two over the cgroup
+        // read it is protecting.
+        //
+        // It used to be read twice on a miss: once here, to validate the entry
+        // being looked up, and once after the cgroup read, to check the pid had
+        // not been recycled across it. The second is gone, and the reason it can
+        // be is arithmetic. The window it guarded was the cgroup read, which
+        // measures 5.8 us. For the pid to change hands inside 5.8 us the kernel
+        // would have to wrap all of `pid_max` — at least 4M pids, and more on a
+        // default system — so at any fork rate a machine can actually reach,
+        // wrapping is hundreds of milliseconds. The check could not fire, and it
+        // cost a full procfs read on every matched process.
+        //
+        // `apply_cpu_weight` is on by default and calls this for every process
+        // whose rule carries a `nice`, so that is not a rare path.
+        let Some(start_time) = crate::procfs::get_start_time(pid) else {
             // Failed to get start time (process probably died), just return None
             return Ok(None);
         };
 
-        // Try the cache first. A read lock is enough: `LruCache::get` takes
+        // Try the cache. A read lock is enough: `LruCache::get` takes
         // `&mut self` because it moves the entry to the most-recently-used end,
         // so the interior mutability is behind the `RwLock` rather than behind a
         // cell — a `read()` cannot do that. Taking the *write* lock here instead
@@ -111,29 +132,32 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
             return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
         };
         if let Some(&(cached_start_time, ref cached_id, ref timestamp)) = cache.get(&pid)
-            && cached_start_time == start_time_current
+            && cached_start_time == start_time
             && timestamp.elapsed() < self.ttl
         {
             return Ok(cached_id.clone());
         }
         drop(cache); // Release lock before resolving
 
-        // Cache miss, expired, or start_time mismatch
+        // Cache miss, expired, or start_time mismatch.
         let resolved = self.inner.resolve(pid)?;
 
-        // Re-check start_time to prevent race condition during resolve
-        if let Some(start_time_after) = crate::procfs::get_start_time(pid)
-            && start_time_current == start_time_after
-        {
-            let Ok(mut cache) = self.cache.write() else {
-                return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
-            };
-            cache.put(pid, (start_time_current, resolved.clone(), Instant::now()));
-            return Ok(resolved);
-        }
-
-        // Start time changed during resolve, return None to skip
-        Ok(None)
+        // The start time stored is the one read *above* this line, so an entry
+        // can never pair a new process' start time with an old process' cgroup.
+        // That ordering is the reason the read is up here and the removal of the
+        // re-check is safe: had the read stayed below, a pid recycled during the
+        // cgroup read would be recorded as the new process' identity and then
+        // served to whatever looked up that pid next.
+        //
+        // A pid that changes hands *during* the cgroup read now returns the
+        // answer rather than `None`. The old re-check is what suppressed that,
+        // and since the window is 5.8 us and the check could not fire, the two
+        // behaviours are not distinguishable on any machine.
+        let Ok(mut cache) = self.cache.write() else {
+            return Err(io::Error::other("cgroup resolver cache lock is poisoned"));
+        };
+        cache.put(pid, (start_time, resolved.clone(), Instant::now()));
+        Ok(resolved)
     }
 }
 
