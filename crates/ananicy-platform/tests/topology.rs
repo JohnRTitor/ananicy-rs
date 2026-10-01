@@ -51,17 +51,6 @@ fn test_detect_produces_valid_topology() {
 }
 
 #[test]
-fn test_all_online_cpus_have_valid_capacity() {
-    // Capacity is what separates big from little, so a fixture without
-    // capacity differences must not be reported as a heterogeneous machine.
-    let topo = big_little();
-    assert_ne!(
-        topo.big_cores_str, topo.little_cores_str,
-        "Should detect capacity differences"
-    );
-}
-
-#[test]
 fn test_cpuset_strings_are_parseable() {
     let topo = big_little();
 

@@ -314,13 +314,15 @@ tuning continues.
 ## Testing
 
 `src/systemd.rs` unit-tests the resolver without a service manager: service
-supervision, user service, systemd in a container, manual invocation, each
-evidence source in isolation, evidence ordering, partial and empty environments,
-the scope veto, explicit precedence, and `/proc/self/cgroup` parsing for the
-unified, hybrid and legacy hierarchies. `tests/cli.rs` covers flag acceptance,
-mutual exclusion, and that the *environment* rather than the host drives the
-decision — the ambient environment is neutralised so the suite does not depend on
-the developer's init system.
+supervision by either kind of manager — a user instance passes the same variables
+as the system one, and a systemd running as a container's PID 1 passes them too,
+so `SystemdEnvironment` does not distinguish them — an environment carrying no
+evidence at all, each evidence source in isolation, evidence ordering, partial and
+empty environments, the scope veto, explicit precedence, and `/proc/self/cgroup`
+parsing for the unified, hybrid and legacy hierarchies. `tests/cli.rs` covers flag
+acceptance, mutual exclusion, and that the *environment* rather than the host
+drives the decision — the ambient environment is neutralised so the suite does not
+depend on the developer's init system.
 
 Not covered automatically: a root (system) service instance and our packaged unit
 need root and a real `systemctl`; `Type=notify` is not what we ship; hosts older

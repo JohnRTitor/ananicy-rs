@@ -1322,36 +1322,14 @@ mod rule {
         Rule::from_json(&serde_json::from_str(json).expect("a JSON rule"))
     }
 
-    /// The whole reason the type exists. A 15,829-rule default rule set cost
-    /// about 18.6 MB when each rule was a parsed JSON document, which against the
-    /// `MemoryHigh` the shipped unit carried meant the working set did not fit
-    /// and the kernel reclaimed the daemon's own pages continuously.
-    ///
-    /// This is the size that has to stay under a few hundred bytes. It does not
-    /// pin the total, because where these bytes live matters as much as how many
-    /// there are — see the type's documentation, and `docs/CONFIGURATION.md`
-    /// § Memory.
-    #[test]
-    fn a_rule_is_small() {
-        let size = std::mem::size_of::<Rule>();
-        assert!(
-            size <= 192,
-            "a rule is {size} bytes; 15,829 of them is {} MB, and it is held \
-             inline in the map that indexes them",
-            size * 15_829 / (1024 * 1024)
-        );
-    }
-
     /// The exact size `docs/MEMORY.md` reasons about, pinned so a change to the
-    /// layout is a deliberate one rather than something the budget notices.
-    ///
-    /// The ceiling above is a guard rail; this is the number. It was 176 while
-    /// the four names were `Option<Option<Arc<str>>>` at 24 bytes each, which
-    /// is 96 of the struct for a few dozen distinct values — the inner `Option`
-    /// spends the null-pointer niche, so the outer one needs a discriminant of
-    /// its own. They are [`NameAttribute`]s now, two bytes each, packed into
-    /// eight alongside the numbers, and `type_name` is a [`TypeNameId`] rather
-    /// than an owned `Box<str>`.
+    /// layout is a deliberate one rather than something the budget notices. It
+    /// was 176 while the four names were `Option<Option<Arc<str>>>` at 24 bytes
+    /// each, which is 96 of the struct for a few dozen distinct values — the
+    /// inner `Option` spends the null-pointer niche, so the outer one needs a
+    /// discriminant of its own. They are [`NameAttribute`]s now, two bytes each,
+    /// packed into eight alongside the numbers, and `type_name` is a
+    /// [`TypeNameId`] rather than an owned `Box<str>`.
     ///
     /// 72 is five `Option<Option<i32>>` (40) + four `NameAttribute` (8) +
     /// `TypeNameId` (2) + `Box<[(Box<str>, Value)]>` (16), plus padding.

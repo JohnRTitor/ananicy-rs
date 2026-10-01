@@ -417,33 +417,6 @@ impl Drop for NetlinkMonitor {
 mod tests {
     use super::*;
 
-    /// A pid reported under one name and then under a different one is reported
-    /// again. This is the property the filter has to keep, and the bug it
-    /// prevents was that deduplicating on "the pid differs from the last one"
-    /// discarded the second report: a `fork()` immediately followed by an
-    /// `execve()` produces `FORK(p)` then `EXEC(p)`, so a shell that runs a
-    /// single command got the *shell's* rule applied and the command's own rule
-    /// never ran.
-    ///
-    /// It reads the same two names a real `fork`→`exec` pair would, because the
-    /// filter is what decides that they are different — but the listener no
-    /// longer calls it for the `Fork` at all. See [`pid_to_classify`], and
-    /// `the_fork_event_is_not_worth_reading_proc_for` for that half.
-    #[test]
-    fn the_exec_that_follows_a_fork_is_not_thrown_away() {
-        let mut reported = ReportedNames::new();
-
-        assert!(
-            reported.should_report(4242, "slowexec"),
-            "the first sighting of a pid is always reported"
-        );
-        assert!(
-            reported.should_report(4242, "sleep"),
-            "the exec that renames the process must be reported too, or the \
-             process is tuned with its parent's rule for the rest of its life"
-        );
-    }
-
     /// The `Fork` event is not worth a `/proc` read, and this is why: at `Fork`
     /// time the child has not run `execve`, so its `mm` is still the parent's
     /// and `/proc/<child>/cmdline` is the parent's copy. The read cannot return

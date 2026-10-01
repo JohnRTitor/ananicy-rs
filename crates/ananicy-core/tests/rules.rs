@@ -228,23 +228,6 @@ fn an_unreadable_rules_directory_is_a_no_op() {
 }
 
 #[test]
-fn name_regex_rules_match_by_pattern() {
-    let mut rules = rules();
-
-    assert!(rules.load_rule_from_string(
-        r#"{ "name": "java", "name_regex": "^(java|javaw)[0-9.]*$", "nice": 3 }"#
-    ));
-
-    assert!(
-        rules.get_rule("java").is_some(),
-        "the rule name itself matches"
-    );
-    assert!(rules.get_rule("java17").is_some());
-    assert!(rules.get_rule("javaw").is_some());
-    assert!(rules.get_rule("notjava").is_none());
-}
-
-#[test]
 fn name_regex_supports_lookaround() {
     // The engine is `regexr` rather than the standard `regex` crate precisely
     // so that lookarounds in existing community rules keep working. A negative

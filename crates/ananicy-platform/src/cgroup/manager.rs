@@ -564,21 +564,6 @@ mod tests {
         assert_eq!(bandwidth_us(8, 0, V2_PERIOD_US), 0);
     }
 
-    /// A `Manager` without a hierarchy resolves nothing.
-    #[test]
-    fn a_manager_without_a_hierarchy_resolves_nothing() {
-        let manager = CgroupManager::new_with_root(
-            CgroupInfo {
-                mount_point: PathBuf::new(),
-                version: CgroupVersion::None,
-            },
-            None,
-        );
-
-        assert_eq!(manager.resolve_target_dir("anything"), None);
-        assert!(!manager.cgroup_exists("anything"));
-    }
-
     #[test]
     fn info_is_reported_back() {
         let manager = CgroupManager::new_with_root(

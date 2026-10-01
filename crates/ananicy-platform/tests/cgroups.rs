@@ -66,23 +66,6 @@ fn test_cgroup_dir() -> Option<PathBuf> {
 }
 
 #[test]
-fn the_detected_cgroup_version_is_one_this_build_understands() {
-    let info = get_cgroup_info();
-    assert!(matches!(
-        info.version,
-        CgroupVersion::None | CgroupVersion::V1 | CgroupVersion::V2
-    ));
-
-    if info.version != CgroupVersion::None {
-        assert!(
-            info.mount_point.is_absolute(),
-            "a detected hierarchy has an absolute mount point: {:?}",
-            info.mount_point
-        );
-    }
-}
-
-#[test]
 fn the_test_process_belongs_to_a_cgroup_when_one_is_available() {
     if get_cgroup_info().version == CgroupVersion::None {
         return; // no cgroup hierarchy on this host

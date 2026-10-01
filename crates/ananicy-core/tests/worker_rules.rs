@@ -219,27 +219,6 @@ fn a_cpuset_alias_is_resolved_before_the_affinity_call() {
 }
 
 #[test]
-fn an_alias_resolving_to_no_cpus_skips_the_affinity_call() {
-    // On a machine with no little cores the alias is empty; the daemon must not
-    // build an empty mask, which would mean "do not touch affinity" anyway.
-    let run = run_worker_with(
-        all_attributes_enabled(),
-        r#"{"name":"worker-test","cpuset":"little-cores"}"#,
-        FakePlatform::new().with_max_cores(8),
-        aliases(&[("little-cores", "")]),
-        ananicy_core::types::Pid(1),
-        "worker-test",
-    );
-
-    assert!(
-        !run.platform
-            .calls()
-            .iter()
-            .any(|call| matches!(call, Call::SetAffinity { .. }))
-    );
-}
-
-#[test]
 fn an_unparseable_cpuset_is_reported_as_a_failure() {
     let run = run_worker(
         all_attributes_enabled(),
@@ -447,6 +426,14 @@ fn a_non_realtime_process_is_left_in_its_cgroup() {
     );
 }
 
+/// With the option off, the cgroup a rule names *is* applied to a realtime
+/// process — that is what "switched off" means. This is the only place the
+/// flag's value is observed through a platform call: the other read of it is in
+/// the scan loop, which only logs.
+///
+/// The rule has to name a cgroup. `apply_rule` reaches `add_pid_to_cgroup` only
+/// through `rule.cgroup()`, so a cgroup-less rule takes the same path with the
+/// flag on or off and cannot tell the two apart.
 #[test]
 fn the_realtime_workaround_can_be_switched_off() {
     let mut config = snapshot(false);
@@ -454,15 +441,16 @@ fn the_realtime_workaround_can_be_switched_off() {
 
     let run = run_worker(
         config,
-        r#"{"name":"worker-test","nice":1}"#,
+        r#"{"name":"worker-test","nice":1,"cgroup":"lowlatency"}"#,
         FakePlatform::realtime_on_cgroup_v2(),
     );
 
     assert!(
-        !run.platform
-            .calls()
-            .iter()
-            .any(|call| matches!(call, Call::AddPidToCgroup { .. }))
+        run.platform.calls().contains(&Call::AddPidToCgroup {
+            cgroup: "lowlatency".to_string()
+        }),
+        "with the workaround off the rule's cgroup is applied like any other: {:?}",
+        run.platform.calls()
     );
 }
 

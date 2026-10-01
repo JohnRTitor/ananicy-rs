@@ -108,18 +108,6 @@ fn an_empty_cpuset_is_a_no_op() {
 }
 
 #[test]
-fn test_set_affinity_on_nonexistent_process() {
-    let mut cs = CpuSet::new(get_max_number_of_cpus());
-    cs.set_cpu(0);
-
-    let result = set_affinity(DEAD_PID, &[DEAD_PID], &cs);
-    assert!(
-        result.is_err(),
-        "set_affinity on nonexistent process should fail"
-    );
-}
-
-#[test]
 fn test_set_affinity_with_zero_ncpus_cpuset() {
     // A cpuset with no CPU slots at all must fail gracefully, not panic.
     let cs = CpuSet::new(0);

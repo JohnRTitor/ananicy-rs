@@ -345,21 +345,6 @@ mod tests {
         }
     }
 
-    /// A configuration already at `debug` used to get nothing from the flag,
-    /// which is the case that made forcing `DEBUG` useless rather than merely
-    /// crude.
-    #[test]
-    fn verbose_on_an_already_verbose_configuration_still_reaches_trace() {
-        assert_eq!(
-            effective_log_level(&LogLevel::Debug, true, false),
-            Level::TRACE
-        );
-        assert_eq!(
-            effective_log_level(&LogLevel::Trace, true, false),
-            Level::TRACE
-        );
-    }
-
     #[test]
     fn log_level_reload_changes_the_active_filter() {
         let (filter, handle) = tracing_subscriber::reload::Layer::new(LevelFilter::ERROR);

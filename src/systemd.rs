@@ -301,32 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn user_service_enables_mode() {
-        // Scenario C: user managers pass the same variables as the system manager.
-        assert_eq!(
-            resolve(AUTO, env(true, false, false)),
-            enabled(SystemdEvidence::InvocationId)
-        );
-    }
-
-    #[test]
-    fn systemd_in_container_enables_mode() {
-        // Scenario D: a container running its own systemd as PID 1 sets the
-        // same variables; the identity of the manager is irrelevant here.
-        assert_eq!(
-            resolve(AUTO, env(true, false, false)),
-            enabled(SystemdEvidence::InvocationId)
-        );
-    }
-
-    #[test]
-    fn manual_invocation_is_not_detected() {
-        // Scenario B/E: nothing indicates supervision of this process, no
-        // matter which init system the host uses.
-        assert_eq!(resolve(AUTO, env(false, false, false)), not_detected());
-    }
-
-    #[test]
     fn container_without_systemd_is_not_detected() {
         // Scenario D: the host may run systemd, but nothing in this
         // environment says this process is supervised by it.

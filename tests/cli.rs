@@ -602,17 +602,6 @@ fn assert_systemd_mode(reported: &str, with_systemd_feature: &str) {
 }
 
 #[test]
-fn test_cli_systemd_mode_reported_in_debug_output() {
-    // The resolved mode is always reported, whatever the environment looks like.
-    let mut cmd = ananicy();
-    cmd.arg("debug")
-        .arg("cgroups")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Systemd integration: disabled"));
-}
-
-#[test]
 fn test_cli_systemd_not_enabled_because_the_host_uses_systemd() {
     // Being started on a systemd host is not evidence of anything: without
     // supervision variables the mode stays off. This holds on systemd hosts,

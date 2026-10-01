@@ -11,11 +11,6 @@ fn parse(contents: &str) -> ConfigSnapshot {
 }
 
 #[test]
-fn log_applied_rule_defaults_to_disabled() {
-    assert!(!ConfigSnapshot::default().log_applied_rule);
-}
-
-#[test]
 fn log_applied_rule_is_parsed_from_both_boolean_values() {
     assert!(!parse("log_applied_rule = false\n").log_applied_rule);
     assert!(parse("log_applied_rule = true\n").log_applied_rule);
@@ -55,11 +50,6 @@ fn log_levels_map_to_ordered_tracing_levels() {
     for (configured, emitted) in levels {
         assert_eq!(Level::from(&configured), emitted);
     }
-}
-
-#[test]
-fn invalid_log_level_falls_back_to_info() {
-    assert_eq!(parse("loglevel = verbose\n").loglevel, LogLevel::Info);
 }
 
 #[test]

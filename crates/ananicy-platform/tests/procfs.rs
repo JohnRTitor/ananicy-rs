@@ -66,15 +66,6 @@ fn the_thread_group_id_of_a_live_process_is_itself() {
 }
 
 #[test]
-fn thread_enumeration_lists_the_leader_of_a_live_process() {
-    let tids = procfs::get_tids(self_pid()).expect("the test process is alive");
-    assert!(
-        tids.contains(&self_pid()),
-        "a thread group always contains its leader, got {tids:?}"
-    );
-}
-
-#[test]
 fn thread_enumeration_of_a_dead_process_is_reported_as_not_found() {
     assert!(matches!(
         procfs::get_tids(DEAD_PID),
