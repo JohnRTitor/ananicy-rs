@@ -176,7 +176,10 @@ pub(crate) fn log_config(
         );
         info!("Config check_freq: {}", snap.check_freq);
         info!("Config apply_cpuset: {}", snap.apply_cpuset);
-        info!("Config apply_cpu_weight: {}", snap.apply_cpu_weight);
+        info!(
+            "Config apply_cpu_weight_from_nice: {}",
+            snap.apply_cpu_weight_from_nice
+        );
         info!("Config x3d_mode: {}", snap.x3d_mode);
         info!("Config loglevel: {}", snap.loglevel);
         info!(

@@ -115,7 +115,7 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
         // wrapping is hundreds of milliseconds. The check could not fire, and it
         // cost a full procfs read on every matched process.
         //
-        // `apply_cpu_weight` is on by default and calls this for every process
+        // `apply_cpu_weight_from_nice` is on by default and calls this for every process
         // whose rule carries a `nice`, so that is not a rare path.
         let Some(start_time) = crate::procfs::get_start_time(pid) else {
             // Failed to get start time (process probably died), just return None

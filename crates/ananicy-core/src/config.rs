@@ -92,7 +92,7 @@ pub struct ConfigSnapshot {
     /// Whether a `nice` value is mirrored into the `cpu.weight` of the cgroup the
     /// process already belongs to. That write lands on a cgroup, not on a
     /// process, so it affects every other task in it; see the documentation.
-    pub apply_cpu_weight: bool,
+    pub apply_cpu_weight_from_nice: bool,
     pub cgroup_realtime_workaround: bool,
     pub x3d_mode: String,
     pub log_applied_rule: bool,
@@ -115,7 +115,7 @@ impl Default for ConfigSnapshot {
             apply_oom_score_adj: true,
             apply_cgroups: true,
             apply_cpuset: true,
-            apply_cpu_weight: true,
+            apply_cpu_weight_from_nice: true,
             cgroup_realtime_workaround: true,
             x3d_mode: "auto".to_string(),
             log_applied_rule: false,
@@ -184,7 +184,9 @@ impl ConfigSnapshot {
                     "apply_oom_score_adj" => config.apply_oom_score_adj = value == "true",
                     "apply_cgroup" => config.apply_cgroups = value == "true",
                     "apply_cpuset" => config.apply_cpuset = value == "true",
-                    "apply_cpu_weight" => config.apply_cpu_weight = value == "true",
+                    "apply_cpu_weight_from_nice" => {
+                        config.apply_cpu_weight_from_nice = value == "true"
+                    }
                     "cgroup_realtime_workaround" => {
                         config.cgroup_realtime_workaround = value == "true"
                     }
@@ -226,7 +228,7 @@ impl ConfigSnapshot {
             cgroup_realtime_workaround={}\n\
             apply_cgroup={}\n\
             apply_cpuset={}\n\
-            apply_cpu_weight={}\n\
+            apply_cpu_weight_from_nice={}\n\
             x3d_mode={}\n\
             loglevel={}\n\
             check_freq={}\n\
@@ -243,7 +245,7 @@ impl ConfigSnapshot {
             self.cgroup_realtime_workaround,
             self.apply_cgroups,
             self.apply_cpuset,
-            self.apply_cpu_weight,
+            self.apply_cpu_weight_from_nice,
             self.x3d_mode,
             self.loglevel,
             self.check_freq,
@@ -379,7 +381,7 @@ mod tests {
         assert!(config.apply_oom_score_adj);
         assert!(config.apply_cgroups);
         assert!(config.apply_cpuset);
-        assert!(config.apply_cpu_weight);
+        assert!(config.apply_cpu_weight_from_nice);
         assert!(config.cgroup_load);
         assert!(config.type_load);
         assert!(config.rule_load);

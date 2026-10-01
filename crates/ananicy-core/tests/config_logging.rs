@@ -81,6 +81,7 @@ fn generated_config_round_trips_logging_and_apply_flags() {
     let expected = ConfigSnapshot {
         log_applied_rule: true,
         apply_cgroups: false,
+        apply_cpu_weight_from_nice: false,
         loglevel: LogLevel::Warn,
         ..ConfigSnapshot::default()
     };

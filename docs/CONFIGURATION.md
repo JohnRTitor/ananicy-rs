@@ -24,7 +24,7 @@ The format is `key=value`, one per line.
 | `apply_latnice` | `true` | Apply latency nice values from rules |
 | `apply_cpuset` | `true` | Apply CPU affinity (cpuset) from rules |
 | `apply_cgroup` | `true` | Apply cgroup membership from rules |
-| `apply_cpu_weight` | `true` | On cgroup v2, mirror an applied `nice` value into the `cpu.weight` of the cgroup the process already belongs to. See [Applied-rule logging](#applied-rule-logging) |
+| `apply_cpu_weight_from_nice` | `true` | On cgroup v2, mirror an applied `nice` value into the `cpu.weight` of the cgroup the process already belongs to. See [the mirror](#the-nice--cpuweight-mirror) |
 | `cgroup_load` | `true` | Load cgroup definitions (`.cgroups` files) |
 | `type_load` | `true` | Load type definitions (`.types` files) |
 | `rule_load` | `true` | Load rule definitions (`.rules` files) |
@@ -97,7 +97,7 @@ therefore of the other tasks in it, not only of the process that matched the rul
 `100 × 1.25⁻ⁿⁱᶜᵉ`, clamped to the kernel's `1..10000` range, so a rule with `nice: 5` sets a weight
 of about `32` for the entire cgroup.
 
-Set `apply_cpu_weight = false` to keep the `nice` value and drop the mirror. The mirror is
+Set `apply_cpu_weight_from_nice = false` to keep the `nice` value and drop the mirror. The mirror is
 also skipped whenever the kernel does not expose a `cpu.weight` (cgroup v2) or
 `cpu.shares` (cgroup v1) file in that cgroup — the controller has to be enabled in the
 cgroup's *parent* first, and `ananicy-rs` never enables it in a cgroup it does not own.

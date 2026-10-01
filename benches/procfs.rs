@@ -79,7 +79,7 @@ fn bench_other_procfs_reads(c: &mut Criterion) {
 /// The cgroup-resolution path, which is the one that decides whether a
 /// process' `nice` is mirrored into `cpu.weight`.
 ///
-/// `apply_cpu_weight` is on by default and fires for any rule carrying a
+/// `apply_cpu_weight_from_nice` is on by default and fires for any rule carrying a
 /// `nice`, so this is on the path of nearly every matched process — and it
 /// reads `/proc/<pid>/stat` to validate the cache before consulting it. The
 /// cache exists to avoid a `/proc/<pid>/cgroup` read, so the interesting

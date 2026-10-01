@@ -214,7 +214,7 @@ the reload happens in the running process without dropping events.
 
 | Change | Applied by |
 |--------|-----------|
-| `loglevel`, `log_applied_rule`, other `apply_*` flags | Reload |
+| `loglevel`, `log_applied_rule`, the per-event `apply_*` flags | Reload |
 | `ananicy.conf` values that are re-read | Reload |
 | `.rules`, `.types`, `.cgroups` | Reload |
 | `check_freq` | Restart — captured when the manual scanner starts |

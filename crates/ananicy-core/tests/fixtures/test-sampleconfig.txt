@@ -12,6 +12,7 @@ apply_sched=false
 apply_oom_score_adj=false
 apply_cgroup=false
 apply_cpuset=false
+apply_cpu_weight_from_nice=false
 
 cgroup_realtime_workaround=false
 

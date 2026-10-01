@@ -316,8 +316,9 @@ impl Worker {
 
             // On cgroup v2 a nice value is also mirrored into `cpu.weight`. The
             // write lands on the cgroup the process already belongs to, so it
-            // also reweights every other task in that cgroup; `apply_cpu_weight`
-            // turns it off for operators who do not want that.
+            // also reweights every other task in that cgroup;
+            // `apply_cpu_weight_from_nice` turns it off for operators who do not
+            // want that.
             //
             // `powi` is computed from a `f64` exponent rather than a negated
             // `i32`: a rule carrying `"nice": -2147483648` overflows that negation
@@ -326,7 +327,7 @@ impl Worker {
             // Casting the value straight to `f64` saturates at the same place the
             // clamp does, so an out-of-range nice gives the maximum weight
             // instead of panicking or wrapping.
-            if cfg.apply_cpu_weight && self.platform.is_cgroup_v2() {
+            if cfg.apply_cpu_weight_from_nice && self.platform.is_cgroup_v2() {
                 let weight = (100.0 * 1.25f64.powf(-(nice as f64))) as u32;
                 let weight = weight.clamp(1, 10000);
                 match self.platform.set_cpu_weight(p.identity.pid.0, weight) {

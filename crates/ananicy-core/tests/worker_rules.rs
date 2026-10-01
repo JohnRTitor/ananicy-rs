@@ -316,11 +316,11 @@ fn a_failing_cpu_weight_does_not_prevent_the_nice_value() {
 #[test]
 fn the_cpu_weight_mirror_can_be_switched_off() {
     // The mirror writes into the cgroup the process already belongs to, so it
-    // reweights that cgroup's other tasks too. `apply_cpu_weight` is the
+    // reweights that cgroup's other tasks too. `apply_cpu_weight_from_nice` is the
     // operator's way to keep the nice value and drop the side effect.
     let run = run_worker(
         ConfigSnapshot {
-            apply_cpu_weight: false,
+            apply_cpu_weight_from_nice: false,
             ..all_attributes_enabled()
         },
         r#"{"name":"worker-test","nice":0}"#,

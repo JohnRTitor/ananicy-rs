@@ -7,13 +7,16 @@
 //!
 //! Two checked-in fixtures are used as documentation of the accepted syntax:
 //!
-//! * `fixtures/test-sampleconfig.txt` — every `apply_*`/`*_load` flag turned off.
+//! * `fixtures/test-sampleconfig.txt` — every application and `*_load` flag turned off.
 //! * `fixtures/test-rulesconfig.txt`  — the default-enabled configuration, but
 //!   with `cgroup_realtime_workaround` disabled.
 //!
-//! The exact key spelling is part of the on-disk format that is shared with the
-//! historical `ananicy-cpp` configuration, so it is a compatibility requirement
-//! rather than an implementation detail. See `docs/COMPATIBILITY.md`.
+//! Where a key exists in the historical `ananicy-cpp` configuration, its exact
+//! spelling is part of a shared on-disk format and so is a compatibility
+//! requirement rather than an implementation detail.
+//! `apply_cpu_weight_from_nice` is the one key this daemon adds that the
+//! reference has no counterpart for, and its name is not a constraint from
+//! anywhere but this repository. See `docs/COMPATIBILITY.md`.
 
 use {
     ananicy_core::config::{Config, ConfigDiagnostic, ConfigSnapshot, LogLevel},
@@ -54,6 +57,7 @@ fn sample_config_fixture_is_applied_in_full() {
     assert!(!config.apply_oom_score_adj);
     assert!(!config.apply_cgroups);
     assert!(!config.apply_cpuset);
+    assert!(!config.apply_cpu_weight_from_nice);
 
     // "load" options.
     assert!(!config.cgroup_load);
@@ -285,23 +289,30 @@ fn latnice_is_disabled_when_the_kernel_does_not_support_it() {
 }
 
 #[test]
-fn apply_cpu_weight_is_read_from_the_configuration() {
-    // The mirror of `nice` into `cpu.weight` is on by default, and the one
-    // switch that turns it off is a plain `apply_*` key like the others.
+fn apply_cpu_weight_from_nice_is_read_from_the_configuration() {
+    // The mirror of `nice` into `cpu.weight` is on by default. Like its
+    // siblings it is an `apply_*` flag, and it additionally names what it
+    // derives the weight from, because the write is a mirror of `nice` rather
+    // than a separate thing the daemon applies.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ananicy.conf");
-    std::fs::write(&path, "apply_cpu_weight=false\n").unwrap();
+    std::fs::write(&path, "apply_cpu_weight_from_nice=false\n").unwrap();
 
     let (config, diagnostics) = Config::load_file_with_diagnostics(&path, true).unwrap();
-    assert!(!config.get().apply_cpu_weight);
+    assert!(!config.get().apply_cpu_weight_from_nice);
     assert!(
         diagnostics.is_empty(),
         "the key is a documented one, not an unknown key: {diagnostics:?}"
     );
     assert!(
-        ConfigSnapshot::default().apply_cpu_weight,
+        ConfigSnapshot::default().apply_cpu_weight_from_nice,
         "the mirror stays on unless it is switched off"
     );
+
+    // Only the `false` direction can be observed for this key: the default is
+    // `true` and a parse starts from the defaults rather than from the previous
+    // snapshot, so `=true` reads as `true` whether or not the key is
+    // understood. The load path is the one that has to recognise the name.
 }
 
 #[test]
@@ -314,6 +325,27 @@ fn check_disks_schedulers_is_read_from_the_configuration() {
     assert!(
         parse("check_disks_schedulers=true\n").check_disks_schedulers,
         "and switched back on"
+    );
+}
+
+#[test]
+fn the_default_configuration_names_the_mirror_the_current_way() {
+    // `to_config_string` is what the daemon writes when there is no config file
+    // yet. A key the daemon acts on has to be in it under the name the daemon
+    // reads, or the file it generates does not describe the daemon running.
+    let generated = ConfigSnapshot::default().to_config_string();
+
+    assert!(
+        generated.contains("apply_cpu_weight_from_nice=true\n"),
+        "the generated config names the switch: {generated}"
+    );
+
+    // And nothing in it is a key the parser would reject, which for a `true`-default
+    // flag is the only way to tell it was written under a name that is read.
+    let (_, diagnostics) = parse_with_diagnostics(&generated);
+    assert!(
+        diagnostics.is_empty(),
+        "every key the daemon writes it must read back: {diagnostics:?}"
     );
 }
 

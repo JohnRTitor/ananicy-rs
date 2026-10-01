@@ -46,7 +46,7 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Delegated structural ownership:** The packaged systemd unit sets `Delegate=yes`. Within the service's delegated subtree, `ananicy-rs` may create cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
 - **Foreign structural protection:** It refuses to create foreign cgroups, enable foreign `cgroup.subtree_control`, write foreign `cpu.max`, or move processes into foreign cgroups.
 - **Optional resource tuning:** It may attempt an already-existing `cpu.weight` or `cpu.shares` write in a foreign cgroup when the kernel exposes that controller. It does not create the file or enable the controller; an absent file is an expected DEBUG-level skip.
-- **`nice` mirror scope:** On cgroup v2, an applied `nice` value is mirrored into the `cpu.weight` of the cgroup the process *already* belongs to. That is a cgroup write, so it also reweights the other tasks sharing that cgroup — for a desktop application typically its whole systemd session scope. `ananicy-cpp` only calls `setpriority(2)` and has no such side effect. Set `apply_cpu_weight = false` in `ananicy.conf` to keep the `nice` value and drop the mirror. See [Configuration and Rules](./CONFIGURATION.md#the-nice--cpuweight-mirror).
+- **`nice` mirror scope:** On cgroup v2, an applied `nice` value is mirrored into the `cpu.weight` of the cgroup the process *already* belongs to. That is a cgroup write, so it also reweights the other tasks sharing that cgroup — for a desktop application typically its whole systemd session scope. `ananicy-cpp` only calls `setpriority(2)` and has no such side effect. Set `apply_cpu_weight_from_nice = false` in `ananicy.conf` to keep the `nice` value and drop the mirror. See [Configuration and Rules](./CONFIGURATION.md#the-nice--cpuweight-mirror).
 - **Scope of `Delegate=yes`:** Delegation applies only to the `ananicy-rs.service` subtree, not `user.slice`, desktop session scopes, or other systemd units.
 - **Transient scopes:** Running manually from a terminal leaves the daemon in a systemd-managed transient scope, so it cannot safely perform delegated structural mutations.
 - **Where a rule's cgroup lands:** A rule's `cgroup` name is resolved relative to the delegated subtree, so `{"cgroup": "cpu80"}` creates `/sys/fs/cgroup/system.slice/ananicy-rs.service/cpu80` where `ananicy-cpp` creates `/sys/fs/cgroup/cpu80`. A name that starts with `/` is resolved from the hierarchy root instead. The consequence for a rule set written for the reference is that a `cgroup` naming a cgroup somebody else manages — the reference's README suggests that cgroups "can be any cgroup, including those created outside ananicy-cpp" — is refused rather than used.
@@ -65,7 +65,7 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Live Log-Level Reload:** `ananicy-rs` applies a reloaded `loglevel` to the active filter, while `ananicy-cpp` retains its original process-wide level. Because Rust uses `tracing`, its supported `critical` configuration value is an error-threshold alias rather than a distinct emitted severity; Rust also accepts case-insensitive names and the legacy `fatal` alias.
 - **Reload Scope:** `ananicy-rs` reloads global configuration values *and* the rule, type and cgroup files; `ananicy-cpp` reloads only the configuration. The rule set is rebuilt and swapped in atomically, so a process being matched during a reload is matched against one consistent set rather than a mixture. Cgroups named by newly added `.cgroups` entries are created, since a restart would have made them. In `ananicy-rs`, `check_freq` is captured by the manual scanner thread, so changing it still requires a restart; the other per-event apply flags and `log_applied_rule` are read from the current snapshot.
 - **`CPUWeight`:** `ananicy-cpp` reads only `CPUQuota` from a `.cgroups` rule and says so; `ananicy-rs` also honours `CPUWeight`, which its configuration reference has documented all along.
-- **`apply_cpu_weight`:** the only key in `ananicy.conf` with no counterpart in `ananicy-cpp`. It gates the `nice` → `cpu.weight` mirror described in §4, and defaults to the behaviour the daemon had before it existed, so no existing configuration changes.
+- **`apply_cpu_weight_from_nice`:** the only key in `ananicy.conf` with no counterpart in `ananicy-cpp`. It gates the `nice` → `cpu.weight` mirror described in §4, and defaults to the behaviour the daemon had before it existed, so a configuration carried over from `ananicy-cpp` needs nothing added or removed.
 - **`check_disks_schedulers`:** `ananicy-cpp` has no start-up check for block devices on a scheduler that cannot honour `ioclass`/`ionice`, although the key is in its own `test-readfile.txt` fixture. Restored from the original Ananicy, where it shipped enabled; read-only, defaults to on. It accepts `mq-deadline`, which the kernel does honour and the original's CFQ/BFQ note predates, so it stays quiet on the NVMe machines that make up most of what it sees; the note in `docs/CONFIGURATION.md` that has always said CFQ/BFQ was corrected with it.
 - **`--benchmark-count`:** `ananicy-cpp` compares the count in its main loop, so it keeps running for a whole `check_freq` interval (a minute by default) after reaching it. `ananicy-rs` stops as soon as the worker reaches it, which is a few milliseconds later.
 - **An unknown action:** `ananicy-cpp` logs `Unknown action requested` and then starts the daemon anyway. `ananicy-rs` exits 1.
@@ -421,7 +421,7 @@ the test each was held to.
   | `--manualscanning` alias | n/a | parses |
   | Log level reload | no | yes |
   | `loglevel` reload | none | on SIGUSR1 |
-  | Config key set | 15 keys | 17 keys (adds `apply_ioclass`, `apply_cpu_weight`, `check_disks_schedulers`) |
+  | Config key set | 15 keys | 17 keys (adds `apply_ioclass`, `apply_cpu_weight_from_nice`, `check_disks_schedulers`) |
   | `apply_*` gating | 5 flags wired | 7 flags wired |
   | `cgroup` name `..` | accepted | rejected |
   | Nested cgroup names | cannot create | `create_dir_all` |
@@ -430,7 +430,7 @@ the test each was held to.
   | `sched: deadline` fallback | n/a | `warn!` |
   | `latnice` support probe | on load | on load and reload |
   | `set_oom_score_adjust` result | unchecked | checked |
-  | `nice` → `cpu.weight` | absent | gated by `apply_cpu_weight` |
+  | `nice` → `cpu.weight` | absent | gated by `apply_cpu_weight_from_nice` |
   | `cpuset` alias set | 11 | 12 (adds `all`) |
   | `move_pid` start-time guard | absent | present |
   | `move_pid` TGID resolution | absent | present |
@@ -448,7 +448,7 @@ the test each was held to.
   | `Delegate=yes` in the unit | absent | present |
   | `flake.nix` | absent | present |
   | `.foo-wrapped` config support | absent | present |
-  | `apply_cpu_weight` | absent | gates the mirror |
+  | `apply_cpu_weight_from_nice` | absent | gates the mirror |
   | `deadline` scheduler availability | n/a | falls back with a warning |
 
 ## 9. Capabilities `ananicy-cpp` Has and This Daemon Does Not
