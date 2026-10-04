@@ -9,7 +9,7 @@ keywords = ["cgroup", "daemon", "nice", "scheduler"]
 categories = ["os::linux-apis", "system-tools"]
 
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
   "crates/ananicy-bpf",
   "crates/ananicy-core",
@@ -34,25 +34,37 @@ repository = "https://github.com/JohnRTitor/ananicy-rs"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]
+# The workspace members themselves. A member that uses another inherits it from
+# here, so the path is written once.
 ananicy-bpf = { path = "crates/ananicy-bpf" }
 ananicy-core = { path = "crates/ananicy-core" }
 ananicy-platform = { path = "crates/ananicy-platform" }
-# The hasher for the rule map, the name table and the per-pid LRU caches.
-#
-# Already in the tree: `lru` pulls in `hashbrown`, which pulls this in, so
-# naming it directly adds no new crate to the build. `quality` rather than
-# `fast` — see `docs/MEMORY.md` § Hashing for why the slower one is the right
-# default on a path keyed by a process name.
+
+arc-swap = "1.9.2"
+assert_cmd = "2.2.2"
+bpaf = "0.9.28"
+criterion = "0.8"
 foldhash = "0.2.0"
+libbpf-cargo = { version = "0.27.0", default-features = false }
+libbpf-rs = { version = "0.27.0", default-features = false }
 libc = "0.2.189"
 lru = "0.18.3"
 neli = "0.7.4"
+pkg-config = "0.3.34"
+predicates = "3.1.4"
+proptest = "1.11.0"
+regexr = "0.6.0"
 rustix = "1.1.4"
+sd-notify = "0.5.0"
 serde = "1.0.229"
 serde_json = "1.0.151"
+signal-hook = "0.4.4"
 tempfile = "3.27.0"
 thiserror = "2.0.20"
 tracing = "0.1.44"
+tracing-journald = "0.3.2"
+tracing-subscriber = "0.3.23"
+walkdir = "2.5.0"
 
 [[bench]]
 harness = false
@@ -76,23 +88,22 @@ name = "procfs"
 
 [dependencies]
 ananicy-bpf = { workspace = true, optional = true }
-ananicy-core = { workspace = true }
-ananicy-platform = { workspace = true }
-bpaf = { version = "0.9.28", features = ["derive", "autocomplete"] }
-neli = { workspace = true }
+ananicy-core.workspace = true
+ananicy-platform.workspace = true
+bpaf = { workspace = true, features = ["derive", "autocomplete"] }
+neli.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "shm"] }
-sd-notify = { version = "0.5.0", optional = true }
-serde_json = { workspace = true }
-signal-hook = "0.4.4"
-tracing = { workspace = true }
-tracing-journald = { version = "0.3.2", optional = true }
-tracing-subscriber = "0.3.23"
+sd-notify = { workspace = true, optional = true }
+serde_json.workspace = true
+signal-hook.workspace = true
+tracing.workspace = true
+tracing-journald = { workspace = true, optional = true }
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
-assert_cmd = "2.2.2"
-criterion = "0.5"
-predicates = "3.1.4"
-rstest = "0.26.1"
+assert_cmd.workspace = true
+criterion.workspace = true
+predicates.workspace = true
 tempfile.workspace = true
 
 [features]

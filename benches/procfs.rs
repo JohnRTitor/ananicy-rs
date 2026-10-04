@@ -24,7 +24,8 @@ use {
         LinuxPlatform,
         procfs::{get_command_from_pid, get_start_time, get_tgid, get_tids},
     },
-    criterion::{Criterion, black_box, criterion_group, criterion_main},
+    criterion::{Criterion, criterion_group, criterion_main},
+    std::hint::black_box,
 };
 
 fn bench_command_from_pid(c: &mut Criterion) {

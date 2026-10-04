@@ -7,9 +7,9 @@ repository.workspace = true
 
 [dependencies]
 ananicy-core.workspace = true
-tracing = { workspace = true }
-thiserror = { workspace = true }
-libc = { workspace = true }
+tracing.workspace = true
+thiserror.workspace = true
+libc.workspace = true
 rustix = { workspace = true, features = ["process", "fs", "net", "event", "time", "thread"] }
 neli.workspace = true
 lru.workspace = true

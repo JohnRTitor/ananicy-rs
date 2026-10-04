@@ -1,11 +1,11 @@
 use {
     ananicy_core::config::{Config, ConfigSnapshot},
-    std::sync::Arc,
+    std::{hint::black_box, sync::Arc},
 };
 
 use {
     ananicy_core::{cpuset::CpuSet, rules::Rules},
-    criterion::{Criterion, black_box, criterion_group, criterion_main},
+    criterion::{Criterion, criterion_group, criterion_main},
 };
 
 /// The `name_regex` shapes that appear in ananicy rules, plus the ones a
