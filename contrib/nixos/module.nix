@@ -154,9 +154,7 @@ in
         serviceConfig = {
           ExecStart = lib.mkForce [
             "" # Clear the existing default
-            (lib.concatStringsSep " " (
-              [ "${cfg.package}/bin/ananicy-rs" ] ++ cfg.extraArgs ++ [ "start" ]
-            ))
+            (lib.concatStringsSep " " ([ "${cfg.package}/bin/ananicy-rs" ] ++ cfg.extraArgs ++ [ "start" ]))
           ];
         };
 

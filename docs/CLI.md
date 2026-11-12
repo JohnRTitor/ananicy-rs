@@ -121,7 +121,7 @@ still behaves the same way.
   daemon goes quiet, this is the first thing to check. `--memory-stats` will
   still report normally throughout, since it reads the footprint rather than
   waiting for events.
-- `--memory-stats`: Report memory usage, paging and reclaim counters once a minute. The counters that distinguish a daemon that is merely using memory from one that is being made to re-fetch it — `memory.events:high`, `pgmajfault`, `workingset_refault_file`, swap in and out — live in cgroupfs, one level above anything the process can see about itself, so without this there is nothing in the log to tell the two apart. See `docs/SYSTEMD.md` § *Why `MemoryHigh` is 48M and not 16M* for what those numbers looked like when this was not visible.
+- `--memory-stats`: Report memory usage, paging and reclaim counters once a minute. The counters that distinguish a daemon that is merely using memory from one that is being made to re-fetch it — `memory.events:high`, `pgmajfault`, `workingset_refault_file`, swap in and out — live in cgroupfs, one level above anything the process can see about itself, so without this there is nothing in the log to tell the two apart. See [COMPATIBILITY § 1](./COMPATIBILITY.md#1-project-identity-and-configuration) for what those numbers looked like when this was not visible.
 - `-v, --verbose`: Enable verbose output. With the `bpf` event source this also turns on the eBPF loader's own diagnostics, which is the only place the reason for a refused load or attach is printed.
 
 The active `loglevel` and per-event application flags are reloaded live. `check_freq` is captured when the manual scanner starts, so changing it requires a daemon restart; rule, type, and cgroup files also require a restart.

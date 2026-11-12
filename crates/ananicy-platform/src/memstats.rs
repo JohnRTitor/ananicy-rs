@@ -319,9 +319,10 @@ impl Snapshot {
                  reclaiming this daemon's own pages and will keep doing so while it \
                  stays there -- memory.high is a throttle point, not a limit, and the \
                  only memory this cgroup can reclaim is the daemon itself. Either the \
-                 daemon is using more than the limit was set for (a rule set larger \
-                 than about 57,000 rules does it) or something is leaking; raise \
-                 memory.high, or memory.max if that would run into a hard cap.",
+                 daemon is using more than the limit was set for (a rule set much \
+                 larger than the shipped one, or a load still in progress, does \
+                 it) or something is leaking; raise memory.high, or memory.max \
+                 if that would run into a hard cap.",
                 mib(Some(current)),
                 mib(Some(high))
             ));

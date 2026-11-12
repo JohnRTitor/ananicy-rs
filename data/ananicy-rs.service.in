@@ -56,22 +56,29 @@ RestartSec=10
 # unexplained I/O and a slow start. At 16M against a ~40M working set that is
 # what this unit used to do, and it cost 3.66 GB of reads in twenty minutes.
 #
-# 48M is chosen to stay above the working set with room to spare, so that the
-# soft line exists for a leak rather than for normal operation. With a default
-# rule set the peak is 34.4M and steady state 14.5M. It stops being above the
-# working set at roughly 57,000 rules -- about 3.6x the default rule set -- and
-# past that this line becomes a throttle. Nothing in a rule file indicates you
-# are approaching that, so check `ananicy-rs debug memory` when it matters, and
-# expect the daemon to warn rather than to fail quietly.
+# 32M is chosen against the *resident* set, not the load peak. Steady state with
+# a default rule set was measured at 14.5M, and interning the names a rule set
+# shares took roughly 1.8M of that out, so about 13M now: the daemon sits at
+# well under half the soft line and the kernel is never asked to reclaim.
 #
-# 96M is the hard cap. A runaway is still OOM-killed rather than taking the
-# machine with it, and it has twice the soft line to be reclaimed back within
-# first. Note that `OOMScoreAdjust=-999` makes this daemon the last candidate the
-# OOM killer picks, so reaching the cap takes some other process rather than
-# this one -- which is the argument for the soft line above being generous rather
-# than tight.
-MemoryHigh=48M
-MemoryMax=96M
+# A load does cross it. The peak of 34.4M was measured on the build before that
+# interning, and it is set by the transient work of loading -- a 712 kB file read
+# and a parsed JSON document per line -- not by what stays resident, so reclaim
+# during a load is brief and confined to memory that is about to be freed. That
+# is the whole difference from the 16M above: there the *sustained* set was over
+# the line, so every page the daemon touched was discarded and fetched again.
+# Nothing in a rule file says how close a rule set is to that, so check
+# `ananicy-rs debug memory` when it matters, and expect the daemon to warn
+# rather than to fail quietly.
+#
+# 64M is the hard cap -- the reference's figure, and twice the soft line to be
+# reclaimed back within first. A runaway is still OOM-killed rather than taking
+# the machine with it. Note that `OOMScoreAdjust=-999` makes this daemon the last
+# candidate the OOM killer picks, so reaching the cap takes some other process
+# rather than this one -- which is the argument for the soft line above sitting
+# clear of the resident set rather than tight against it.
+MemoryHigh=32M
+MemoryMax=64M
 
 # Hardening
 ProtectSystem=full

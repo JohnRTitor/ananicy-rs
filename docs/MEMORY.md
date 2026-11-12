@@ -2,7 +2,7 @@
 
 What the daemon uses memory for, how much of it is the rule set, and how to
 find out on your own machine. The two unit settings that bound it are
-`MemoryHigh=48M` and `MemoryMax=96M`, and why they differ from the reference's
+`MemoryHigh=32M` and `MemoryMax=64M`, and why they differ from the reference's
 16M/64M is in
 [COMPATIBILITY § 1](./COMPATIBILITY.md#1-project-identity-and-configuration).
 
@@ -57,10 +57,17 @@ in a rule file indicates a boundary is near, so a user crossing one sees memory
 double for no visible reason — which is the failure mode worth knowing about and
 the reason the current layout is the one it is.
 
-The current numbers are worth putting next to a cap. Against the unit's
-`MemoryHigh=48M`, the default rule set peaks at 34.4 MB and the soft line is
-crossed at roughly **57,000 rules**, about 3.6× the default set. Game rule sets
-grow, and `extraRules` can cross that without anyone noticing.
+The two numbers to put next to a cap are the resident set and the load peak,
+and they answer different questions. Steady state with the default rule set was
+14.5 MB before the interning below and is about 13 MB after it, which is under
+half of the unit's `MemoryHigh=32M`. The peak is 34.4 MB, and it was measured on
+the pre-interning build: it is the transient work of loading, not what stays
+resident, so a load crosses the soft line and comes back down under it. That is
+the difference between a soft line under the peak and a soft line under the
+*sustained* set — the first costs a little I/O while a load runs, and the second
+is the reclaim loop the reference's 16M produced. The line now has no rule count
+attached to it, because a default-size set is enough to cross it: `debug memory`
+and `memory.events:high` are the check, not a rule count.
 
 ## What the names cost, which is not what the struct size says
 
