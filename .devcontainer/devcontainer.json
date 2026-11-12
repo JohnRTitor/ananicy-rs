@@ -1,0 +1,29 @@
+{
+  "name": "ananicy-rs",
+  "image": "mcr.microsoft.com/devcontainers/rust:2-trixie",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=ananicy-rs-cargo,target=/usr/local/cargo/registry,type=volume",
+    "source=ananicy-rs-target,target=${containerWorkspaceFolder}/target,type=volume"
+  ],
+  "containerEnv": {
+    "CARGO_TERM_COLOR": "always"
+  },
+  "postCreateCommand": "sudo chown -R vscode:vscode /usr/local/cargo/registry target && sudo apt-get update && rustup component add rustfmt clippy && cargo fetch",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy",
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  }
+}

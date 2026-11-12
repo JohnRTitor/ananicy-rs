@@ -2,6 +2,7 @@
 !.gitignore
 !.github
 !.agents
+!.devcontainer
 # Cargo output of every crate, including the separate `fuzz` workspace.
 target/
 # The fuzz targets are an opt-in development tool, resolved on demand.
