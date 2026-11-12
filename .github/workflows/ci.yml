@@ -78,7 +78,7 @@ jobs:
       - name: Build
         run: cargo build --locked --all-targets --all-features
       - name: Test
-        run: sudo -E env "PATH=$PATH" cargo test --locked --all-targets --all-features
+        run: sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" cargo +${{ matrix.toolchain }} test --locked --all-targets --all-features
 
   # Runs the benches and uploads the result; does not gate the build.
   #
