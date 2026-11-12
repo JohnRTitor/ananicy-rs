@@ -183,6 +183,7 @@ jobs:
       # the `bpf` feature is not enabled.
       - name: Install build dependencies
         run: |
+          apt-get update
           apt-get install -y --no-install-recommends \
             build-essential debhelper dpkg-dev \
             cargo rustc \
