@@ -9,7 +9,7 @@
   "containerEnv": {
     "CARGO_TERM_COLOR": "always"
   },
-  "postCreateCommand": "sudo chown -R vscode:vscode /usr/local/cargo/registry target && sudo apt-get update && rustup component add rustfmt clippy && cargo fetch",
+  "postCreateCommand": "sudo chown -R vscode:vscode /usr/local/cargo/registry target && sudo apt-get update && sudo apt-get install -y ripgrep fd-find bat jq fzf && rustup component add rustfmt clippy && cargo fetch",
   "customizations": {
     "vscode": {
       "extensions": [
