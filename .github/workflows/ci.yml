@@ -7,7 +7,7 @@ on:
       - '**Cargo.toml'
       - '**Cargo.lock'
       # `**.nix` and `flake.lock` are for the `nix` job below, which reads the
-      # flake. The module and the package expression live under contrib/nixos,
+      # flake. The module and the package expression live under packaging/nixos,
       # which `**.nix` already covers at any depth.
       - '**.nix'
       - 'flake.lock'
@@ -24,7 +24,7 @@ on:
       - 'flake.lock'
       - '.github/workflows/ci.yml'
   # The `paths` filters above mean that a change touching none of them — the
-  # Makefile, `data/`, `contrib/**` — runs nothing at all. This file is the one
+  # Makefile, `data/`, `packaging/**` — runs nothing at all. This file is the one
   # that lists itself, so a change to the jobs below is itself checked;
   # `lint.yml` does not. Dispatch runs the jobs whatever the filter says, and is
   # also how to re-run something a newer push cancelled.

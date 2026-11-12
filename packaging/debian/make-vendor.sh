@@ -10,14 +10,14 @@
 # inside the source package as debian/vendor.tar.xz.
 #
 # Usage:
-#   cp -r contrib/debian debian      # the packaging has to be in place first
+#   cp -r packaging/debian debian      # the packaging has to be in place first
 #   debian/make-vendor.sh [OUTPUT]
 #
 # OUTPUT defaults to debian/vendor.tar.xz, the path debian/rules looks for and
 # the path debian/source/include-binaries declares. It has to be inside the
-# installed debian/ directory and not inside contrib/debian/: dpkg-source builds
+# installed debian/ directory and not inside packaging/debian/: dpkg-source builds
 # the source package by diffing the working tree against the orig tarball, so an
-# archive sitting in contrib/debian/ is a modification to a file the orig tarball
+# archive sitting in packaging/debian/ is a modification to a file the orig tarball
 # already has, which it cannot represent. Inside debian/ it is simply a new file
 # in the packaging directory, which is the ordinary case.
 #
@@ -37,7 +37,7 @@
 set -eu
 
 # The source root is the nearest ancestor holding Cargo.toml, found by walking up
-# rather than by counting `..` levels: this script is committed in contrib/debian/
+# rather than by counting `..` levels: this script is committed in packaging/debian/
 # and is run as debian/make-vendor.sh from the copy dpkg-buildpackage needs, and
 # the two are one level apart.
 dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -53,7 +53,7 @@ cd "$srcdir"
 
 if [ ! -d debian ]; then
     echo "make-vendor.sh: $srcdir/debian does not exist." >&2
-    echo "Copy the packaging into place first: cp -r contrib/debian debian" >&2
+    echo "Copy the packaging into place first: cp -r packaging/debian debian" >&2
     exit 1
 fi
 

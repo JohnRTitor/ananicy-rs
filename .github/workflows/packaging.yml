@@ -1,6 +1,6 @@
 name: Packaging
 
-# Builds the distribution recipes under contrib/ with each distribution's own
+# Builds the distribution recipes under packaging/ with each distribution's own
 # packaging tools, in that distribution's own container image. The point is to
 # keep the recipes *buildable*, not merely present, so every job below produces
 # the real artifact: an .rpm, a .deb, a .pkg.tar.zst.
@@ -14,7 +14,7 @@ on:
       - "**.nix"
       - "Makefile"
       - "data/**"
-      - "contrib/**"
+      - "packaging/**"
       - "flake.lock"
       - ".github/workflows/packaging.yml"
   push:
@@ -25,7 +25,7 @@ on:
       - "**.nix"
       - "Makefile"
       - "data/**"
-      - "contrib/**"
+      - "packaging/**"
       - "flake.lock"
       - ".github/workflows/packaging.yml"
   workflow_dispatch:
@@ -72,7 +72,7 @@ jobs:
             ~/.cargo/git
           key: cargo-fedora-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-fedora-${{ runner.os }}-
-      # One BuildRequires of contrib/fedora/ananicy-rs.spec per package, and
+      # One BuildRequires of packaging/fedora/ananicy-rs.spec per package, and
       # nothing more. `gcc` is absent because systemd-devel pulls it in. `clang`,
       # `libbpf-devel` and `rustfmt` are absent because the recipe does not enable
       # the `bpf` feature and so does not build the eBPF toolchain.
@@ -100,21 +100,21 @@ jobs:
           mkdir -p ~/rpmbuild/SOURCES
           git archive --format=tar --prefix="ananicy-rs-$version/" HEAD \
             | gzip -n -9 > ~/rpmbuild/SOURCES/ananicy-rs-$version.tar.gz
-          ./contrib/fedora/make-vendor-archive.sh
-          cp "contrib/fedora/ananicy-rs-$version-vendor.tar.xz" ~/rpmbuild/SOURCES/
-          rpmspec --parse contrib/fedora/ananicy-rs.spec
-          rpmbuild -bs contrib/fedora/ananicy-rs.spec
+          ./packaging/fedora/make-vendor-archive.sh
+          cp "packaging/fedora/ananicy-rs-$version-vendor.tar.xz" ~/rpmbuild/SOURCES/
+          rpmspec --parse packaging/fedora/ananicy-rs.spec
+          rpmbuild -bs packaging/fedora/ananicy-rs.spec
           # --nocheck because rpmbuild runs the build as root here, and the
           # cgroup tests in ananicy-platform are unreliable as root: three of
           # them share one cgroup name and race each other, and a container's
           # /sys/fs/cgroup may be read-only. The step below runs the same suite,
           # unprivileged, which is how mock and Koji run it. See %check in the
-          # spec and contrib/fedora/README.md.
+          # spec and packaging/fedora/README.md.
 
           # --noclean because rpmbuild deletes the build directory when it
           # finishes, and the step below needs the source and vendor tree it
           # left behind.
-          rpmbuild -ba --nocheck --noclean contrib/fedora/ananicy-rs.spec
+          rpmbuild -ba --nocheck --noclean packaging/fedora/ananicy-rs.spec
       - name: Run the test suite, unprivileged
         run: |
           set -euxo pipefail
@@ -128,11 +128,11 @@ jobs:
           su builder -s /bin/bash -c "cd '$builddir/ananicy-rs-$version' && \
             CARGO_HOME='$builddir/cargo-home' cargo test --locked --offline"
       # rpmlint's exit status is its badness count, so warnings alone do not fail
-      # the job. Two are expected and explained in contrib/fedora/README.md:
+      # the job. Two are expected and explained in packaging/fedora/README.md:
       # `no-buildroot-tag`, which is obsolete, and `invalid-url Source1`, because
       # the vendor archive is generated rather than downloaded.
       - name: rpmlint
-        run: rpmlint contrib/fedora/ananicy-rs.spec
+        run: rpmlint packaging/fedora/ananicy-rs.spec
 
       - name: List the package contents
         # One rpm at a time: `rpm -qpl a.rpm b.rpm` would read b.rpm as a package
@@ -156,7 +156,7 @@ jobs:
       # 1.85.1. There is no suite this can be built in with the distro toolchain
       # until trixie-backports carries 1.88, so this job proves the recipe builds
       # against a current toolchain and the target suite is recorded in
-      # contrib/debian/README.md.
+      # packaging/debian/README.md.
       image: debian:sid
     steps:
       # git before the checkout, and both halves of this step are load-bearing.
@@ -176,7 +176,7 @@ jobs:
             /home/builder/.cargo/git
           key: cargo-debian-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-debian-${{ runner.os }}-
-      # One Build-Depends of contrib/debian/control per package, plus lintian.
+      # One Build-Depends of packaging/debian/control per package, plus lintian.
       # build-essential is dpkg's implicit build-dep and is not in control, so it
       # has to be named here: dpkg-checkbuilddeps aborts without it, and linking
       # needs a C compiler and libc headers. No clang, no libbpf-dev, no rustfmt:
@@ -208,7 +208,7 @@ jobs:
           useradd --create-home --shell /bin/bash builder
           install -d -o builder -g builder /build
           cp -a . "/build/ananicy-rs-$version"
-          # The .orig tarball contrib/debian/README.md describes: the same
+          # The .orig tarball packaging/debian/README.md describes: the same
           # `git archive` of the tag the release workflow attaches.
           git archive --format=tar --prefix="ananicy-rs-$version/" HEAD \
             | gzip -n -9 > "/build/ananicy-rs_$version.orig.tar.gz"
@@ -221,9 +221,9 @@ jobs:
           # The packaging has to be in place before the vendoring step runs,
           # because that is where the archive has to land: dpkg-source diffs the
           # working tree against the orig tarball, so an archive left in
-          # contrib/debian/ is a modification it cannot represent. See
+          # packaging/debian/ is a modification it cannot represent. See
           # debian/source/include-binaries.
-          cp -r contrib/debian debian
+          cp -r packaging/debian debian
           # The only step in the flow that uses the network: it fills
           # debian/vendor.tar.xz, after which dpkg-buildpackage stays offline.
           ./debian/make-vendor.sh
@@ -310,7 +310,7 @@ jobs:
           # builder for exactly the same reason the workspace was to root.
           chown -R builder:builder /mirror
           install -d -o builder -g builder /build
-          cp contrib/archlinux/PKGBUILD contrib/archlinux/ananicy-rs.install /build/
+          cp packaging/archlinux/PKGBUILD packaging/archlinux/ananicy-rs.install /build/
           chown -R builder:builder /build
       # --noconfirm because the recipe installs a unit with an [Install] section
       # and creates /etc/ananicy.d; neither action is interactive, but pacman
@@ -321,7 +321,7 @@ jobs:
           sed -i "s|git+\$url.git|git+file:///mirror/ananicy-rs.git|" PKGBUILD
           su builder -s /bin/bash -c 'cd /build && makepkg -f --noconfirm'
       # namcap's exit status is its tag count, so a clean PKGBUILD exits 0. It
-      # has nothing to say about this one; see contrib/archlinux/README.md for
+      # has nothing to say about this one; see packaging/archlinux/README.md for
       # the two findings it did produce, and the fixes.
       - name: namcap
         run: namcap /build/PKGBUILD

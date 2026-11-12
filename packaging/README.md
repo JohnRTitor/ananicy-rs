@@ -120,7 +120,7 @@ does, and why.
 
 ## Adding a recipe
 
-- Keep it self-contained under `contrib/<distribution>/`.
+- Keep it self-contained under `packaging/<distribution>/`.
 - Do not copy `data/ananicy-rs.service.in`; run `make install` and ship what it
   produces.
 - Do not ship a configuration file. Upstream has none, and adding one changes

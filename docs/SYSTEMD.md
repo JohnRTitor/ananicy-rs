@@ -100,7 +100,7 @@ What it does **not** change:
   identically in both modes.
 * **Build configuration.** Without the `systemd` cargo feature the mode is
   always off and the status reads `disabled (built without the systemd feature)`.
-  `contrib/nixos/package.nix` exposes this as `withSystemd`.
+  `packaging/nixos/package.nix` exposes this as `withSystemd`.
 
 The resolved mode is logged at `debug` level and shown by `debug cgroups`, e.g.
 `Systemd integration: enabled (auto-detected from $INVOCATION_ID)`.
@@ -244,7 +244,7 @@ new, and the write lock is held only for the swap itself.
 
 ## NixOS
 
-`contrib/nixos/module.nix` keeps the packaged unit as the single source of truth:
+`packaging/nixos/module.nix` keeps the packaged unit as the single source of truth:
 `Delegate=yes`, hardening, `ExecReload=` and the restart policy live in
 `data/ananicy-rs.service.in`, which the module exposes through
 `systemd.packages`. The module only forces `ExecStart=` so that

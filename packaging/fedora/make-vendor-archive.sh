@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the Source1 that contrib/fedora/ananicy-rs.spec expects.
+# Build the Source1 that packaging/fedora/ananicy-rs.spec expects.
 #
 # ananicy-rs is not published on crates.io -- neither is ananicy-core,
 # ananicy-platform or ananicy-bpf -- so Fedora's `%cargo_prep` route, which
@@ -9,9 +9,9 @@
 # network access.
 #
 # Usage:
-#   contrib/fedora/make-vendor-archive.sh [OUTPUT]
+#   packaging/fedora/make-vendor-archive.sh [OUTPUT]
 #
-# OUTPUT defaults to contrib/fedora/ananicy-rs-<version>-vendor.tar.xz, which is
+# OUTPUT defaults to packaging/fedora/ananicy-rs-<version>-vendor.tar.xz, which is
 # the name ananicy-rs.spec's `Source1:` resolves to. The archive is gitignored;
 # regenerate it whenever Cargo.lock changes, and re-upload it with the source
 # package.
@@ -39,7 +39,7 @@ if [ -z "$version" ]; then
     exit 1
 fi
 
-output=${1:-"$srcdir/contrib/fedora/ananicy-rs-$version-vendor.tar.xz"}
+output=${1:-"$srcdir/packaging/fedora/ananicy-rs-$version-vendor.tar.xz"}
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT INT HUP TERM

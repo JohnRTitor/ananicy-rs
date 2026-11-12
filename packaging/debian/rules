@@ -5,7 +5,7 @@
 #
 #   * `make install` is the project's own install rule, so the binary, its mode
 #     and the generated systemd unit are byte-for-byte what every other recipe
-#     under contrib/ produces. The unit is not copied into debian/; it is
+#     under packaging/ produces. The unit is not copied into debian/; it is
 #     generated into debian/tmp and picked up from there by dh_install, which is
 #     also what lets dh_installsystemd generate the enable/disable code.
 #   * Cargo never touches the network. The vendored crate sources arrive in

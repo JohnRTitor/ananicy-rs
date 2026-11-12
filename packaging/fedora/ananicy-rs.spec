@@ -1,7 +1,7 @@
 # Fedora packaging recipe for ananicy-rs.
 #
 # This is a community-maintained recipe. It is not a package carried by Fedora
-# and carries no Fedora review. See contrib/fedora/README.md for how to build it
+# and carries no Fedora review. See packaging/fedora/README.md for how to build it
 # and for the reasoning behind the dependency and install decisions.
 #
 # Version: keep in step with the version in Cargo.toml's [workspace.package]
@@ -24,7 +24,7 @@ URL:            https://github.com/JohnRTitor/ananicy-rs
 # /archive/v<version>.tar.gz has, so this spec can be pointed at either.
 Source0:        %{url}/releases/download/v%{version}/%{name}-%{version}.tar.gz
 # Every crate in Cargo.lock, vendored. Fedora builds have no network, so the build
-# cannot fetch them; regenerate with contrib/fedora/make-vendor-archive.sh.
+# cannot fetch them; regenerate with packaging/fedora/make-vendor-archive.sh.
 Source1:        %{name}-%{version}-vendor.tar.xz
 
 # The build is the project's own: `cargo build --release` with its default
@@ -59,7 +59,7 @@ BuildRequires:  systemd-rpm-macros
 # No rules are packaged either. ananicy-rs ships none -- it reads whatever is in
 # /etc/ananicy.d at run time and writes a default ananicy.conf on first start --
 # and Fedora does not carry ananicy-cpp or the Ananicy rule set, so there is
-# nothing to depend on. See contrib/fedora/README.md.
+# nothing to depend on. See packaging/fedora/README.md.
 
 %description
 ananicy-rs is a rewrite of the ananicy daemon in Rust. It watches process

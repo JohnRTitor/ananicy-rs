@@ -38,8 +38,8 @@ jobs:
           sha256sum ananicy-rs-linux-x86_64.tar.gz > ananicy-rs-linux-x86_64.tar.gz.sha256
       # The source archive downstream distributions build from. `git archive`
       # of the tag, with a stable prefix and sorted metadata, so the checksum
-      # below means something: contrib/fedora/ananicy-rs.spec and
-      # contrib/debian/README.md both consume it, and neither can fetch from a
+      # below means something: packaging/fedora/ananicy-rs.spec and
+      # packaging/debian/README.md both consume it, and neither can fetch from a
       # repository. `gzip -n` omits the timestamp and the original name from the
       # gzip header, which is what makes the bytes reproducible.
       - name: Source tarball

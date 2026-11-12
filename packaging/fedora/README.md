@@ -20,11 +20,11 @@ git archive --format=tar --prefix="ananicy-rs-$version/" HEAD \
   | gzip -n -9 > ~/rpmbuild/SOURCES/ananicy-rs-$version.tar.gz
 
 # 2. The Cargo dependencies, vendored. Needs cargo, tar and xz.
-./contrib/fedora/make-vendor-archive.sh
+./packaging/fedora/make-vendor-archive.sh
 
 # 3. Build.
-rpmbuild -bs contrib/fedora/ananicy-rs.spec   # source rpm
-rpmbuild -ba contrib/fedora/ananicy-rs.spec   # binary rpm
+rpmbuild -bs packaging/fedora/ananicy-rs.spec   # source rpm
+rpmbuild -ba packaging/fedora/ananicy-rs.spec   # binary rpm
 ```
 
 The usual Fedora loop is `rpmbuild -bs` followed by
@@ -38,9 +38,9 @@ byte-identical archives for an unchanged lockfile.
 ## Static validation
 
 ```bash
-rpmspec --parse contrib/fedora/ananicy-rs.spec     # syntax and tag structure
-rpmbuild -bs contrib/fedora/ananicy-rs.spec        # source package
-rpmlint contrib/fedora/ananicy-rs.spec             # if rpmlint is installed
+rpmspec --parse packaging/fedora/ananicy-rs.spec     # syntax and tag structure
+rpmbuild -bs packaging/fedora/ananicy-rs.spec        # source package
+rpmlint packaging/fedora/ananicy-rs.spec             # if rpmlint is installed
 ```
 
 What these reported while the recipe was written, with `rpmlint` 2.10.0:
@@ -107,7 +107,7 @@ There are no man pages to install: the project has none. `docs/CLI.md` and
 
 `make install` is called rather than a hand-rolled install, so the binary, its
 mode and the unit are byte-for-byte the same as every other recipe under
-`contrib/`. The unit's `@bindir@` placeholder resolves to `/usr/bin`.
+`packaging/`. The unit's `@bindir@` placeholder resolves to `/usr/bin`.
 
 ## Dependencies
 

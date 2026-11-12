@@ -10,7 +10,7 @@ mean Arch Linux supports the package.
 ## Build it
 
 ```bash
-cp contrib/archlinux/{PKGBUILD,ananicy-rs.install} .
+cp packaging/archlinux/{PKGBUILD,ananicy-rs.install} .
 makepkg -f
 ```
 
@@ -69,7 +69,7 @@ There are no man pages to install: the project has none.
 
 `make install` is called rather than a hand-rolled install, so the binary, its
 mode and the unit are byte-for-byte the same as every other recipe under
-`contrib/`. The unit's `@bindir@` placeholder resolves to `/usr/bin`.
+`packaging/`. The unit's `@bindir@` placeholder resolves to `/usr/bin`.
 
 ## Dependencies
 
@@ -132,7 +132,7 @@ source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver/$pkgname-$pkgver.tar.gz"
 sha256sums=('...')
 ```
 
-and drop `pkgver()`. `contrib/fedora/` already consumes exactly that tarball.
+and drop `pkgver()`. `packaging/fedora/` already consumes exactly that tarball.
 
 `pkgver()` reports the release tag, dropping the git-describe suffix and any
 dirty marker, because neither is valid in an Arch package version. The

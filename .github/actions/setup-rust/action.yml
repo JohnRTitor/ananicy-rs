@@ -22,7 +22,7 @@ runs:
       with:
         toolchain: ${{ inputs.toolchain }}
         components: ${{ inputs.components }}
-    # Keep this list in sync with `contrib/nixos/package.nix`; see that file for
+    # Keep this list in sync with `packaging/nixos/package.nix`; see that file for
     # why each entry is here. The same list appears again, under two different
     # package managers, in `.github/workflows/ci.yml`.
     - name: Install native dependencies

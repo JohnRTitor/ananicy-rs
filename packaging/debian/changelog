@@ -4,7 +4,7 @@ ananicy-rs (0.1.0-1) unstable; urgency=medium
     - Built from the project's own cargo build with its default feature set
       (netlink process events plus systemd integration), installed through
       `make install` so the binary, its mode and the shipped systemd unit match
-      every other recipe under contrib/.
+      every other recipe under packaging/.
     - Cargo dependencies are vendored into debian/vendor.tar.xz and the build
       runs with --locked --offline and a CARGO_HOME inside the build directory,
       so dpkg-buildpackage needs no network access.

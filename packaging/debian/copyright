@@ -15,9 +15,9 @@ Files: debian/*
 Copyright: 2026 ananicy-rs packagers
 License: GPL-3+
 
-Files: contrib/fedora/*
- contrib/archlinux/*
- contrib/nixos/*
+Files: packaging/fedora/*
+ packaging/archlinux/*
+ packaging/nixos/*
 Copyright: 2026 ananicy-rs packagers
 License: GPL-3+
 

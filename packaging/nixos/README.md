@@ -12,7 +12,7 @@ Two separate things live here, and it is worth keeping them apart:
   not part of the package and nothing in `package.nix` depends on it.
 
 `module.nix` already existed in this repository before the recipes were added; it
-was moved here from `contrib/module.nix` when `contrib/` was organised by
+was moved here from `packaging/module.nix` when `packaging/` was organised by
 distribution. Only the location changed. **No new NixOS module was written as
 part of the packaging work** — the repository's existing functionality already
 justifies the one that is here, and inventing a second one would have been
@@ -20,7 +20,7 @@ redundant.
 
 ```nix
 # the package, consumed directly
-pkgs.callPackage ./contrib/nixos/package.nix { }
+pkgs.callPackage ./packaging/nixos/package.nix { }
 
 # or, from a flake
 nix build github:JohnRTitor/ananicy-rs
@@ -34,17 +34,17 @@ nix build              # -> ./result
 nix flake check        # builds the package as a check
 nix build .#ananicy-rs # same derivation, explicit attribute
 nix develop            # shell with cargo, rustfmt, clippy, clang, libbpf
-nixfmt --check contrib/nixos/*.nix flake.nix default.nix
+nixfmt --check packaging/nixos/*.nix flake.nix default.nix
 ```
 
 `nix build` and `nix flake check` were both run while this recipe was moved and
 the documentation installed, and both pass. They are already wired into
 [`.github/workflows/packaging.yml`](../../.github/workflows/packaging.yml), as
-its `Nix` job; that workflow's path filters include `contrib/**` and `**.nix`,
+its `Nix` job; that workflow's path filters include `packaging/**` and `**.nix`,
 so a change here triggers it.
 
-`nixfmt --check` reports `contrib/nixos/module.nix` and
-`contrib/nixos/package.nix` as unformatted. Both were already unformatted before
+`nixfmt --check` reports `packaging/nixos/module.nix` and
+`packaging/nixos/package.nix` as unformatted. Both were already unformatted before
 the move — the deviations are in `buildFeatures` and the `postInstall`
 concatenation, neither of which this work touched — and reformatting them would
 have put unrelated churn in the diff. `nix flake check` is what enforces the
@@ -109,7 +109,7 @@ paths like `ananicy-rs-0.1.0+78ac5b4`. `package.nix` defaults `version` to
 available. The feature set is stated explicitly rather than inherited, so a
 change to the default set upstream is a visible diff here.
 
-This is the one recipe under `contrib/` that does build the `bpf` feature, and
+This is the one recipe under `packaging/` that does build the `bpf` feature, and
 that is a deliberate difference rather than an oversight:
 
 - nixpkgs makes the eBPF toolchain hermetic and cheap, so there is no reason not
@@ -118,7 +118,7 @@ that is a deliberate difference rather than an oversight:
   can turn either off.
 
 The other three recipes build the default feature set only. See
-[contrib/README.md](../README.md) for why.
+[packaging/README.md](../README.md) for why.
 
 ## The test suite
 

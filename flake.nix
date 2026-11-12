@@ -36,7 +36,7 @@
           ...
         }:
         {
-          imports = [ ./contrib/nixos/module.nix ];
+          imports = [ ./packaging/nixos/module.nix ];
           services.ananicy-rs.package =
             lib.mkDefault
               self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -53,7 +53,7 @@
           formatter = pkgs.nixfmt-rfc-style;
 
           packages = {
-            default = pkgs.callPackage ./contrib/nixos/package.nix { inherit version; };
+            default = pkgs.callPackage ./packaging/nixos/package.nix { inherit version; };
             ananicy-rs = config.packages.default;
           };
 

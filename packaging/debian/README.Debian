@@ -3,7 +3,7 @@ ananicy-rs for Debian
 
 This package builds the ananicy-rs daemon with cargo, its default feature set,
 and installs the binary, the daemon's own systemd unit, shell completions and
-the project documentation. The packaging itself lives in `contrib/debian/` in
+the project documentation. The packaging itself lives in `packaging/debian/` in
 the upstream repository; `debian/README.md` there is the maintainer's guide to
 building it. This file is the end user's and the reviewer's.
 
@@ -74,7 +74,7 @@ explains what each directive does and why the daemon needs it.
 
 Installing this package registers the unit; it does not enable or start it
 (`dh_installsystemd --no-enable --no-start`), which matches the Fedora recipe
-under `contrib/fedora/`. Enabling it is a deliberate act:
+under `packaging/fedora/`. Enabling it is a deliberate act:
 
     systemctl enable --now ananicy-rs.service
 

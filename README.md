@@ -71,21 +71,21 @@ This will place the binary in `/usr/bin/ananicy-rs` and the systemd unit in `/us
 
 ### 2. Distribution packages
 
-Packaging recipes are available under `contrib/`:
+Packaging recipes are available under `packaging/`:
 
 | Distribution | Recipe | Artefact |
 | --- | --- | --- |
-| Fedora | [`contrib/fedora/`](contrib/fedora/) | RPM |
-| Debian, Ubuntu and other derivatives | [`contrib/debian/`](contrib/debian/) | `.deb` |
-| Arch Linux | [`contrib/archlinux/`](contrib/archlinux/) | `.pkg.tar.zst` |
-| Nix, NixOS | [`contrib/nixos/`](contrib/nixos/) | store path, plus a `services.ananicy-rs` module |
+| Fedora | [`packaging/fedora/`](packaging/fedora/) | RPM |
+| Debian, Ubuntu and other derivatives | [`packaging/debian/`](packaging/debian/) | `.deb` |
+| Arch Linux | [`packaging/archlinux/`](packaging/archlinux/) | `.pkg.tar.zst` |
+| Nix, NixOS | [`packaging/nixos/`](packaging/nixos/) | store path, plus a `services.ananicy-rs` module |
 
 These are **community-maintained recipes**, not packages carried by any of those
 distributions. None of them has been submitted to, or reviewed by, a distribution
 package maintainer, so a recipe existing here does not mean the distribution
 supports `ananicy-rs`; it means the packaging work has been done and is
 available to build, test, patch or submit. See
-[contrib/README.md](contrib/README.md) for the details, and each directory's
+[packaging/README.md](packaging/README.md) for the details, and each directory's
 README for how to build and validate its recipe.
 
 All of them install the same files in the same places, and none of them enables
@@ -108,7 +108,7 @@ A `flake.nix` is provided for Nix and NixOS users. You can run the package direc
 nix run github:JohnRTitor/ananicy-rs
 ```
 
-To use it as a NixOS module, import `contrib/nixos/module.nix` in your configuration, or add the flake to your inputs and enable the service:
+To use it as a NixOS module, import `packaging/nixos/module.nix` in your configuration, or add the flake to your inputs and enable the service:
 
 ```nix
 services.ananicy-rs = {

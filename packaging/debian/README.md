@@ -1,7 +1,7 @@
 # Debian packaging recipe
 
 `debian/` here is the packaging directory for `ananicy-rs`. It is kept under
-`contrib/` rather than at the top of the repository, because Debian requires
+`packaging/` rather than at the top of the repository, because Debian requires
 `debian/` to be the top-level directory of a source package and duplicating it in
 two places would guarantee they drift. Copy it into place when building.
 
@@ -15,7 +15,7 @@ package.
 # 1. Put the packaging where dpkg expects it, from a checkout whose directory is
 #    named <source>-<version>.
 version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
-cp -r contrib/debian debian
+cp -r packaging/debian debian
 
 # 2. Vendor the Cargo dependencies. Needs cargo, tar and xz. Needs network:
 #    this is the only step in the whole flow that does. It has to run after step
@@ -47,7 +47,7 @@ reasons that `dpkg-source` states between them. A binary file in a source
 package has to be declared there, and a 15 MB xz of third-party source is a
 binary file by that definition even though it is source. And because
 `dpkg-source` builds the source package by diffing the working tree against the
-orig tarball, the archive must not be left in `contrib/debian/` — there it would
+orig tarball, the archive must not be left in `packaging/debian/` — there it would
 be a modification to a file the orig tarball already has, which cannot be
 represented. That is why `make-vendor.sh` refuses to run until the packaging has
 been copied into place.

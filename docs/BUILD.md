@@ -46,7 +46,7 @@ feature to be enabled.
 
 This has a distribution consequence, recorded in the packaging recipes: Debian
 stable ships rustc 1.85.1, so the `.deb` cannot be built there and
-`contrib/debian/control` requires `rustc (>= 1.88)`.
+`packaging/debian/control` requires `rustc (>= 1.88)`.
 
 ### Native libraries
 
@@ -253,12 +253,12 @@ the source tree before installing it. That file is a build product, so it is in
 `.gitignore` now; a `make install` from before that change may still have left
 one behind.
 
-`contrib/nixos/package.nix` installs the same way, via `make install DESTDIR= PREFIX=$out`,
+`packaging/nixos/package.nix` installs the same way, via `make install DESTDIR= PREFIX=$out`,
 and additionally generates shell completions with `installShellCompletion`.
 
 ## Nix
 
-The flake builds the same package from `contrib/nixos/package.nix`.
+The flake builds the same package from `packaging/nixos/package.nix`.
 
 ```bash
 nix build                # ./result
@@ -283,7 +283,7 @@ The Nix build differs from a local one in two ways worth knowing:
 
 ### NixOS module
 
-`contrib/nixos/module.nix` provides `services.ananicy-rs`:
+`packaging/nixos/module.nix` provides `services.ananicy-rs`:
 
 ```nix
 {
@@ -314,17 +314,17 @@ what the unit does and why.
 
 ## Distribution packaging
 
-`contrib/` holds one native packaging recipe per distribution:
+`packaging/` holds one native packaging recipe per distribution:
 
 | Distribution | Recipe | Artefact |
 | --- | --- | --- |
-| Fedora | `contrib/fedora/` | RPM, via `rpmbuild` |
-| Debian and derivatives | `contrib/debian/` | `.deb`, via `dpkg-buildpackage` |
-| Arch Linux | `contrib/archlinux/` | `.pkg.tar.zst`, via `makepkg` |
-| Nix and NixOS | `contrib/nixos/` | store path, via `nix build` |
+| Fedora | `packaging/fedora/` | RPM, via `rpmbuild` |
+| Debian and derivatives | `packaging/debian/` | `.deb`, via `dpkg-buildpackage` |
+| Arch Linux | `packaging/archlinux/` | `.pkg.tar.zst`, via `makepkg` |
+| Nix and NixOS | `packaging/nixos/` | store path, via `nix build` |
 
 They are **community-maintained recipes**, not packages carried by any of those
-distributions; see [contrib/README.md](../contrib/README.md) for what that does
+distributions; see [packaging/README.md](../packaging/README.md) for what that does
 and does not claim, and each directory's README for how to build and validate it.
 
 All of them install the binary and the unit by running `make install`, so the
@@ -344,10 +344,10 @@ Two things a local build does not have to think about, and the recipes do:
   `--offline`. The Arch recipe runs `cargo fetch` in `prepare()`; Nix uses
   `cargoLock.lockFile`.
 
-`contrib/debian/` is the one directory that is not usable in place: Debian
+`packaging/debian/` is the one directory that is not usable in place: Debian
 requires `debian/` to be the top-level directory of a source package, so
-`cp -r contrib/debian debian` before building. See
-[contrib/debian/README.md](../contrib/debian/README.md) for the full flow,
+`cp -r packaging/debian debian` before building. See
+[packaging/debian/README.md](../packaging/debian/README.md) for the full flow,
 including the vendoring step.
 
 ## Troubleshooting
