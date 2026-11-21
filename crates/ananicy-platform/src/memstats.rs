@@ -14,11 +14,7 @@
 //! `/sys/fs/cgroup` at all all have to keep working, and none of them can be
 //! allowed to take the daemon down for wanting to print a diagnostic.
 
-use std::{
-    fs::read_to_string,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{fs::read_to_string, path::PathBuf, time::Duration};
 
 /// One read of the daemon's own footprint.
 ///
@@ -104,21 +100,12 @@ fn status_kb(status: &str, field: &str) -> Option<u64> {
     })
 }
 
-fn read_status_field(field: &str) -> Option<u64> {
-    let status = read_to_string("/proc/self/status").ok()?;
-    status_kb(&status, field)
-}
-
 /// One `key value` line from a cgroup `memory.stat`.
 fn stat_field(contents: &str, key: &str) -> Option<u64> {
     contents.lines().find_map(|line| {
         let (name, value) = line.split_once(' ')?;
         (name == key).then(|| value.parse().ok())?
     })
-}
-
-fn read_stat_field(cgroup: &Path, key: &str) -> Option<u64> {
-    stat_field(&read_to_string(cgroup.join("memory.stat")).ok()?, key)
 }
 
 /// One `key value` line from a cgroup `memory.events`.
@@ -206,7 +193,17 @@ impl Snapshot {
     /// once a minute, so the cost is not worth optimising away and each read is
     /// treated as optional — see the module comment.
     pub fn read() -> Self {
+        // Read each shared source once. The status file used to be opened five
+        // times and `memory.stat` ten times, once per field, which is a lot
+        // of open/read/close for a snapshot that is taken at most once a minute.
+        // A missing file stays a missing field: the parsers return `None` for an
+        // empty buffer, which is the same answer they gave for a failed read.
+        let status = read_to_string("/proc/self/status").unwrap_or_default();
         let cgroup = own_cgroup_path();
+        let memory_stat = cgroup
+            .as_ref()
+            .and_then(|dir| read_to_string(dir.join("memory.stat")).ok())
+            .unwrap_or_default();
         let io = cgroup
             .as_ref()
             .and_then(|dir| read_to_string(dir.join("io.stat")).ok())
@@ -217,11 +214,11 @@ impl Snapshot {
             .unwrap_or_default();
 
         Snapshot {
-            vm_data: read_status_field("VmData"),
-            vm_rss: read_status_field("VmRSS"),
-            vm_swap: read_status_field("VmSwap"),
-            vm_exe: read_status_field("VmExe"),
-            vm_lib: read_status_field("VmLib"),
+            vm_data: status_kb(&status, "VmData"),
+            vm_rss: status_kb(&status, "VmRSS"),
+            vm_swap: status_kb(&status, "VmSwap"),
+            vm_exe: status_kb(&status, "VmExe"),
+            vm_lib: status_kb(&status, "VmLib"),
             current: cgroup
                 .as_ref()
                 .and_then(|dir| read_to_string(dir.join("memory.current")).ok())
@@ -234,30 +231,16 @@ impl Snapshot {
                 .as_ref()
                 .and_then(|dir| read_to_string(dir.join("memory.max")).ok())
                 .and_then(|value| value.trim().parse().ok()),
-            anon: cgroup.as_ref().and_then(|dir| read_stat_field(dir, "anon")),
-            file: cgroup.as_ref().and_then(|dir| read_stat_field(dir, "file")),
-            kernel: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "kernel")),
-            slab: cgroup.as_ref().and_then(|dir| read_stat_field(dir, "slab")),
-            pgmajfault: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "pgmajfault")),
-            pgfault: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "pgfault")),
-            refault_file: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "workingset_refault_file")),
-            refault_anon: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "workingset_refault_anon")),
-            pswpin: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "pswpin")),
-            pswpout: cgroup
-                .as_ref()
-                .and_then(|dir| read_stat_field(dir, "pswpout")),
+            anon: stat_field(&memory_stat, "anon"),
+            file: stat_field(&memory_stat, "file"),
+            kernel: stat_field(&memory_stat, "kernel"),
+            slab: stat_field(&memory_stat, "slab"),
+            pgmajfault: stat_field(&memory_stat, "pgmajfault"),
+            pgfault: stat_field(&memory_stat, "pgfault"),
+            refault_file: stat_field(&memory_stat, "workingset_refault_file"),
+            refault_anon: stat_field(&memory_stat, "workingset_refault_anon"),
+            pswpin: stat_field(&memory_stat, "pswpin"),
+            pswpout: stat_field(&memory_stat, "pswpout"),
             high_events: event_field(&events, "high"),
             max_events: event_field(&events, "max"),
             read_bytes: io_sum(&io, "rbytes"),
@@ -430,6 +413,36 @@ Threads:\t\t4
         assert_eq!(stat_field(stat, "anon"), Some(1_748_992));
         assert_eq!(stat_field(stat, "slab"), Some(3_926_568));
         assert_eq!(stat_field(stat, "nonesuch"), None);
+    }
+
+    /// `Snapshot::read` fans one `memory.stat` buffer out to ten fields. Pin the
+    /// whole key mapping at once, so swapping two keys (or passing the wrong
+    /// buffer to one of them) fails here rather than silently mislabelling a
+    /// diagnostic.
+    #[test]
+    fn every_stat_field_comes_from_the_one_shared_buffer() {
+        let stat = "anon 1\nfile 2\nkernel 3\nslab 4\npgmajfault 5\npgfault 6\n\
+                    workingset_refault_file 7\nworkingset_refault_anon 8\n\
+                    pswpin 9\npswpout 10\nnonesuch 99\n";
+        for (key, expected) in [
+            ("anon", 1),
+            ("file", 2),
+            ("kernel", 3),
+            ("slab", 4),
+            ("pgmajfault", 5),
+            ("pgfault", 6),
+            ("workingset_refault_file", 7),
+            ("workingset_refault_anon", 8),
+            ("pswpin", 9),
+            ("pswpout", 10),
+        ] {
+            assert_eq!(
+                stat_field(stat, key),
+                Some(expected),
+                "the key {key} must map to its own value"
+            );
+        }
+        assert_eq!(stat_field("", "anon"), None, "an absent file stays absent");
     }
 
     #[test]

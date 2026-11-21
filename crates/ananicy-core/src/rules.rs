@@ -690,7 +690,7 @@ struct Matcher {
     /// report below needs the name, and the index would have to be looked back up
     /// to produce it. A rule set carries a handful of `name_regex` rules, so
     /// there are a handful of these.
-    name: String,
+    name: Box<str>,
     /// The bytes this pattern's matches must begin with, or `None` for no
     /// prefilter.
     ///
@@ -713,7 +713,7 @@ impl Matcher {
         // tagged-NFA engine, and neither of those has a JIT on this target.
         Ok(Self {
             compiled: regexr::RegexBuilder::new(pattern).build()?,
-            name: name.to_string(),
+            name: Box::from(name),
             first_bytes: anchored_first_byte(pattern).map(|byte| {
                 let mut set = FirstByteSet::default();
                 set.insert(byte);
@@ -1061,7 +1061,7 @@ impl Rules {
         match serde_json::from_str::<Value>(json_str) {
             Ok(value) => {
                 if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
-                    let key = RuleName(name.to_string());
+                    let key = RuleName(name.into());
                     // One lookup, not two. `contains_key` asked the map the
                     // question the redefinition note needs and then `get` asked
                     // it again for the index; hashing the same name twice per
@@ -1124,7 +1124,7 @@ impl Rules {
                     // Type rule (has 'type' but no 'name')
                     // Actually, wait, program rules also have 'type'.
                     // The C++ logic sets it as a type rule if it HAS 'type' and NO 'name'
-                    let key = TypeName(type_name.to_string());
+                    let key = TypeName(type_name.into());
                     Self::note_redefinition(
                         self.types.contains_key(&key),
                         "type",
@@ -1135,7 +1135,7 @@ impl Rules {
                     true
                 } else if let Some(cgroup_name) = value.get("cgroup").and_then(|v| v.as_str()) {
                     // Cgroup rule
-                    let key = CgroupName(cgroup_name.to_string());
+                    let key = CgroupName(cgroup_name.into());
                     Self::note_redefinition(
                         self.cgroups.contains_key(&key),
                         "cgroup",
@@ -1269,7 +1269,7 @@ impl Rules {
         for matcher in &self.regex_programs {
             if matcher.may_match(target_name)
                 && matcher.is_match(target_name)
-                && let Some((name, &index)) = self.programs.get_key_value(matcher.name.as_str())
+                && let Some((name, &index)) = self.programs.get_key_value(&*matcher.name)
             {
                 return Some((name, index));
             }

@@ -16,7 +16,7 @@ pub mod x3d;
 
 use {
     abi::affinity,
-    ananicy_core::{cgroup::CgroupIdentity, cpuset::CpuSet, worker::PlatformActions},
+    ananicy_core::{cgroup::CgroupIdentity, cpuset::CpuSet, worker::PlatformActions, worker::Tids},
     cgroup::process::{CgroupProcessResolver, LinuxCgroupResolver},
     mounts::{CgroupVersion, get_cgroup_info},
 };
@@ -96,7 +96,7 @@ impl PlatformActions for LinuxPlatform {
         abi::affinity::get_max_number_of_cpus()
     }
 
-    fn get_tids(&self, pid: i32) -> Result<Vec<i32>, PlatformError> {
+    fn get_tids(&self, pid: i32) -> Result<Tids, PlatformError> {
         crate::procfs::get_tids(pid)
     }
 

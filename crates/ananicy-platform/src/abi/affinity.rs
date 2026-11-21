@@ -110,9 +110,9 @@ pub fn set_affinity(pid: i32, tids: &[i32], cpuset: &CpuSet) -> Result<(), Platf
     let mask = cpuset.kernel_mask();
     let num_bytes = mask.len();
 
-    if let Err(failure) = apply_to_tids(tids, &mask) {
+    if let Err(failure) = apply_to_tids(tids, mask) {
         return match failure {
-            AffinityFailure::RetryNarrower => narrow_and_retry(pid, tids, &mask, num_bytes),
+            AffinityFailure::RetryNarrower => narrow_and_retry(pid, tids, mask, num_bytes),
             AffinityFailure::Settled(e) => Err(e),
         };
     }

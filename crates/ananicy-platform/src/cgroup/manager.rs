@@ -19,6 +19,34 @@ use crate::cgroup::{
     ownership::{CgroupOwnership, discover_delegated_root},
 };
 
+/// Render a whole control-file line into a caller-provided stack buffer.
+///
+/// The kernel needs the value and its newline in one `write()` (see the comment
+/// in `move_pid`), and `format!` would allocate for every such write. Every value
+/// this module renders fits in 48 bytes — the widest is two `u64`s plus a space
+/// and a newline — so a short write cannot occur here.
+fn control_line<'a>(buf: &'a mut [u8], value: std::fmt::Arguments<'_>) -> &'a [u8] {
+    let capacity = buf.len();
+    let mut remaining: &mut [u8] = buf;
+    // A short write would hand the kernel a truncated control value, so make
+    // the size assumption explicit rather than silently ignoring it.
+    assert!(
+        write!(remaining, "{value}").is_ok(),
+        "control line exceeds its buffer"
+    );
+    let len = capacity - remaining.len();
+    &buf[..len]
+}
+
+/// Writes a complete control line through one `write_all` call.
+///
+/// `cgroup.procs` rejects a newline written on its own, so the whole
+/// `"pid\n"` has to reach the kernel in a single write. Keeping the call in a
+/// helper lets a test count writes with a recording `Write` implementation.
+fn write_control_line(writer: &mut impl Write, line: &[u8]) -> std::io::Result<()> {
+    writer.write_all(line)
+}
+
 pub trait CgroupController {
     fn ensure_child(&self, name: &str) -> Option<PathBuf>;
     fn move_pid(&self, pid: i32, target: &Path) -> bool;
@@ -356,8 +384,9 @@ impl CgroupController for CgroupManager {
         //   write(fd, "\n", 1)    → EINVAL (kernel tries to parse "\n" as a PID)
         // Instead, format the PID + newline into a single buffer so that
         // write_all() issues one atomic write() syscall.
-        let pid_buf = format!("{}\n", pid_to_write);
-        if let Err(e) = file.write_all(pid_buf.as_bytes()) {
+        let mut buf = [0u8; 48];
+        let pid_buf = control_line(&mut buf, format_args!("{}\n", pid_to_write));
+        if let Err(e) = write_control_line(&mut file, pid_buf) {
             debug!("move_pid: Failed to write to {:?}: {}", procs_path, e);
             return false;
         }
@@ -434,8 +463,9 @@ impl CgroupController for CgroupManager {
                 error!("set_cpu_max: Failed to open {:?}", max_file);
                 return false;
             };
-            let buf = format!("{quota_val} {period}\n");
-            if let Err(e) = f.write_all(buf.as_bytes()) {
+            let mut buf = [0u8; 48];
+            let line = control_line(&mut buf, format_args!("{quota_val} {period}\n"));
+            if let Err(e) = f.write_all(line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", max_file, e);
                 return false;
             }
@@ -445,8 +475,9 @@ impl CgroupController for CgroupManager {
                 error!("set_cpu_max: Failed to open {:?}", period_file);
                 return false;
             };
-            let buf = format!("{period}\n");
-            if let Err(e) = f.write_all(buf.as_bytes()) {
+            let mut buf = [0u8; 48];
+            let line = control_line(&mut buf, format_args!("{period}\n"));
+            if let Err(e) = f.write_all(line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", period_file, e);
                 return false;
             }
@@ -455,8 +486,9 @@ impl CgroupController for CgroupManager {
                 error!("set_cpu_max: Failed to open {:?}", quota_file);
                 return false;
             };
-            let buf = format!("{quota_val}\n");
-            if let Err(e) = f.write_all(buf.as_bytes()) {
+            let mut buf = [0u8; 48];
+            let line = control_line(&mut buf, format_args!("{quota_val}\n"));
+            if let Err(e) = f.write_all(line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", quota_file, e);
                 return false;
             }
@@ -488,8 +520,9 @@ impl CgroupController for CgroupManager {
                 debug!("set_cpu_weight: Failed to open {:?}", weight_file);
                 return false;
             };
-            let buf = format!("{}\n", weight_val);
-            if let Err(e) = f.write_all(buf.as_bytes()) {
+            let mut buf = [0u8; 48];
+            let line = control_line(&mut buf, format_args!("{}\n", weight_val));
+            if let Err(e) = f.write_all(line) {
                 debug!("set_cpu_weight: Failed to write {:?}: {}", weight_file, e);
                 return false;
             }
@@ -502,8 +535,9 @@ impl CgroupController for CgroupManager {
                 debug!("set_cpu_weight: Failed to open {:?}", shares_file);
                 return false;
             };
-            let buf = format!("{}\n", shares);
-            if let Err(e) = f.write_all(buf.as_bytes()) {
+            let mut buf = [0u8; 48];
+            let line = control_line(&mut buf, format_args!("{}\n", shares));
+            if let Err(e) = f.write_all(line) {
                 debug!("set_cpu_weight: Failed to write {:?}: {}", shares_file, e);
                 return false;
             }
@@ -519,6 +553,38 @@ mod tests {
         crate::mounts::{CgroupInfo, CgroupVersion},
         PathBuf,
     };
+
+    /// A regular file concatenates successive writes, so the byte-exact
+    /// integration test cannot tell one `write()` from two. This counting
+    /// writer can: `cgroup.procs` treats a newline written on its own as EINVAL,
+    /// so the whole line must go out in a single call.
+    #[test]
+    fn a_control_line_is_written_in_one_call() {
+        struct CountingWriter {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut buf = [0u8; 48];
+        let line = control_line(&mut buf, format_args!("{}\n", 1234));
+        let mut writer = CountingWriter {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        write_control_line(&mut writer, line).unwrap();
+        assert_eq!(writer.writes, 1, "the whole line must be one write()");
+        assert_eq!(writer.bytes, b"1234\n");
+    }
 
     /// Integration tests in `tests/cgroup_manager.rs` drive the manager through
     /// `new_with_root` against a temporary hierarchy, so this module only keeps
@@ -581,8 +647,10 @@ mod tests {
 
 #[cfg(test)]
 mod weightless_reporting {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use {
+        super::*,
+        std::sync::atomic::{AtomicUsize, Ordering},
+    };
 
     /// Counts what the logger was actually handed, so "warns once" is measured
     /// rather than assumed. `tracing` has no capture harness here, so the set the

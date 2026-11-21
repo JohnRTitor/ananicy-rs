@@ -178,10 +178,19 @@ proptest! {
         // Indices deliberately range wider than `max_cores`: out-of-range
         // `set_cpu` is a documented no-op, and a mask that honoured it would
         // be a different defect.
-        edits in prop::collection::vec((0u32..700, prop::bool::ANY), 0..48),
+        // The third field interleaves `zero()` with arbitrary set/clear edits:
+        // it clears the bitset and the maintained mask together, so a stale
+        // mask byte after a reset must fail this property too.
+        edits in prop::collection::vec(
+            (0u32..700, prop::bool::ANY, prop::bool::ANY),
+            0..48,
+        ),
     ) {
         let mut set = CpuSet::new(max_cores);
-        for (cpu, on) in edits {
+        for (cpu, on, reset) in edits {
+            if reset {
+                set.zero();
+            }
             if on {
                 set.set_cpu(cpu);
             } else {
@@ -217,8 +226,10 @@ proptest! {
         // have, and the syscall has to report that rather than have the mask
         // quietly widen.
         for cpu in max_cores..(max_cores + 8).min(mask.len() as u32 * 8) {
-            prop_assert!(
-                !mask[cpu as usize / 8] & (1 << (cpu % 8)) != 0,
+            let padding_bit = mask[cpu as usize / 8] & (1 << (cpu % 8));
+            prop_assert_eq!(
+                padding_bit,
+                0,
                 "CPU {} is beyond max_cores = {} and must not be set",
                 cpu,
                 max_cores

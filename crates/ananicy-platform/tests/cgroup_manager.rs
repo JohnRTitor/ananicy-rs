@@ -107,8 +107,16 @@ fn test_cgroup_manager_v2_write_files() {
         manager.set_cpu_max(&child_path, 50),
         "Should successfully set cpu.max in Owned subtree"
     );
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1);
+    let expected_quota = 100_000u64.saturating_mul(cores).saturating_mul(50) / 100;
     let content = fs::read_to_string(child_path.join("cpu.max")).unwrap();
-    assert!(content.ends_with("100000\n"), "the period must be 100000");
+    assert_eq!(
+        content,
+        format!("{expected_quota} 100000\n"),
+        "both the quota and the period, separated by a space, must be written"
+    );
 
     assert!(
         manager.set_cpu_weight(&child_path, 200),
@@ -299,6 +307,64 @@ fn a_v1_manager_creates_directories_without_delegation() {
     assert_eq!(created, mount_point.join("cpu/ananicy-test"));
     assert!(created.exists());
     assert!(manager.cgroup_exists("ananicy-test"));
+}
+
+#[test]
+fn a_successful_move_writes_the_pid_and_newline_in_one_piece() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service, info.mount_point);
+    let target = manager.ensure_child("move-test").unwrap();
+    fs::File::create(target.join("cgroup.procs")).unwrap();
+
+    let pid = id() as i32;
+    assert!(
+        manager.move_pid(pid, &target),
+        "moving into an owned cgroup must succeed"
+    );
+    assert_eq!(
+        fs::read_to_string(target.join("cgroup.procs")).unwrap(),
+        format!("{pid}\n"),
+        "the kernel accepts exactly one write of \"pid\\n\"; anything else is EINVAL"
+    );
+}
+
+#[test]
+fn all_v1_control_files_receive_their_exact_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let mount_point = temp.path().to_path_buf();
+    fs::create_dir(mount_point.join("cpu")).unwrap();
+
+    let manager = CgroupManager::new_with_root(
+        CgroupInfo {
+            version: CgroupVersion::V1,
+            mount_point: mount_point.clone(),
+        },
+        None,
+    );
+    let child = manager.ensure_child("ananicy-test").unwrap();
+    for file in ["cpu.cfs_period_us", "cpu.cfs_quota_us", "cpu.shares"] {
+        fs::File::create(child.join(file)).unwrap();
+    }
+
+    assert!(manager.set_cpu_max(&child, 50));
+    assert!(manager.set_cpu_weight(&child, 200));
+
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1);
+    let expected_quota = 1_000_000u64.saturating_mul(cores).saturating_mul(50) / 100;
+    assert_eq!(
+        fs::read_to_string(child.join("cpu.cfs_period_us")).unwrap(),
+        "1000000\n"
+    );
+    assert_eq!(
+        fs::read_to_string(child.join("cpu.cfs_quota_us")).unwrap(),
+        format!("{expected_quota}\n")
+    );
+    assert_eq!(
+        fs::read_to_string(child.join("cpu.shares")).unwrap(),
+        "2048\n"
+    );
 }
 
 #[test]

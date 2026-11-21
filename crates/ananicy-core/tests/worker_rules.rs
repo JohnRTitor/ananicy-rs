@@ -11,7 +11,7 @@ mod common;
 use {
     ananicy_core::{config::ConfigSnapshot, worker::PlatformError},
     common::{Call, FakePlatform, run_worker, run_worker_with, snapshot},
-    std::collections::HashMap,
+    std::{collections::HashMap, sync::Arc},
 };
 
 /// The default configuration: every `apply_*` flag is on, so a rule attribute is
@@ -764,4 +764,128 @@ fn an_extreme_nice_value_does_not_overflow_the_cpu_weight_mirror() {
             "nice = {nice} produced a cpu.weight of {weight}, outside the kernel's 1..=10000"
         );
     }
+}
+
+/// Feeds several processes to one worker, so state the worker keeps between
+/// events (such as the parsed-cpuset cache) is exercised.
+fn run_worker_for_processes(
+    rules: &[&str],
+    processes: &[(i32, &str)],
+    cpuset_aliases: HashMap<String, String>,
+) -> Arc<FakePlatform> {
+    use {
+        ananicy_core::{
+            config::Config,
+            process::Process,
+            rules::{Rules, SharedRules},
+            types::Pid,
+            worker::Worker,
+        },
+        std::sync::{atomic::AtomicBool, mpsc},
+    };
+
+    let config = Arc::new(Config::new(all_attributes_enabled()));
+    let mut rule_set = Rules::new(config.clone());
+    for rule in rules {
+        assert!(rule_set.load_rule_from_string(rule), "invalid rule: {rule}");
+    }
+
+    let (tx, rx) = mpsc::channel();
+    for (pid, name) in processes {
+        tx.send(Process::new(Pid(*pid), (*name).to_string()).with_authoritative_name())
+            .unwrap();
+    }
+    drop(tx);
+
+    let platform = Arc::new(FakePlatform::new().with_max_cores(16));
+    Worker::new(
+        config,
+        SharedRules::new(rule_set),
+        platform.clone(),
+        cpuset_aliases,
+        rx,
+        None,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .work_loop();
+    platform
+}
+
+#[test]
+fn a_cpuset_is_parsed_once_for_several_matching_processes() {
+    let platform = run_worker_for_processes(
+        &[r#"{"name":"alpha","cpuset":"4-7"}"#],
+        &[(41, "alpha"), (42, "alpha")],
+        HashMap::new(),
+    );
+
+    let affinity_calls = platform.calls_of("set_affinity");
+    assert_eq!(affinity_calls.len(), 2);
+    assert!(
+        affinity_calls.iter().all(|call| *call
+            == Call::SetAffinity {
+                cpuset: "4-7".to_string()
+            }),
+        "both processes must get the same cpuset: {affinity_calls:?}"
+    );
+    assert_eq!(
+        platform.max_cores_calls(),
+        1,
+        "the second process must reuse the cached parse; get_max_cores is only \
+         called on a miss"
+    );
+}
+
+#[test]
+fn different_cpusets_get_different_cached_entries() {
+    let platform = run_worker_for_processes(
+        &[
+            r#"{"name":"alpha","cpuset":"0-3"}"#,
+            r#"{"name":"beta","cpuset":"8-11"}"#,
+        ],
+        &[(41, "alpha"), (42, "beta")],
+        HashMap::new(),
+    );
+
+    let affinity_calls = platform.calls_of("set_affinity");
+    assert_eq!(affinity_calls.len(), 2);
+    assert!(affinity_calls.contains(&Call::SetAffinity {
+        cpuset: "0-3".to_string()
+    }));
+    assert!(affinity_calls.contains(&Call::SetAffinity {
+        cpuset: "8-11".to_string()
+    }));
+    assert_eq!(
+        platform.max_cores_calls(),
+        2,
+        "two distinct cpusets must be parsed separately; a key-ignoring lookup \
+         would apply one process' affinity to the other"
+    );
+}
+
+#[test]
+fn an_alias_and_its_literal_cpuset_share_the_same_cache_entry() {
+    let platform = run_worker_for_processes(
+        &[
+            r#"{"name":"aliased","cpuset":"big-cores"}"#,
+            r#"{"name":"literal","cpuset":"4-7"}"#,
+        ],
+        &[(41, "aliased"), (42, "literal")],
+        aliases(&[("big-cores", "4-7")]),
+    );
+
+    let affinity_calls = platform.calls_of("set_affinity");
+    assert_eq!(affinity_calls.len(), 2);
+    assert!(
+        affinity_calls.iter().all(|call| *call
+            == Call::SetAffinity {
+                cpuset: "4-7".to_string()
+            }),
+        "the keyed value must be the resolved string, not the alias: {affinity_calls:?}"
+    );
+    assert_eq!(
+        platform.max_cores_calls(),
+        1,
+        "both rules resolve to the same cpuset and should parse it only once"
+    );
 }

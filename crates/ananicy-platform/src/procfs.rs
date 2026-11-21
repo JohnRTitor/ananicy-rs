@@ -1,6 +1,12 @@
 use {
-    ananicy_core::{process::Process, types::Pid},
-    std::{borrow::Cow, fmt::Write as _, io::ErrorKind::PermissionDenied, sync::mpsc::Sender},
+    ananicy_core::{process::Process, types::Pid, worker::Tids},
+    std::{
+        borrow::Cow,
+        fmt::Write as _,
+        io::{ErrorKind::PermissionDenied, Write as _},
+        os::unix::ffi::OsStrExt,
+        sync::mpsc::Sender,
+    },
 };
 
 use {
@@ -319,8 +325,39 @@ impl ProcfsScanner {
     }
 }
 
+/// Size of the stack buffer used by [`proc_path`].
+///
+/// The longest path built here is `/proc/<i32 pid>/status`: 6 bytes for
+/// `/proc/`, up to 11 for a signed `i32`, one slash and 6 for the suffix — 24
+/// bytes in all. 64 leaves ample room, so the `write!` in `proc_path` never
+/// has to truncate for these callers.
+const PROC_PATH_BUF_LEN: usize = 64;
+
+/// Writes `/proc/<pid>/<suffix>` into a caller-provided stack buffer and
+/// returns the path as a `&str` borrowed from that buffer.
+///
+/// `None` means the path did not fit or was not valid UTF-8. With the fixed
+/// suffixes used below and an `i32` pid neither can happen, but callers handle
+/// it instead of unwrapping: a panic aborts in release builds. The returned
+/// borrow lives until the buffer goes out of scope, so callers keep the buffer
+/// alive for exactly one `fs` call.
+fn proc_path<'a>(
+    buffer: &'a mut [u8; PROC_PATH_BUF_LEN],
+    pid: i32,
+    suffix: &str,
+) -> Option<&'a str> {
+    let len = {
+        let mut writer: &mut [u8] = &mut buffer[..];
+        write!(writer, "/proc/{pid}/{suffix}").ok()?;
+        PROC_PATH_BUF_LEN - writer.len()
+    };
+    std::str::from_utf8(&buffer[..len]).ok()
+}
+
 pub fn get_start_time(pid: i32) -> Option<u64> {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let mut path_buf = [0u8; PROC_PATH_BUF_LEN];
+    let path = proc_path(&mut path_buf, pid, "stat")?;
+    let stat = fs::read_to_string(path).ok()?;
     // The comm field (2nd field) is enclosed in parentheses and can contain spaces.
     // We must find the last ')' to skip over it to prevent field shifting.
     let rparen = stat.rfind(')')?;
@@ -332,7 +369,7 @@ pub fn get_start_time(pid: i32) -> Option<u64> {
     // `nth(19)` rather than `collect()`: the collect built a `Vec<&str>` of all
     // fifty-odd remaining fields, ~800 bytes, to read one of them and throw the
     // rest away. This is on the per-process path — `move_pid` calls it twice and
-    // the cgroup resolver twice more — so it was one of the most frequent
+    // the cgroup resolver once more — so it was one of the most frequent
     // allocations in the daemon. `None` here is the same answer the old
     // `len() > 19` check gave for a truncated `stat`.
     stat[rparen + 1..]
@@ -342,7 +379,9 @@ pub fn get_start_time(pid: i32) -> Option<u64> {
 }
 
 pub fn get_tgid(pid: i32) -> Option<i32> {
-    let status = fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    let mut path_buf = [0u8; PROC_PATH_BUF_LEN];
+    let path = proc_path(&mut path_buf, pid, "status")?;
+    let status = fs::read_to_string(path).ok()?;
     for line in status.lines() {
         if line.starts_with("Tgid:") {
             // The second whitespace-separated field, without collecting the
@@ -354,15 +393,27 @@ pub fn get_tgid(pid: i32) -> Option<i32> {
     None
 }
 
-pub fn get_tids(pid: i32) -> Result<Vec<i32>, ananicy_core::worker::PlatformError> {
-    let task_path = format!("/proc/{}/task", pid);
-    let mut tids = Vec::new();
+pub fn get_tids(pid: i32) -> Result<Tids, ananicy_core::worker::PlatformError> {
+    let mut path_buf = [0u8; PROC_PATH_BUF_LEN];
+    let Some(task_path) = proc_path(&mut path_buf, pid, "task") else {
+        return Err(ananicy_core::worker::PlatformError::Io(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "proc path did not fit in the stack buffer",
+            ),
+        ));
+    };
+    let mut tids = Tids::new();
 
-    match fs::read_dir(&task_path) {
+    match fs::read_dir(task_path) {
         Ok(entries) => {
             for entry in entries.flatten() {
-                if let Ok(file_name) = entry.file_name().into_string()
-                    && let Ok(tid) = file_name.parse::<i32>()
+                // The kernel names each task directory with its decimal tid.
+                // Parse the raw bytes rather than converting the `OsString`
+                // into an owned `String` first, which allocated per thread;
+                // a non-UTF-8 or non-numeric name is simply skipped as before.
+                if let Ok(name) = std::str::from_utf8(entry.file_name().as_bytes())
+                    && let Ok(tid) = name.parse::<i32>()
                 {
                     tids.push(tid);
                 }
@@ -382,6 +433,24 @@ pub fn get_tids(pid: i32) -> Result<Vec<i32>, ananicy_core::worker::PlatformErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The path builder is on every hot procfs read. Pin the exact bytes it
+    /// produces for extreme pids, and that even the longest possible path fits
+    /// the stack buffer with room to spare.
+    #[test]
+    fn proc_paths_are_exact_and_fit_the_stack_buffer() {
+        for (pid, suffix, expected) in [
+            (0, "stat", "/proc/0/stat"),
+            (42, "status", "/proc/42/status"),
+            (-1, "task", "/proc/-1/task"),
+            (i32::MAX, "stat", "/proc/2147483647/stat"),
+            (i32::MIN, "status", "/proc/-2147483648/status"),
+        ] {
+            let mut buffer = [0u8; PROC_PATH_BUF_LEN];
+            assert_eq!(proc_path(&mut buffer, pid, suffix), Some(expected));
+            assert!(expected.len() < PROC_PATH_BUF_LEN);
+        }
+    }
 
     /// The kernel's ` (deleted)` marker includes its leading space, so the name
     /// is truncated at the index of that space.

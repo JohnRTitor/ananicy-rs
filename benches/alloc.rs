@@ -17,9 +17,9 @@
 //!   formatter and the tracing subscriber allocated before the measurement
 //!   opened is already in the counter and cancels out.
 //! * **live allocations** — the same, counted in pieces rather than bytes. This
-//!   is the column that catches the bug `MEMORY.md:91-96` documents, where a
-//!   fix was invisible in the struct size and in peak RSS and was worth 14.5% of
-//!   the rule set on its own.
+//!   is the column that catches the bug `docs/MEMORY.md` § "What the names
+//!   cost" documents, where a fix was invisible in the struct size and in peak
+//!   RSS and was worth 14.5% of the rule set on its own.
 //!
 //! Both are read through [`AllocationSnapshot`], which `reset`s the counters
 //! before the measured region so nothing outside it leaks in.

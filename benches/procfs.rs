@@ -107,9 +107,12 @@ fn bench_cgroup_resolution(c: &mut Criterion) {
     // for a process reported by both the start-up `/proc` walk and a netlink
     // event.
     //
-    // Measured: 7.4 us warm against 20.6 us cold, a factor of 2.8. Both
-    // get_start_time reads on the cold path are the difference, and neither of
-    // them is doing useful work there.
+    // Measured: ~7.7 us warm against ~14 us cold. The gap is one
+    // `/proc/<pid>/cgroup` read, not a start-time read: `get_start_time` runs
+    // before the cache lookup on both paths and is what makes a cached entry
+    // attributable to its pid. A second start-time read used to follow the
+    // cgroup read; removing it is what brought the cold figure down from
+    // ~20.6 us — see `docs/MEMORY.md`.
     c.bench_function("process_cgroup_cold", |b| {
         b.iter(|| LinuxPlatform::new().process_cgroup(black_box(pid)))
     });

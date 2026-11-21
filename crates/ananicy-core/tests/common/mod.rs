@@ -15,8 +15,9 @@ use {
         process::Process,
         rules::{Rules, SharedRules},
         types::Pid,
-        worker::{PlatformActions, PlatformError, Worker},
+        worker::{PlatformActions, PlatformError, Tids, Worker},
     },
+    smallvec::{SmallVec, smallvec},
     std::{
         collections::HashMap,
         fmt, fs,
@@ -123,6 +124,9 @@ pub struct FakePlatform {
     failures: Mutex<HashMap<&'static str, PlatformError>>,
     calls: Mutex<Vec<Call>>,
     priority_calls: Arc<AtomicUsize>,
+    /// The worker only asks for the core count when it has to parse a cpuset,
+    /// so this distinguishes a cache hit from a miss.
+    max_cores_calls: Arc<AtomicUsize>,
 }
 
 impl Default for FakePlatform {
@@ -141,6 +145,7 @@ impl FakePlatform {
             failures: Mutex::new(HashMap::new()),
             calls: Mutex::new(Vec::new()),
             priority_calls: Arc::new(AtomicUsize::new(0)),
+            max_cores_calls: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -194,6 +199,12 @@ impl FakePlatform {
     /// Every mutation the worker attempted, in order.
     pub fn calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// How many times the worker had to look up the CPU count, which happens
+    /// only on a cpuset-cache miss.
+    pub fn max_cores_calls(&self) -> usize {
+        self.max_cores_calls.load(Ordering::SeqCst)
     }
 
     /// Only the mutations of the given kind, in order.
@@ -271,11 +282,16 @@ impl PlatformActions for FakePlatform {
     }
 
     fn get_max_cores(&self) -> u32 {
+        self.max_cores_calls.fetch_add(1, Ordering::SeqCst);
         self.max_cores
     }
 
-    fn get_tids(&self, pid: i32) -> Result<Vec<i32>, PlatformError> {
-        Ok(self.tids.clone().unwrap_or_else(|| vec![pid]))
+    fn get_tids(&self, pid: i32) -> Result<Tids, PlatformError> {
+        Ok(self
+            .tids
+            .clone()
+            .map(SmallVec::from_vec)
+            .unwrap_or_else(|| smallvec![pid]))
     }
 
     fn set_priority(&self, _pid: i32, _tids: &[i32], nice: i32) -> Result<(), PlatformError> {

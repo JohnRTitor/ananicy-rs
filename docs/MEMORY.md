@@ -93,7 +93,11 @@ Counting live heap across a full load:
 
 The remaining allocation per rule is the rule's own name, which is the key of
 the map that finds it and has to be stored. The remaining bytes are the `Vec` of
-rules and that map's buckets.
+rules and that map's buckets. That key is now a `Box<str>` rather than a
+`String`, which drops the unused capacity word and shrinks the map's buckets:
+the same bench measures 143 B/rule and 1.00 allocs/rule for both rule-set sizes,
+down from the 160 B/rule that bench measured before this change; the table's
+older rows say 168/167. The table is left as it was measured.
 
 Two of those rows were the same bug found twice. The middle one is a separate
 defect from the interning: the loader resolved each type *inside* the per-rule
@@ -107,9 +111,9 @@ was invisible from the struct size and invisible in peak RSS, and it was worth
 `cargo bench --bench alloc` prints the last two rows of that table from a
 counting `GlobalAlloc`: live bytes and live allocation count, taken as a delta
 around a full load, over a rule set generated to the shape of the shipped one.
-It reproduces the 72-byte row from scratch — 160 B/rule and 1.00 allocs/rule
-against the table's 168 and 1.01 — so those figures are re-derivable rather
-than asserted. The generator is used in preference to reading `/etc/ananicy.d`
+It reproduces the 72-byte row from scratch — 143 B/rule and 1.00 allocs/rule
+today, against the table's older 168 and 1.01 — so the figures are re-derivable
+rather than asserted. The generator is used in preference to reading `/etc/ananicy.d`
 because a benchmark that measures whatever is installed measures the machine
 rather than the code, and stops being comparable the day upstream changes.
 
@@ -247,16 +251,21 @@ Two things follow, and both have cost a wrong conclusion:
   allocation work was still worth keeping — those allocations are real under a
   `MemoryHigh` — but it was never going to be the thing.
 - **A benchmark can measure a path production does not take.**
-  `process_cgroup` measured 7.4 µs against a warm cache, and that is not what
-  it costs: `CachingCgroupResolver` is keyed on pid, and `process_cgroup` is
-  called once per matched process from `set_cpu_weight`, so a new pid never
-  finds an entry. The real figure was 20.6 µs, and the difference was two
-  `get_start_time` reads, neither of which was doing useful work — the first
-  validated a cache entry that did not exist, and the second re-checked the pid
-  across a 5.8 µs window, which is not long enough for a pid to be recycled on
-  any machine. A hit can only occur when one pid is resolved twice inside the
-  one-second TTL, which the netlink dedup prevents except for a process
-  reported by both the start-up `/proc` walk and a netlink event.
+  `process_cgroup` measures about 7.7 µs against a warm cache, and that is not
+  what it costs: `CachingCgroupResolver` is keyed on pid, and `process_cgroup`
+  is called once per matched process from `set_cpu_weight`, so a new pid never
+  finds an entry. The real figure is about 14 µs (the `process_cgroup_cold`
+  bench); the gap over the warm figure is one `/proc/<pid>/cgroup` read. Both
+  paths still pay for one `get_start_time` read, which cannot be dropped
+  because it makes a cached entry attributable to the process now holding the
+  pid. There used to be a *second* read after the cgroup lookup, re-checking
+  the pid across a 5.8 µs window; it was removed, because a pid cannot wrap
+  through at least four million values in that time, so the check could never
+  fire and cost a full procfs read on every matched process. Removing it is
+  what brought the cold figure down from about 20.6 µs. A hit
+  can only occur when one pid is resolved twice inside the one-second TTL,
+  which the netlink dedup prevents except for a process reported by both the
+  start-up `/proc` walk and a netlink event.
 
 Not in the table, and not measured: `is_realtime` (`sched_getattr`) and the
 apply syscalls themselves. Both would enlarge the total and make the rule

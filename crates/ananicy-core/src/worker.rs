@@ -14,9 +14,16 @@ use {
 
 use {
     crate::{config::Config, process::Process, rules::SharedRules},
+    smallvec::{SmallVec, smallvec},
     std::{collections::HashMap, sync::Arc, thread::JoinHandle},
     tracing::{debug, error, info, warn},
 };
+
+/// Thread ids of one process. Almost every process has only a handful, so the
+/// common case stays on the stack; only unusually many-threaded processes fall
+/// back to the heap. Defined once here so implementors do not have to agree on
+/// an inline capacity independently.
+pub type Tids = SmallVec<[i32; 8]>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum PlatformError {
@@ -57,8 +64,8 @@ pub trait PlatformActions: Send + Sync {
 
     fn get_max_cores(&self) -> u32;
 
-    fn get_tids(&self, pid: i32) -> Result<Vec<i32>, PlatformError> {
-        Ok(vec![pid])
+    fn get_tids(&self, pid: i32) -> Result<Tids, PlatformError> {
+        Ok(smallvec![pid])
     }
 
     fn set_priority(&self, pid: i32, tids: &[i32], nice: i32) -> Result<(), PlatformError>;
@@ -127,6 +134,12 @@ impl Worker {
         let start_time = Instant::now();
         let mut processed_count = 0;
 
+        // Parsed cpusets keyed by the resolved cpuset string. The worker owns a
+        // single thread, so a plain map is enough: a rule with a cpuset is
+        // parsed once rather than once per process it matches. `get_max_cores`
+        // is constant for the process, so it is not part of the key.
+        let mut parsed_cpusets: HashMap<Box<str>, CpuSet> = HashMap::new();
+
         while let Ok(p) = self.receiver.recv() {
             processed_count += 1;
 
@@ -181,9 +194,9 @@ impl Worker {
                 debug!(name = %p.name, pid = p.identity.pid.0, rule = ?rule, "Found rule");
 
                 let (tids, tids_failed) = match self.platform.get_tids(p.identity.pid.0) {
-                    Ok(tids) if tids.is_empty() => (vec![p.identity.pid.0], true),
+                    Ok(tids) if tids.is_empty() => (smallvec![p.identity.pid.0], true),
                     Ok(tids) => (tids, false),
-                    Err(_) => (vec![p.identity.pid.0], true),
+                    Err(_) => (smallvec![p.identity.pid.0], true),
                 };
 
                 match self.apply_rule(
@@ -193,6 +206,7 @@ impl Worker {
                     &cfg,
                     is_realtime,
                     is_affected_by_cgroup_bug,
+                    &mut parsed_cpusets,
                 ) {
                     Ok(RuleApplication::Applied) if tids_failed => {
                         warn!(
@@ -279,9 +293,12 @@ impl Worker {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self, p, tids, rule, cfg),
+        skip(self, p, tids, rule, cfg, is_realtime, is_affected_by_cgroup_bug, parsed_cpusets),
         fields(pid = p.identity.pid.0, name = %p.name)
     )]
+    // Private, with one caller in `work_loop`. Bundling the two booleans and the
+    // cache into a context struct would add indirection for that one call.
+    #[allow(clippy::too_many_arguments)]
     fn apply_rule(
         &self,
         p: &Process,
@@ -290,6 +307,7 @@ impl Worker {
         cfg: &ConfigSnapshot,
         is_realtime: bool,
         is_affected_by_cgroup_bug: bool,
+        parsed_cpusets: &mut HashMap<Box<str>, CpuSet>,
     ) -> Result<RuleApplication, PlatformError> {
         let mut applied_any = false;
         // A failure on one attribute must not cost the rule the rest of them: the
@@ -472,11 +490,27 @@ impl Worker {
                     "Setting cpuset of {}({}) to {}",
                     p.name, p.identity.pid.0, cpuset_str
                 );
-                match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
+                // Look up by the borrowed string first — `Box<str>` borrows as
+                // `str`, so a hit costs neither parsing nor an allocation. Only
+                // a miss copies the key (which may borrow from `cpuset_aliases`)
+                // into the map. The map belongs to this single worker thread, so
+                // a borrow of its value can be passed straight to `set_affinity`.
+                let parsed_set = if parsed_cpusets.contains_key(cpuset_str) {
+                    parsed_cpusets.get(cpuset_str)
+                } else {
+                    match CpuSet::parse(cpuset_str, self.platform.get_max_cores()) {
+                        Some(parsed) => {
+                            parsed_cpusets.insert(cpuset_str.into(), parsed);
+                            parsed_cpusets.get(cpuset_str)
+                        }
+                        None => None,
+                    }
+                };
+                match parsed_set {
                     Some(parsed_set) => {
                         match self
                             .platform
-                            .set_affinity(p.identity.pid.0, tids, &parsed_set)
+                            .set_affinity(p.identity.pid.0, tids, parsed_set)
                         {
                             Ok(()) => applied_any = true,
                             Err(e) => {

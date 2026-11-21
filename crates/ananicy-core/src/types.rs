@@ -21,8 +21,12 @@ impl fmt::Display for Tid {
 }
 
 /// A strong type for rule names (e.g. program names)
+///
+/// The key is immutable after loading, so a `Box<str>` stores it at its exact
+/// size: a `String` would spend an extra word on capacity that nothing ever
+/// uses. A rule set holds one of these per rule.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RuleName(pub String);
+pub struct RuleName(pub Box<str>);
 
 impl AsRef<str> for RuleName {
     fn as_ref(&self) -> &str {
@@ -47,7 +51,7 @@ impl Borrow<str> for RuleName {
 
 /// A strong type for rule types
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TypeName(pub String);
+pub struct TypeName(pub Box<str>);
 
 impl AsRef<str> for TypeName {
     fn as_ref(&self) -> &str {
@@ -57,7 +61,7 @@ impl AsRef<str> for TypeName {
 
 /// A strong type for cgroup names
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CgroupName(pub String);
+pub struct CgroupName(pub Box<str>);
 
 impl AsRef<str> for CgroupName {
     fn as_ref(&self) -> &str {

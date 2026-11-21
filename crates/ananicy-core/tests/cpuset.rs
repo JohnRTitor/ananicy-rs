@@ -474,3 +474,36 @@ fn a_set_narrower_than_a_byte_still_expresses_its_cpus() {
     );
     assert_eq!(mask[0] & 1, 1, "and CPU 0 is in it");
 }
+
+/// The mask is kept alongside the bitset and maintained as CPUs are mutated,
+/// rather than rebuilt on demand by `kernel_mask`. `set_cpu` is covered by the
+/// tests above; this pins the two mutations that could leave a stale bit in the
+/// mask while the set itself read empty.
+#[test]
+fn the_kernel_mask_tracks_clears_and_zeroing() {
+    let mut set = CpuSet::new(16);
+    set.set_cpu(0);
+    set.set_cpu(5);
+    set.set_cpu(15);
+
+    {
+        let mask = set.kernel_mask();
+        assert_ne!(mask[0], 0, "the mask has bits before anything is cleared");
+        assert_ne!(mask[1], 0, "CPU 15 lives in the second byte of the mask");
+    }
+
+    set.clear_cpu(5);
+    {
+        let mask = set.kernel_mask();
+        assert_eq!(mask[0] & (1 << 5), 0, "clearing a CPU clears its mask bit");
+        assert_ne!(mask[0] & 1, 0, "other CPUs in the same byte stay set");
+        assert_ne!(mask[1], 0, "clearing one CPU does not touch other bytes");
+    }
+
+    set.zero();
+    let mask = set.kernel_mask();
+    assert!(
+        mask.iter().all(|&byte| byte == 0),
+        "zeroing the set clears every byte of the mask"
+    );
+}

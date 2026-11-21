@@ -16,6 +16,7 @@ regexr.workspace = true
 lru.workspace = true
 foldhash.workspace = true
 rustix = { workspace = true, features = ["process"] }
+smallvec.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

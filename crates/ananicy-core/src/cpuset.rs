@@ -12,14 +12,18 @@ use std::fmt;
 /// The kernel's own mask is built here rather than at the `sched_setaffinity`
 /// call, because it is a pure function of the set and the machine's CPU count,
 /// and this is on the per-process path: a rule with a `cpuset` used to derive
-/// the same bytes from the same set for every process it touched. The cost is
-/// that the mask is fixed at the width the set was built for, so a set parsed
-/// for 8192 CPUs cannot be applied to a 16384-CPU machine — which is not a
-/// situation that arises, because both come from `get_max_number_of_cpus`.
+/// the same bytes from the same set for every process it touched. It is kept
+/// alongside the bitset and maintained a byte at a time as CPUs are set,
+/// cleared or zeroed, so `kernel_mask` only lends it out; rebuilding the whole
+/// mask on every call was the old behaviour. The cost is that the mask is fixed
+/// at the width the set was built for, so a set parsed for 8192 CPUs cannot be
+/// applied to a 16384-CPU machine — which is not a situation that arises,
+/// because both come from `get_max_number_of_cpus`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuSet {
     max_cores: u32,
     cores: Box<[u64]>,
+    mask: Box<[u8]>,
 }
 
 impl CpuSet {
@@ -27,6 +31,7 @@ impl CpuSet {
         Self {
             max_cores,
             cores: vec![0u64; words_for(max_cores)].into_boxed_slice(),
+            mask: vec![0u8; (max_cores as usize).div_ceil(8)].into_boxed_slice(),
         }
     }
 
@@ -49,21 +54,8 @@ impl CpuSet {
     /// say, 1026 CPUs. Rounding up makes every CPU in the set representable, and
     /// a mask one byte longer than the kernel's own is exactly what
     /// `sched_setaffinity` wants anyway.
-    pub fn kernel_mask(&self) -> Vec<u8> {
-        let mask_bytes = (self.max_cores as usize).div_ceil(8);
-        let mut mask = vec![0u8; mask_bytes];
-        for (cpu_index, word) in self.cores.iter().enumerate() {
-            let base = cpu_index * 64;
-            for bit in 0..64 {
-                if word & (1u64 << bit) != 0 {
-                    let cpu = base + bit;
-                    if cpu / 8 < mask_bytes {
-                        mask[cpu / 8] |= 1 << (cpu % 8);
-                    }
-                }
-            }
-        }
-        mask
+    pub fn kernel_mask(&self) -> &[u8] {
+        &self.mask
     }
 
     pub fn set_cpu(&mut self, cpu: u32) {
@@ -80,6 +72,7 @@ impl CpuSet {
 
     pub fn zero(&mut self) {
         self.cores.fill(0);
+        self.mask.fill(0);
     }
 
     pub fn valid(&self) -> bool {
@@ -134,11 +127,17 @@ impl CpuSet {
         if let Some(word) = self.cores.get_mut(cpu / 64) {
             *word |= 1u64 << (cpu % 64);
         }
+        if let Some(byte) = self.mask.get_mut(cpu / 8) {
+            *byte |= 1 << (cpu % 8);
+        }
     }
 
     fn clear_bit(&mut self, cpu: usize) {
         if let Some(word) = self.cores.get_mut(cpu / 64) {
             *word &= !(1u64 << (cpu % 64));
+        }
+        if let Some(byte) = self.mask.get_mut(cpu / 8) {
+            *byte &= !(1 << (cpu % 8));
         }
     }
 

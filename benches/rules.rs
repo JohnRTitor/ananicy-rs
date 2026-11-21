@@ -118,6 +118,12 @@ fn bench_cpuset_parse(c: &mut Criterion) {
     c.bench_function("cpuset_parse", |b| {
         b.iter(|| CpuSet::parse(black_box("0-3,8-11"), black_box(8192)))
     });
+    // The mask is maintained a byte at a time as bits are set, so the per-CPU
+    // cost shows up only on a large range. In the daemon this parse is cached
+    // per distinct cpuset string, so the amortized case is the one that matters.
+    c.bench_function("cpuset_parse_large_range", |b| {
+        b.iter(|| CpuSet::parse(black_box("0-8191"), black_box(8192)))
+    });
 }
 
 fn bench_rules_match(c: &mut Criterion) {

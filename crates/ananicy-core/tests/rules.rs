@@ -81,7 +81,7 @@ fn cgroup_entries_are_stored_as_cgroups() {
     assert!(rules.load_rule_from_string(r#"{ "cgroup": "lowlatency", "nice": -5 }"#));
     assert_eq!(rules.get_cgroups().len(), 1);
     assert_eq!(rules.size(), 0, "a cgroup entry is not a program rule");
-    assert_eq!(rules.get_cgroups().keys().next().unwrap().0, "lowlatency");
+    assert_eq!(&*rules.get_cgroups().keys().next().unwrap().0, "lowlatency");
 }
 
 #[test]
@@ -716,7 +716,7 @@ fn inheritance_does_not_mutate_the_shared_type() {
     assert_eq!(rule_of(&rules, "first")["nice"], 2);
     let shared = rules
         .get_types()
-        .get(&TypeName("Shared".to_string()))
+        .get(&TypeName("Shared".into()))
         .expect("the type is still registered");
     assert_eq!(
         shared["nice"], 1,
@@ -900,10 +900,7 @@ fn a_redefined_type_says_so() {
     });
 
     assert_eq!(
-        rules
-            .get_types()
-            .get(&TypeName("Compiler".to_string()))
-            .unwrap()["nice"],
+        rules.get_types().get(&TypeName("Compiler".into())).unwrap()["nice"],
         9
     );
     assert!(
