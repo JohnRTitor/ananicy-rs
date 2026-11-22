@@ -35,8 +35,7 @@ macro_rules! spawn_named_thread {
 
 #[cfg(test)]
 mod tests {
-    use super::spawn_error;
-    use rustix::io::Errno;
+    use {super::spawn_error, rustix::io::Errno};
 
     /// The errno alone does not say which of the daemon's six threads ran out
     /// of room, so the name has to survive into the message.

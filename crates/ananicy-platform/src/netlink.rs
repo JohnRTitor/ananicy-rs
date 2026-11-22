@@ -819,8 +819,10 @@ fn the_identity_is_sixteen_bytes_regardless_of_the_name() {
 
 #[cfg(test)]
 mod recv_classification {
-    use super::{RecvFailure, classify_recv_error, errno_of, to_io_error};
-    use rustix::io::Errno;
+    use {
+        super::{RecvFailure, classify_recv_error, errno_of, to_io_error},
+        rustix::io::Errno,
+    };
 
     fn socket_error(errno: Errno) -> neli::err::SocketError {
         neli::err::SocketError::Io(std::sync::Arc::new(std::io::Error::from_raw_os_error(

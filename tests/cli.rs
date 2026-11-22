@@ -858,11 +858,13 @@ fn singleton_exists() -> bool {
 /// Creates the object the daemon would have created, holding `contents` — the
 /// pid of whatever last owned it.
 fn create_singleton(contents: &str) {
-    use rustix::{
-        fs::Mode,
-        shm::{self, OFlags as ShmOFlags},
+    use {
+        rustix::{
+            fs::Mode,
+            shm::{self, OFlags as ShmOFlags},
+        },
+        std::io::Write,
     };
-    use std::io::Write;
     let fd = shm::open(
         singleton_name(),
         ShmOFlags::CREATE | ShmOFlags::EXCL | ShmOFlags::RDWR,

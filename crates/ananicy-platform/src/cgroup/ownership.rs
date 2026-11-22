@@ -203,8 +203,7 @@ mod tests {
 
 #[cfg(test)]
 mod usable_root_tests {
-    use super::usable_root;
-    use std::path::Path;
+    use {super::usable_root, std::path::Path};
 
     fn cgroup(dir: &Path, pids: &[u32]) -> std::path::PathBuf {
         std::fs::create_dir_all(dir).expect("a cgroup directory");

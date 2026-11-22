@@ -13,7 +13,10 @@ use {
 use {
     crate::monitor,
     ananicy_core::{
-        config::Config, process::Process, rules::Rules, rules::SharedRules, worker::Worker,
+        config::Config,
+        process::Process,
+        rules::{Rules, SharedRules},
+        worker::Worker,
     },
     std::{
         collections::HashMap,

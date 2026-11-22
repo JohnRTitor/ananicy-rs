@@ -16,7 +16,11 @@ pub mod x3d;
 
 use {
     abi::affinity,
-    ananicy_core::{cgroup::CgroupIdentity, cpuset::CpuSet, worker::PlatformActions, worker::Tids},
+    ananicy_core::{
+        cgroup::CgroupIdentity,
+        cpuset::CpuSet,
+        worker::{PlatformActions, Tids},
+    },
     cgroup::process::{CgroupProcessResolver, LinuxCgroupResolver},
     mounts::{CgroupVersion, get_cgroup_info},
 };

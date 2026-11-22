@@ -253,9 +253,10 @@ fn proc_entry_looks_like_daemon(proc_root: &std::path::Path, pid: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Removed, proc_entry_looks_like_daemon, remove_stale_singleton};
-    use std::io::Write;
-    use std::path::Path;
+    use {
+        super::{Removed, proc_entry_looks_like_daemon, remove_stale_singleton},
+        std::{io::Write, path::Path},
+    };
 
     /// Creates a shared-memory object under a name of its own, so the guard can
     /// be driven without touching the real singleton.
