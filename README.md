@@ -20,11 +20,10 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[systemd Reference](docs/SYSTEMD.md)**: How systemd supervises a service, what it hands to a process, cgroup v2 delegation, and what the shipped unit's hardening does.
 - **[CPU Topology and Affinity](docs/TOPOLOGY.md)**: Details on CPU pinning, `big.LITTLE` detection, and AMD X3D support.
 - **[Building](docs/BUILD.md)**: Build requirements and native dependencies, features, the release profile, installing, distribution packaging, Nix, and what each build error means.
-- **[Compatibility with the Reference Implementation](docs/COMPATIBILITY.md)**: Every behavioural difference between `ananicy-rs` and the C++ reference, plus what was verified equivalent, what this daemon adds, and the two things it lacks.
+- **[Compatibility with the Reference Implementation](docs/COMPATIBILITY.md)**: Every behavioural difference between `ananicy-rs` and the C++ reference, plus what was verified equivalent, what this daemon adds, and what it still lacks.
 - **[Testing](docs/TESTING.md)**: What the test suite verifies, which tests need a live system, and how the tests relate to the C++ daemon.
 
-Continuous integration is documented next to the workflows themselves, in
-[`.github/README.md`](.github/README.md).
+Continuous integration is defined in the [workflows](.github/workflows/) themselves.
 
 ## Status
 

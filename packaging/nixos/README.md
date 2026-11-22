@@ -12,7 +12,7 @@ Two separate things live here, and it is worth keeping them apart:
   not part of the package and nothing in `package.nix` depends on it.
 
 `module.nix` already existed in this repository before the recipes were added; it
-was moved here from `packaging/module.nix` when `packaging/` was organised by
+was moved here from `contrib/module.nix` when the recipes were organised by
 distribution. Only the location changed. **No new NixOS module was written as
 part of the packaging work** — the repository's existing functionality already
 justifies the one that is here, and inventing a second one would have been

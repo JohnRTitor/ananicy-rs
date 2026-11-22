@@ -36,10 +36,10 @@ const NAME_FIRST_VALUE: u16 = 2;
 /// A name a rule can carry, as an index into a process-wide table.
 ///
 /// `ioclass`, `sched`, `cgroup` and `cpuset` are drawn from a few dozen distinct
-/// values across a rule set of any size, and each was a 24-byte
-/// `Option<Option<Arc<str>>>`. A default rule set spends 96 of its 168 bytes per
-/// rule naming a handful of things. This is the same three states — absent,
-/// declared with nothing usable in it, and a value — in two bytes.
+/// values across a rule set of any size, and each used to be a 24-byte
+/// `Option<Option<Arc<str>>>` that dominated a rule's size. This is the same
+/// three states — absent, declared with nothing usable in it, and a value — in
+/// two bytes.
 ///
 /// Copy, and the table is never pruned, so a rule can hold one without a
 /// lifetime and the accessors can keep handing out `&'static str`. See
@@ -227,8 +227,9 @@ impl NameTable {
 /// What these bytes cost depends on where they are put, which is why they are in
 /// a `Vec` and not in the map that finds them. A hash map's bucket count is the
 /// next power of two above `count * 8/7`, so a per-rule cost inside the map is a
-/// staircase: at 200 bytes a bucket, rule 28,673 cost 10.7 MB more than rule
-/// 28,670. At 28 bytes a bucket it costs 1.2 MB.
+/// staircase: at 200 bytes a bucket (the representation before interning), rule
+/// 28,673 cost 10.7 MB more than rule 28,670. At 28 bytes a bucket the same step
+/// costs 1.2 MB.
 ///
 /// An attribute this daemon does not implement is kept in `extras` rather than
 /// dropped, so `dump rules` still reports what a rule file says. `extras` is
@@ -787,10 +788,11 @@ pub struct Rules {
     /// Program rule name to its index in `rules`.
     ///
     /// The rules themselves are in a `Vec`, not in here, and that is the whole
-    /// point. A `Rule` is 176 bytes, so storing them by value in this map made
-    /// every bucket 200 bytes — and a hash map's bucket count is the next power
-    /// of two above `count * 8/7`, which turns a per-rule cost into a staircase.
-    /// At 15,831 rules the table is 6.5 MB; at 28,673 it becomes 13.1 MB, so
+    /// point. A `Rule` was 176 bytes before the names were interned (72 now), so
+    /// storing them by value in this map made every bucket 200 bytes — and a hash
+    /// map's bucket count is the next power of two above `count * 8/7`, which
+    /// turns a per-rule cost into a staircase. At 15,831 rules the table was 6.5
+    /// MB; at 28,673 it became 13.1 MB, so
     /// *one extra rule* cost 10.7 MB. A `u32` index makes the bucket 28 bytes, the
     /// same steps cost 0.9 MB, and the rules grow continuously in the `Vec`.
     programs: HashMap<RuleName, u32, RuleHasher>,

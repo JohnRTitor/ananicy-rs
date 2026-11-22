@@ -19,8 +19,9 @@ use {
     tracing::warn,
 };
 
-/// The schedulers that honour `ioprio_set(2)`: `bfq` and `mq-deadline`, plus
-/// `cfq` for kernels old enough to still have it.
+/// The schedulers that honour `ioprio_set(2)`: `bfq` (and its legacy `bfq-mq`
+/// spelling) and `mq-deadline`, plus `cfq` for kernels old enough to still have
+/// it.
 const SUPPORTED: [&str; 4] = ["mq-deadline", "bfq", "bfq-mq", "cfq"];
 
 /// Devices whose names start with these are not worth reporting: loop and ram

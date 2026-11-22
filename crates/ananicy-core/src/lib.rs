@@ -38,7 +38,7 @@ mod tests {
     use super::spawn_error;
     use rustix::io::Errno;
 
-    /// The errno alone does not say which of the daemon'"'"'s six threads ran out
+    /// The errno alone does not say which of the daemon's six threads ran out
     /// of room, so the name has to survive into the message.
     #[test]
     fn a_spawn_failure_names_the_thread_and_keeps_the_errno_kind() {

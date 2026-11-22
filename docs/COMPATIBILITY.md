@@ -37,7 +37,7 @@ To allow both implementations to coexist on the same system without colliding, `
 ## 3. Reload Mechanism (`--reload`)
 
 - **ananicy-cpp:** Uses a cooperative polling mechanism via shared memory. When you trigger a reload, the daemon checks for the signal every second, which can cause a slight delay.
-- **ananicy-rs:** Uses an OS-level real-time signal (`SIGUSR1`). Configuration reloads happen **instantaneously**, independent of the main loop's scheduling. Neither implementation reloads `.rules`, `.types`, or `.cgroups` files during this operation; those files require a restart.
+- **ananicy-rs:** Uses an OS-level real-time signal (`SIGUSR1`). Configuration reloads happen **instantaneously**, independent of the main loop's scheduling. The rule, type and cgroup files are reloaded too — `ananicy-cpp` reloads only the configuration — with `check_freq` the one setting that still needs a restart (§5).
 
 ## 4. Cgroup v2 Delegation and Ownership
 
@@ -352,7 +352,7 @@ indistinguishable from never having looked: this table is the evidence of covera
 
 | Capability | `ananicy-cpp` | `ananicy-rs` | Note |
 | --- | --- | --- | --- |
-  | `--verbose` | one step more verbose, clamped at `trace` | same | the debug-verbosity log line still differs, see §5.1 |
+  | `--verbose` | one step more verbose, clamped at `trace` | same | the debug-verbosity log line still differs, see §5.2 |
   | `--force-remove-semaphore` on a name that cannot be unlinked | exit 1 + message | exit 1 + message | the name that is not there, and the name a running daemon still holds, diverge — see §5 |
   | IPC object permissions | 0600 | 0600 |
   | Benchmark spin | `sleep` then break | same |
@@ -365,10 +365,10 @@ indistinguishable from never having looked: this table is the evidence of covera
   | `x3d_mode` values | `cache`/`frequency` | same |
   | `apply_ioclass` | inert | inert |
   | Rule extensions | `.rules`/`.types`/`.cgroups` | same |
-  | `name_regex` engine | `regexr`, PCRE-compatible subset | same, modulo §5.4 |
+  | `name_regex` engine | PCRE2 | `regexr`, PCRE-compatible subset (§5.4) |
   | CRLF rule files | handled | handled |
   | Exact vs regex precedence | exact first | exact first |
-  | Type inheritance | single merge | single merge | but see §5.3 |
+  | Type inheritance | single merge | single merge | but see §5.1 |
   | Rule search order | name → type → cgroup | same |
   | `cgroup_rules` module | — | deleted (dead code) |
   | `CPUQuota` write order | quota then period | same |
@@ -379,24 +379,24 @@ indistinguishable from never having looked: this table is the evidence of covera
   | `latency_nice` fallback | falls back to `nice` | same |
   | Non-sandboxable errno | `test_errno` → −1 → treated as success | partial failure, rest of the rule applied | see §5.2 |
   | Empty alias means skip | yes | yes |
-  | `.bpf.c` program | — | byte-identical |
+  | `.bpf.c` program | — | no longer byte-identical: the `min_us` check is enabled (§5.3) |
   | Perf buffer pages | 64 | 64 |
-  | BPF `min_us` | inert (commented out) | inert |
+  | BPF `min_us` | inert (commented out) | honoured (§5.3) |
   | Lost-event callback | stderr | stderr |
   | `dump rules/types/cgroups` payload | raw / merged | same |
   | Event-source debug tools | opt-in samples only | not provided |
   | `sched_getscheduler` | not used | removed |
   | 1.3× big.LITTLE threshold | `f64` compare | `f64` compare | brute-forced over 400 000 pairs |
   | Homogeneous → `little-cores` | `""` | `""` |
-  | `llc-N` id order | ascending CPU | ascending CPU | see §5.7 |
+  | `llc-N` id order | ascending CPU | ascending CPU | see §6 |
   | `parse_size_string` | K/M/G | K/M/G, shared |
-  | X3D single-CCD alias | `0-(N-1)` always | all enumerated cores | the `die_id`→`cluster_id` fallback still differs, see §5.13 |
+  | X3D single-CCD alias | `0-(N-1)` always | all enumerated cores | see §6 |
   | `create_cgroup` idempotence | yes | yes |
   | `cgroup.subtree_control` | `+cpu` | `+cpu` |
   | `cgroup.procs` vs `tasks` | correct per version | same |
   | Realtime cgroup target | hierarchy root | hierarchy root |
   | Kernel-thread detection | computed, unused | absent |
-  | No cgroup hierarchy | starts anyway | starts anyway | see §7.1 |
+  | No cgroup hierarchy | starts anyway | starts anyway | — |
   | Panic backtrace | custom handler | panic hook |
   | Fuzz targets | 3 | 3 |
   | `sd_notify(Ready)` | subprocess | crate |
@@ -405,8 +405,8 @@ indistinguishable from never having looked: this table is the evidence of covera
   | `monitor::restore_x3d` tested | n/a | no |
   | Netlink ENOBUFS recovery | n/a | untested |
   | `panic = "abort"` profile | — | release only |
-  | `-nice` overflow | no counterpart | saturates at the clamp | see §5.14 |
-  | `dump autogroup` | populated | populated | see §7.2 |
+  | `-nice` overflow | no counterpart | saturates at the clamp | see §6 |
+  | `dump autogroup` | populated | populated | see CLI.md |
 
 ## 8. Capabilities `ananicy-rs` Adds
 
@@ -418,10 +418,9 @@ the test each was held to.
 | --- | --- | --- |
   | Rule cache | none | 5000-entry LRU |
   | LRU rule cache sizing | — | `NonZeroUsize::new(5000)` |
-  | `--manualscanning` alias | n/a | parses |
   | Log level reload | no | yes |
   | `loglevel` reload | none | on SIGUSR1 |
-  | Config key set | 15 keys | 17 keys (adds `apply_ioclass`, `apply_cpu_weight_from_nice`, `check_disks_schedulers`) |
+  | Config key set | 15 keys | 18 keys (adds `apply_ioclass`, `apply_cpu_weight_from_nice`, `check_disks_schedulers`) |
   | `apply_*` gating | 5 flags wired | 7 flags wired |
   | `cgroup` name `..` | accepted | rejected |
   | Nested cgroup names | cannot create | `create_dir_all` |
@@ -453,11 +452,10 @@ the test each was held to.
 
 ## 9. Capabilities `ananicy-cpp` Has and This Daemon Does Not
 
-The two rows in the other direction, recorded for completeness. Neither affects a running daemon:
-one is packaging, the other is a build option.
+The one row in the other direction, recorded for completeness. It is a build
+option and does not affect a running daemon.
 
 | Capability | `ananicy-cpp` | `ananicy-rs` |
 | --- | --- | --- |
-  | RPM packaging | present | absent |
   | `crt-static` profile | — | not provided |
 

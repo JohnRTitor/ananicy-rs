@@ -14,8 +14,8 @@ use {
     tracing::{debug, warn},
 };
 
-// Note: In C++ original code, `test_errno` handles EPERM, ESRCH, etc.
-// We will replicate similar logic.
+// The reference classifies errno the same way: a vanished process and a refused
+// operation are different from a genuine I/O failure, and callers act on it.
 fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformError> {
     let Some(raw_os_error) = err.raw_os_error() else {
         return Err(Io(err));

@@ -114,14 +114,14 @@ fn print_debug_cgroups(systemd_status: &str) {
                     match entry {
                         Ok(entry) => println!("{:?}", entry.path()),
                         Err(e) => {
-                            warn!("print_debug_for_issue<21>: error: {}", e);
+                            warn!("print_debug_cgroups: error: {}", e);
                             break;
                         }
                     }
                 }
             }
             Err(e) => {
-                warn!("print_debug_for_issue<21>: error: {}", e);
+                warn!("print_debug_cgroups: error: {}", e);
             }
         }
         println!("#### END listing files in {} #####", cgroup_path.display());

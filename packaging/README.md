@@ -31,7 +31,6 @@ running any of them behaves identically:
 | systemd unit | `/usr/lib/systemd/system/ananicy-rs.service` |
 | Config directory | `/etc/ananicy.d`, empty — Nix has no such thing, see below |
 | Completions | bash, fish, zsh |
-| Documentation | `README.md`, `CONTRIBUTING.md`, `docs/*.md` |
 | Licence | `LICENSE`, installed as licence metadata |
 
 Nix is the one deliberate exception on two points, both consequences of how Nix
@@ -114,9 +113,8 @@ They are generated on demand, gitignored, and never committed here.
 [`.github/workflows/packaging.yml`](../.github/workflows/packaging.yml) builds
 each recipe in its distribution's own container image, with the distribution's
 own packaging tools, so the recipes are checked by actually building the
-packages rather than by asserting the files exist. See
-[`.github/README.md`](../.github/README.md) for what each job installs and
-does, and why.
+packages rather than by asserting the files exist. The job definitions and the
+packages each one installs are in the workflow itself.
 
 ## Adding a recipe
 

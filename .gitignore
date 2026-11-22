@@ -11,7 +11,7 @@ result
 # `make install` generates the unit from data/ananicy-rs.service.in. It is a
 # build product, in the source tree or not.
 data/ananicy-rs.service
-# Vendored Cargo dependency trees, generated on demand by the contrib packaging
+# Vendored Cargo dependency trees, generated on demand by the packaging
 # recipes. See packaging/README.md; each is a build input of a package, not source.
 debian/vendor.tar.xz
 packaging/fedora/*-vendor.tar.xz

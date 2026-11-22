@@ -129,7 +129,6 @@ fn bench_cpuset_parse(c: &mut Criterion) {
 fn bench_rules_match(c: &mut Criterion) {
     let rules = Rules::new(Arc::new(Config::new(ConfigSnapshot::default())));
 
-    // Test cache miss performance
     c.bench_function("rules_get_cache_miss", |b| {
         b.iter(|| rules.get_rule(black_box("nonexistent_process")))
     });
@@ -223,12 +222,11 @@ fn bench_rules_regex_compile(c: &mut Criterion) {
     group.finish();
 }
 
-/// The cost of a *cold* `ProcfsScanner::full_scan`: every process on the host
-/// looked up with nothing memoised. This is the worst case — the first scan
-/// after start-up or a `--reload` — and the only one where the regex loop runs
-/// for every process. `iter_batched` builds the rule set in setup so the
-/// measurement is lookups only; every scan after this one hits the cache, which
-/// is why `lookup_miss` above exists as a separate figure.
+/// Cold lookups over a representative corpus of process names — the shape of a
+/// `ProcfsScanner::full_scan`, with nothing memoised, but not a scan of the live
+/// host. This is the worst case for the regex loop: every name goes through it
+/// rather than the cache. `iter_batched` builds the rule set in setup so the
+/// measurement is lookups only; the warmed case is `lookup_miss` above.
 fn bench_rules_regex_full_scan(c: &mut Criterion) {
     let names = subjects();
 

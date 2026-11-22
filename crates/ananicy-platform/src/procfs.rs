@@ -218,10 +218,13 @@ impl ProcPath {
     }
 }
 
-/// Tries to determine the effective process name exactly as C++ ananicy did:
+/// Resolves the effective process name from three sources, in order:
 /// 1. `/proc/<pid>/cmdline` (argv[0] basename)
 /// 2. `/proc/<pid>/exe` (readlink basename, trimming ` (deleted)`)
 /// 3. `/proc/<pid>/comm` (fallback)
+///
+/// This is the source order, not a claim of identical results: the shebang and
+/// deleted-binary handling below deliberately refine what the C++ daemon did.
 pub fn get_command_from_pid(pid: i32) -> String {
     let mut path = ProcPath::new(pid);
 

@@ -6,8 +6,7 @@ builds differ from a local one, and what each build failure actually means.
 
 For how the *test suite* is organised, see [TESTING.md](./TESTING.md). For
 running the daemon, see [CLI.md](./CLI.md). For what the GitHub Actions
-workflows run, and why their jobs are shaped the way they are, see
-[`.github/README.md`](../.github/README.md).
+workflows run, see [`.github/workflows/`](../.github/workflows/).
 
 ## Requirements
 

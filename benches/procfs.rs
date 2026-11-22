@@ -11,12 +11,9 @@
 //! path, and the string handling around the two files. That is a real cost and
 //! it is per-event, which is why it is worth a bench rather than an assertion.
 //!
-//! The subject is this process. `argv[0]` for `cargo bench` is `cargo`, and
-//! `cargo bench --bench procfs -- <name>` re-execs under a different name if
-//! one is given, so the same binary can be measured under the shapes that
-//! matter: a short name, a name with a `.exe` suffix (the Wine rewrite), and a
-//! long one. What is being compared across runs is the crate's own overhead,
-//! not which program is being measured.
+//! The subject is this process: its pid is passed straight to the readers, so
+//! what is measured is the crate's own path-building and string handling, not
+//! the name of whichever binary the runner invoked.
 
 use {
     ananicy_core::worker::PlatformActions,

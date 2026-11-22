@@ -88,7 +88,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## Adding a Feature or Rule
 
-*   **Rules**: If you're contributing new community rules, add them under `ananicy.d/`. (Currently rules are often pulled from the upstream `ananicy` repository, but local testing is encouraged).
+*   **Rules**: This project does not ship a rule set; rules come from the upstream `ananicy` / `ananicy-cpp` projects. To exercise a change against rules, install one under `/etc/ananicy.d` or point `ANANICY_RS_CONFDIR` at a local directory.
 *   **Linux Features**: If you are modifying scheduler operations, CPU affinity parsing, or cgroups, ensure that your changes fall back gracefully when privileges are missing or when running on unsupported kernel versions.
 
 ## Adding a Test

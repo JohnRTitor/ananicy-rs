@@ -115,7 +115,7 @@ mode and the unit are byte-for-byte the same as every other recipe under
 
 | Package | Why |
 | --- | --- |
-| `cargo`, `rust >= 1.85` | the build itself; 1.85 is the first release that understands edition 2024 |
+| `cargo`, `rust >= 1.88` | the build itself; the workspace uses let chains, which need 1.88 (1.85 only parses edition 2024) |
 | `make` | `make install` |
 | `pkgconf-pkg-config` | `libbpf-sys` probes for `libbpf` |
 | `systemd-devel` | the default `systemd` feature declares `#[link(name = "systemd")]` |
