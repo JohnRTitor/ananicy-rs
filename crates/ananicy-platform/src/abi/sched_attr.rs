@@ -9,7 +9,9 @@ pub const SCHED_ISO: u32 = 4;
 pub const SCHED_IDLE: u32 = 5;
 pub const SCHED_DEADLINE: u32 = 6;
 
-// Flags for sched_setattr
+// Flags for sched_setattr. These come from linux/sched.h except the 0x80
+// latency-nice flag, which is an out-of-tree extension (defined where it is used
+// in `priority.rs`) along with the `sched_latency_nice` field below.
 pub const SCHED_FLAG_RESET_ON_FORK: u64 = 0x01;
 pub const SCHED_FLAG_RECLAIM: u64 = 0x02;
 pub const SCHED_FLAG_DL_OVERRUN: u64 = 0x04;
@@ -31,13 +33,19 @@ pub struct sched_attr {
     pub sched_period: u64,
     pub sched_util_min: u32,
     pub sched_util_max: u32,
+    /// Out-of-tree extension: absent from upstream `struct sched_attr`, so a
+    /// kernel that does not support it simply leaves it at zero.
     pub sched_latency_nice: i32,
 }
 
 /// # Safety
 ///
-/// Wraps the raw `sched_setattr` syscall. The `attr` reference must point to a
-/// properly initialized `sched_attr` struct, and `size` must be correctly set.
+/// `attr` must point to a live `sched_attr`, and its `size` field must not
+/// exceed `size_of::<sched_attr>()`, because the kernel reads that many bytes
+/// from it. Callers initialize `size` with the full struct size. `flags` is the
+/// syscall's own flags and must be 0 on kernels that define none. `pid` is an
+/// ordinary argument: an unknown pid fails with `ESRCH`, it is not undefined
+/// behaviour.
 pub fn sched_setattr(pid: i32, attr: &sched_attr, flags: u32) -> io::Result<()> {
     let ret = unsafe {
         libc::syscall(
@@ -56,8 +64,11 @@ pub fn sched_setattr(pid: i32, attr: &sched_attr, flags: u32) -> io::Result<()> 
 
 /// # Safety
 ///
-/// Wraps the raw `sched_getattr` syscall. The `attr` reference must be a valid
-/// allocated `sched_attr` where `size` indicates its capacity.
+/// `attr` must point to a live, writable `sched_attr`, and `size` must not
+/// exceed `size_of::<sched_attr>()`: the kernel writes up to `size` bytes through
+/// the pointer, so a larger value would be an out-of-bounds write. Every caller
+/// passes the struct's size. `flags` must be 0 on kernels that define none, and
+/// an unknown `pid` merely fails the syscall.
 pub fn sched_getattr(pid: i32, attr: &mut sched_attr, size: u32, flags: u32) -> io::Result<()> {
     let ret = unsafe {
         libc::syscall(

@@ -14,6 +14,8 @@ use std::sync::OnceLock;
 pub fn get_max_number_of_cpus() -> u32 {
     static MAX_CPUS: OnceLock<u32> = OnceLock::new();
     *MAX_CPUS.get_or_init(|| {
+        // SAFETY: `sysconf` takes a constant name and no pointers, so it has no
+        // memory-safety preconditions; an error return is just a number here.
         let sys_cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) as u32 };
         // Ensure we allocate at least sizeof(cpu_set_t) which covers 1024 CPUs
         std::cmp::max(sys_cpus, 1024)
@@ -22,6 +24,9 @@ pub fn get_max_number_of_cpus() -> u32 {
 
 /// A `sched_setaffinity(2)` on one thread.
 fn set_affinity_for(tid: i32, mask: &[u8]) -> io::Result<()> {
+    // SAFETY: `mask` is a valid slice readable for `mask.len()` bytes, and that
+    // same length is what the kernel is told to read. The pointer cast changes
+    // only the pointee type, not the size of the allocation behind it.
     let ret =
         unsafe { libc::sched_setaffinity(tid, mask.len(), mask.as_ptr() as *const cpu_set_t) };
     if ret != 0 {

@@ -7,8 +7,14 @@ pub struct SchedParam {
 
 /// # Safety
 ///
-/// Wraps `libc::sched_setscheduler`.
+/// `pid` and `policy` are ordinary syscall arguments: unknown values fail with
+/// an errno rather than causing undefined behaviour. Only the priority is taken
+/// from `param` and copied into an initialized `libc::sched_param`, so nothing
+/// uninitialized reaches the kernel. The call affects one thread, not the whole
+/// process.
 pub fn sched_setscheduler(pid: i32, policy: i32, param: &SchedParam) -> io::Result<()> {
+    // SAFETY: `libc::sched_param` contains only integer fields, so an all-zero
+    // bit pattern is a valid value for it.
     let mut libc_param = unsafe { std::mem::zeroed::<libc::sched_param>() };
     libc_param.sched_priority = param.sched_priority;
 

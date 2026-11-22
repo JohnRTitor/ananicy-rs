@@ -5,6 +5,9 @@ use std::process::id;
 #[cfg(feature = "systemd")]
 use std::ffi::CStr;
 #[cfg(feature = "systemd")]
+// SAFETY: the sole caller passes a valid out-param, checks it for null, reads
+// the returned string before freeing it, and frees it with `libc::free` as the
+// libsystemd contract requires.
 #[link(name = "systemd")]
 unsafe extern "C" {
     fn sd_pid_get_unit(pid: libc::pid_t, unit: *mut *mut libc::c_char) -> libc::c_int;
@@ -16,11 +19,18 @@ pub fn get_unit_name() -> String {
     let pid = id();
     let mut ptr: *mut libc::c_char = std::ptr::null_mut();
 
+    // SAFETY: `&mut ptr` is a valid out-param. On success libsystemd stores a
+    // NUL-terminated string allocated with malloc; the null check below guards
+    // the path that reads and frees it.
     let res = unsafe { sd_pid_get_unit(pid as libc::pid_t, &mut ptr) };
     if res >= 0 && !ptr.is_null() {
+        // SAFETY: `ptr` is non-null and libsystemd returned a NUL-terminated
+        // string. It is still allocated: the free happens after `name` is built.
         let name = unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
+        // SAFETY: `ptr` came from `sd_pid_get_unit`, which requires the caller
+        // to release it with `free`; nothing uses it after this point.
         unsafe { libc::free(ptr as *mut libc::c_void) };
         return name;
     }

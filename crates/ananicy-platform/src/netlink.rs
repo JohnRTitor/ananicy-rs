@@ -250,6 +250,9 @@ impl NetlinkMonitor {
 
         use std::os::unix::io::AsRawFd;
         let fd = sock.as_raw_fd();
+        // SAFETY: the fd belongs to `sock`, which this function owns and which
+        // is still alive at every use of `borrowed` below (it is moved into the
+        // returned `Self` only after those uses).
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         if let Err(e) = rustix::net::sockopt::set_socket_recv_buffer_size(borrowed, 8 * 1024 * 1024)
         {
@@ -288,6 +291,8 @@ impl NetlinkMonitor {
         use {rustix::event::epoll, std::os::unix::io::AsRawFd};
 
         let fd = self.sock.as_raw_fd();
+        // SAFETY: `fd` comes from `self.sock`, and `&mut self` is borrowed for
+        // the whole of `listen`, so the socket outlives every use of `borrowed`.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
 
         // Ensure non-blocking so recv doesn't hang if epoll wakes spuriously
