@@ -42,7 +42,6 @@ impl CgroupOwnership {
         if let Some(root) = delegated_root
             && target_path.starts_with(root)
         {
-            // target_path must start with delegated_root to be Owned
             return CgroupOwnership::Owned;
         }
 
@@ -107,12 +106,11 @@ fn has_tasks(cgroup: &Path) -> bool {
 /// Helper to determine the delegated root by inspecting our own process's cgroup.
 /// For systemd services, this is typically something like `/sys/fs/cgroup/system.slice/ananicy.service`.
 pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
-    // We read /proc/self/cgroup and find the unified hierarchy path
     let content = read_to_string("/proc/self/cgroup").ok()?;
     for line in content.lines() {
         if line.starts_with("0::") {
             let path = line.trim_start_matches("0::");
-            let path = path.trim_start_matches('/'); // remove leading slash for joining
+            let path = path.trim_start_matches('/');
 
             // Reject transient systemd scopes (e.g. app-org.chromium.Chromium-1234.scope).
             // When ananicy-rs is launched via `sudo` from a user shell, /proc/self/cgroup
@@ -145,7 +143,6 @@ pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
 }
 
 fn is_writable(path: &Path) -> bool {
-    // Basic write access check by attempting to open for append/write
     OpenOptions::new().append(true).open(path).is_ok()
 }
 

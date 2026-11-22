@@ -57,17 +57,15 @@ fn test_cpuset_set_multiple() {
     assert!(!cs.has_cpu(16));
 }
 
+/// Out-of-range indices are ignored rather than rejected: the index type is
+/// `u32`, so only the upper bound needs a test here.
 #[test]
 fn test_cpuset_bounds_checking() {
     let mut cs = CpuSet::new(8);
     assert!(cs.valid());
 
-    // Out-of-bounds set should be silently ignored
     cs.set_cpu(8);
     cs.set_cpu(100);
-    // Note: Rust version uses u32, so negative is impossible statically, but out of bounds is.
-
-    // Out-of-bounds is_set should return false
     assert!(!cs.has_cpu(8));
     assert!(!cs.has_cpu(100));
 }

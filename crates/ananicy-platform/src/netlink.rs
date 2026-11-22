@@ -334,7 +334,6 @@ impl NetlinkMonitor {
                 }
             }
 
-            // Drain all available messages
             loop {
                 let iter = match self.sock.recv::<Nlmsg, CnMsg<ProcEventHeader>>() {
                     Ok(msgs) => msgs.0,

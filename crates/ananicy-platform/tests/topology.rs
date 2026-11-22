@@ -34,7 +34,6 @@ fn uniform_higher_source() -> CpuTopology {
 fn test_detect_produces_valid_topology() {
     let topo = big_little();
 
-    // 4 CPUs in our fixture
     assert_eq!(topo.all_cores_str, "0-3");
 
     // We mocked a big.LITTLE system where CPUs 0,1 are 500 capacity, and CPUs 2,3 are 1024.

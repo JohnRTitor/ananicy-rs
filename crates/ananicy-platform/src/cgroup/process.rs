@@ -118,7 +118,6 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
         // `apply_cpu_weight_from_nice` is on by default and calls this for every process
         // whose rule carries a `nice`, so that is not a rare path.
         let Some(start_time) = crate::procfs::get_start_time(pid) else {
-            // Failed to get start time (process probably died), just return None
             return Ok(None);
         };
 
@@ -139,7 +138,6 @@ impl<R: CgroupProcessResolver> CgroupProcessResolver for CachingCgroupResolver<R
         }
         drop(cache); // Release lock before resolving
 
-        // Cache miss, expired, or start_time mismatch.
         let resolved = self.inner.resolve(pid)?;
 
         // The start time stored is the one read *above* this line, so an entry

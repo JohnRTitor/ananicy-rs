@@ -17,7 +17,6 @@ pub fn get_max_number_of_cpus() -> u32 {
         // SAFETY: `sysconf` takes a constant name and no pointers, so it has no
         // memory-safety preconditions; an error return is just a number here.
         let sys_cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) as u32 };
-        // Ensure we allocate at least sizeof(cpu_set_t) which covers 1024 CPUs
         std::cmp::max(sys_cpus, 1024)
     })
 }

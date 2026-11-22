@@ -105,7 +105,6 @@ fn v2_has_cpu_controller(mount_point: &Path) -> bool {
 fn v2_probe_by_creating_a_cgroup(mount_point: &Path) -> bool {
     let test_cgroup = mount_point.join("ananicy_test_cgroup2");
 
-    // Clean up left-over test cgroup if it exists
     if test_cgroup.exists() {
         let _ = fs::remove_dir(&test_cgroup);
     }

@@ -163,7 +163,6 @@ fn dump_autogroup(rules: &Rules) {
             continue;
         };
 
-        // Entries without an `autogroup` object (absent, null or otherwise) are skipped.
         let Some(serde_json::Value::Object(autogroup_obj)) = process_info_obj.get("autogroup")
         else {
             continue;

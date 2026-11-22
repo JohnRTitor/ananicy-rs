@@ -121,7 +121,6 @@ impl BpfMonitor {
         let tx_clone = tx.clone();
         let shutdown_on_channel_close = shutdown_flag.clone();
 
-        // Setup the PerfBuffer
         let perf_buffer = PerfBufferBuilder::new(&self.skel.maps.events)
             .sample_cb(move |_cpu: i32, data: &[u8]| {
                 if data.len() < std::mem::size_of::<Event>() {
@@ -164,7 +163,6 @@ impl BpfMonitor {
             return;
         };
 
-        // Polling loop
         loop {
             if shutdown_flag.load(Relaxed) {
                 break;
@@ -189,22 +187,16 @@ mod tests {
         }
     }
 
-    /// A process that execs twice in a row is the ordinary case on NixOS, where
-    /// every program is a wrapper script that execs the real binary. Both events
-    /// have to reach the worker: the second one is the only event whose name
-    /// names the program rather than its interpreter.
+    /// Repeated events for one pid must all reach the worker. The ordinary case
+    /// is a NixOS wrapper script execing the real binary — both events carry the
+    /// same pid, and only the second names the program rather than its
+    /// interpreter. A fork and the child's exec share the pid for the same
+    /// reason. `is_reportable` ignores `prev_pid`; these are the two event
+    /// shapes the old same-pid filter used to drop.
     #[test]
-    fn a_second_event_for_the_same_process_is_still_reported() {
+    fn repeated_events_for_one_pid_are_all_reported() {
         assert!(is_reportable(&event(4143, 4143)));
         assert!(is_reportable(&event(4143, 2898)));
-    }
-
-    /// A fork and the exec that follows it name the same pid now, which is the
-    /// other half of why the same-pid test had to go.
-    #[test]
-    fn a_fork_and_the_exec_after_it_are_both_reported() {
-        assert!(is_reportable(&event(4143, 2898)));
-        assert!(is_reportable(&event(4143, 4143)));
     }
 
     #[test]

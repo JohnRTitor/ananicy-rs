@@ -228,7 +228,6 @@ impl ProcPath {
 pub fn get_command_from_pid(pid: i32) -> String {
     let mut path = ProcPath::new(pid);
 
-    // 1. Try cmdline
     if let Ok(cmdline_bytes) = fs::read(path.file("cmdline"))
         && !cmdline_bytes.is_empty()
     {
@@ -259,13 +258,11 @@ pub fn get_command_from_pid(pid: i32) -> String {
     // Repeated EACCES usually means `/proc/<pid>/exe` is not readable to us; stop retrying
     // it to avoid repeated procfs I/O on every event, tracked per-PID via LRU and
     // forgotten when the pid is reused.
-    // 2. Try exe (if we haven't failed too many times)
     let exe_failures = exe_failures_for(pid);
 
     if exe_failures < COMMAND_NAME_HEURISTIC_SKIP_EXE_FAILURES {
         match fs::read_link(path.file("exe")) {
             Ok(exe_target) => {
-                // Success, clear any stored failure count
                 if exe_failures > 0
                     && let Ok(mut cache) = get_exe_fail_cache().lock()
                 {
@@ -291,7 +288,6 @@ pub fn get_command_from_pid(pid: i32) -> String {
         }
     }
 
-    // 3. Try comm
     if let Ok(comm) = fs::read_to_string(path.file("comm")) {
         let comm_trimmed = comm.trim();
         if !comm_trimmed.is_empty() {
@@ -311,7 +307,6 @@ impl ProcfsScanner {
                 let file_name = entry.file_name();
                 let pid_str = file_name.to_string_lossy();
 
-                // If it's a numeric directory, it's a PID
                 if pid_str.chars().all(|c| c.is_ascii_digit())
                     && let Ok(pid) = pid_str.parse::<i32>()
                 {

@@ -981,7 +981,6 @@ impl Rules {
             rule.inherit(base);
         }
 
-        // Also clear the cache since rules have been reloaded
         if let Ok(mut cache) = self.resolved_cache.lock() {
             cache.clear();
         }
@@ -1136,7 +1135,6 @@ impl Rules {
                     self.types.insert(key, Arc::new(value));
                     true
                 } else if let Some(cgroup_name) = value.get("cgroup").and_then(|v| v.as_str()) {
-                    // Cgroup rule
                     let key = CgroupName(cgroup_name.into());
                     Self::note_redefinition(
                         self.cgroups.contains_key(&key),
@@ -1180,7 +1178,6 @@ impl Rules {
     /// A borrow rather than a copy — nothing here is mutated while a worker is
     /// reading it, and a reference costs no allocation.
     pub fn get_rule(&self, name: &str) -> Option<&Rule> {
-        // 0. Check cache
         if let Ok(mut cache) = self.resolved_cache.lock()
             && let Some(cached) = cache.get(name)
         {
@@ -1246,7 +1243,6 @@ impl Rules {
     /// again to get back the `&RuleName` it had started from. Three hashes and
     /// two allocations where one hash and none are enough.
     fn find_best_match(&self, target_name: &str) -> Option<(&RuleName, u32)> {
-        // 1. Exact match
         if let Some((name, &index)) = self.programs.get_key_value(target_name) {
             return Some((name, index));
         }
@@ -1779,10 +1775,8 @@ mod shared_rules {
     fn a_reloaded_set_does_not_answer_from_the_old_cache() {
         let first = rules_named("cached");
         let shared = SharedRules::new(first);
-        // Warm the cache in the installed set.
         assert!(shared.get().get_rule("cached").is_some());
 
-        // Replace it with a set where that rule has a different value.
         let mut second = rules_named("cached");
         second.load_rule_from_string(r#"{"name":"cached","nice":9}"#);
         shared.replace(second);

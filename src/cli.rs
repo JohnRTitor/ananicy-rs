@@ -269,12 +269,13 @@ impl Args {
             parsed.command = Some(Commands::Unknown(unknown));
         }
 
-        if parsed.command.is_none() && !parsed.reload && !parsed.force_remove_semaphore {
-            // Need to print help.
-            if let Err(e) = args().run_inner(bpaf::Args::from(&["--help"])) {
-                print!("{}", e.unwrap_stdout());
-                exit(0);
-            }
+        if parsed.command.is_none()
+            && !parsed.reload
+            && !parsed.force_remove_semaphore
+            && let Err(e) = args().run_inner(bpaf::Args::from(&["--help"]))
+        {
+            print!("{}", e.unwrap_stdout());
+            exit(0);
         }
 
         parsed

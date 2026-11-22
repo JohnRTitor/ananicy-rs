@@ -15,8 +15,6 @@ pub(crate) fn run(target: &DebugTarget, systemd_status: &str) {
     match target {
         DebugTarget::Cgroups => print_debug_cgroups(systemd_status),
         DebugTarget::Memory => print_debug_memory(),
-        // Print nothing for unrecognized targets.
-        // An unrecognized debug sub-action is silently ignored, and the process still exits successfully.
         DebugTarget::Unknown(_) => {}
     }
 }
@@ -209,24 +207,18 @@ mod tests {
 
     #[test]
     fn debug_target_unknown_is_infallible_and_silent() {
-        // "cgroups" is recognized...
         assert_eq!(
             "cgroups".parse::<DebugTarget>().unwrap(),
             DebugTarget::Cgroups
         );
-        // "memory" too.
         assert_eq!(
             "memory".parse::<DebugTarget>().unwrap(),
             DebugTarget::Memory
         );
-        // ...anything else parses successfully too (never errors), with a
-        // silent no-op for unrecognized debug sub-actions.
         assert_eq!(
             "nonsense".parse::<DebugTarget>().unwrap(),
             DebugTarget::Unknown("nonsense".to_string())
         );
-        // And run() with an Unknown target must not panic and must not
-        // print anything extra (verified structurally: it's a no-op match arm).
         run(
             &DebugTarget::Unknown("nonsense".to_string()),
             "disabled (test)",

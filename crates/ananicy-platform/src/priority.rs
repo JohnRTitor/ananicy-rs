@@ -268,7 +268,6 @@ pub fn test_latnice_support() -> bool {
     const SCHED_FLAG_LATENCY_NICE: u64 = 0x80;
     const SCHED_FLAG_KEEP_PARAMS: u64 = 0x10;
 
-    // Get original latency_nice state
     let original_latnice = get_latency_nice(pid).unwrap_or(0);
 
     let mut attr = sched_attr {
@@ -279,7 +278,6 @@ pub fn test_latnice_support() -> bool {
     };
 
     if crate::abi::sched_attr::sched_setattr(pid, &attr, 0).is_ok() {
-        // Restore to original state
         attr.sched_latency_nice = original_latnice;
         let _ = crate::abi::sched_attr::sched_setattr(pid, &attr, 0);
         true

@@ -176,7 +176,6 @@ fn detect_x3d_topology_impl(sys_root: &Path, proc_root: &Path) -> Option<X3DTopo
         return None;
     }
 
-    // Find the die with the largest L3 cache
     let mut max_cache = 0;
     let mut cache_die = 0;
 

@@ -248,7 +248,6 @@ impl CgroupController for CgroupManager {
 
         match ownership {
             CgroupOwnership::Legacy => {
-                // Legacy v1 behavior: just create the directory
                 if !target_dir.exists()
                     && let Err(e) = fs::create_dir_all(&target_dir)
                 {
@@ -260,7 +259,6 @@ impl CgroupController for CgroupManager {
             CgroupOwnership::Owned => {
                 // Owned v2 behavior: ensure subtree control on parent before creating child
                 if let Some(parent) = target_dir.parent() {
-                    // Try to enable cpu controller on parent
                     let subtree_control = parent.join("cgroup.subtree_control");
                     if subtree_control.exists() {
                         match OpenOptions::new()
@@ -357,7 +355,7 @@ impl CgroupController for CgroupManager {
         let pid_to_write = if self.info.version == CgroupVersion::V2 {
             match crate::procfs::get_tgid(pid) {
                 Some(tgid) => tgid,
-                None => return false, // Process is dead, writing raw TID causes EINVAL (os error 22)
+                None => return false,
             }
         } else {
             pid
@@ -746,7 +744,6 @@ mod weightless_reporting {
             .lock()
             .expect("lock it once")
             .put(PathBuf::from("/poison"), ());
-        // Poison it deliberately.
         let _ = std::panic::catch_unwind(|| {
             let _guard = m.reported_weightless.lock().unwrap();
             panic!("poison");
