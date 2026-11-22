@@ -40,20 +40,19 @@ pub struct sched_attr {
 
 /// Apply scheduling attributes with the raw `sched_setattr` syscall.
 ///
-/// The syscall takes four arguments: `pid`, a pointer to the attribute struct,
-/// the number of bytes the kernel may read from it, and flags. `attr.size`
-/// carries the byte count, so callers must initialize it first. `flags` is the
-/// syscall's own flags and must be 0 on kernels that define none. An unknown
-/// `pid` fails with `ESRCH` rather than causing undefined behaviour.
+/// The raw syscall takes three arguments: `pid`, a pointer to the attribute
+/// struct, and flags. Unlike `sched_getattr` it has no separate size argument —
+/// the byte count is carried in `attr.size`, which every caller initializes to
+/// the struct's size. `flags` must be 0 on every kernel. An unknown `pid` fails
+/// with `ESRCH` rather than causing undefined behaviour.
 pub fn sched_setattr(pid: i32, attr: &sched_attr, flags: u32) -> io::Result<()> {
-    // SAFETY: `attr` is a live reference and `attr.size` is the byte count the
-    // kernel is told to read; every caller initializes it to the struct's size.
+    // SAFETY: `attr` is a live reference and the kernel reads `attr.size` bytes
+    // from it; every caller initializes that field to the struct's size.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_sched_setattr,
             pid,
             attr as *const sched_attr,
-            attr.size,
             flags,
         )
     };
@@ -91,32 +90,43 @@ pub fn sched_getattr(pid: i32, attr: &mut sched_attr, size: u32, flags: u32) -> 
 
 #[cfg(test)]
 mod tests {
-    /// The raw syscall is `sched_setattr(pid, attr, size, flags)` — four
-    /// arguments. The glibc wrapper of the same name takes three and supplies
-    /// `attr->size` itself, but `libc::syscall` is the raw entry point and
-    /// supplies nothing. With only three arguments the kernel reads `size` from
-    /// the flags slot (always 0 here) and rejects every call with EINVAL, which
-    /// is invisible except that latency nice silently never works.
+    /// The two raw syscalls have different arities: `sched_setattr` is
+    /// `(pid, attr, flags)` with the byte count inside `attr.size`, while
+    /// `sched_getattr` is `(pid, attr, size, flags)`. Neither mistake is a
+    /// compile error because `libc::syscall` is variadic: adding a size argument
+    /// to the setter makes the kernel read it as flags, and omitting it from the
+    /// getter truncates the call. Both fail quietly or misapply a setting.
     ///
-    /// A source assertion is the only cheap guard: exercising the syscall needs
-    /// a kernel with the out-of-tree extension and suitable privileges.
+    /// A source assertion is the only cheap guard: exercising the setter needs
+    /// a kernel with the out-of-tree latency-nice extension and privileges.
     #[test]
-    fn the_raw_setattr_call_passes_all_four_arguments() {
+    fn the_raw_syscall_argument_lists_match_the_kernel_abi() {
         let source = include_str!("sched_attr.rs");
-        let call = source
-            .split("libc::SYS_sched_setattr")
-            .nth(1)
-            .expect("the sched_setattr syscall call site")
-            .split("};")
-            .next()
-            .expect("the end of the call");
-        assert!(
-            call.contains("attr.size"),
-            "the third syscall argument must be the byte count the kernel reads"
+
+        fn args_after<'a>(source: &'a str, marker: &str) -> Vec<&'a str> {
+            source
+                .split(marker)
+                .nth(1)
+                .expect("the syscall call site")
+                .split("};")
+                .next()
+                .expect("the end of the call")
+                .split(')')
+                .next()
+                .unwrap_or("")
+                .split(',')
+                .map(str::trim)
+                .filter(|arg| !arg.is_empty())
+                .collect()
+        }
+
+        assert_eq!(
+            args_after(source, "libc::SYS_sched_setattr,"),
+            vec!["pid", "attr as *const sched_attr", "flags"]
         );
-        assert!(
-            call.contains("flags"),
-            "the fourth syscall argument must be the syscall flags"
+        assert_eq!(
+            args_after(source, "libc::SYS_sched_getattr,"),
+            vec!["pid", "attr as *mut sched_attr", "size", "flags"]
         );
     }
 }
