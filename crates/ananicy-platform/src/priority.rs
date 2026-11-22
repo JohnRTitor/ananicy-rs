@@ -14,8 +14,10 @@ use {
     tracing::{debug, warn},
 };
 
-// The reference classifies errno the same way: a vanished process and a refused
-// operation are different from a genuine I/O failure, and callers act on it.
+// Errno classification for this daemon's callers: a vanished process and a
+// refused operation are distinct from a genuine I/O failure, so a rule can
+// report a partial failure. The reference collapses the distinction; see
+// docs/COMPATIBILITY.md §5.2.
 fn test_errno(err: io::Error, func_name: &str, pid: i32) -> Result<(), PlatformError> {
     let Some(raw_os_error) = err.raw_os_error() else {
         return Err(Io(err));

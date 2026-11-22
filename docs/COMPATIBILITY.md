@@ -15,7 +15,7 @@ To allow both implementations to coexist on the same system without colliding, `
 
 - **Binary Name:** `ananicy-rs` (instead of `ananicy-cpp`)
 - **Systemd Unit:** `ananicy-rs.service` (instead of `ananicy-cpp.service`)
-- **Unit memory limits:** the reference's unit sets `MemoryHigh=16M` and `MemoryMax=64M`; this one sets `32M` and the same `64M` cap. The reclaim-loop figures below were recorded in `d0e414f` (2026-11-12) from an earlier investigation. `MemoryHigh` is not a limit in the way `MemoryMax` is — exceeding it fails nothing, it makes the kernel *reclaim*, and the only memory this cgroup can reclaim is the daemon's own page cache and heap. At 16M, against a working set of about 34M, that put the daemon in a loop where every page it touched was discarded and fetched again: 3.66 GB read from the root filesystem in twenty minutes, 90% of its page faults going to disk, and a start-up measured in minutes. 32M is more than twice what the daemon keeps resident, so that loop cannot form; what it does allow is a load to push the cgroup over the line for a moment, which costs a little I/O while the transient work of loading is reclaimed and stops as soon as it is done. The resident set grows with the rule count, so this is not a constant to copy — [Memory](./MEMORY.md) has the measurements and `ananicy-rs debug memory` checks yours.
+- **Unit memory limits:** the reference's unit sets `MemoryHigh=16M` and `MemoryMax=64M`; this one sets `32M` and the same `64M` cap. The reclaim-loop figures below were first recorded in `a2c5f19` (2026-09-28). `MemoryHigh` is not a limit in the way `MemoryMax` is — exceeding it fails nothing, it makes the kernel *reclaim*, and the only memory this cgroup can reclaim is the daemon's own page cache and heap. At 16M, against a working set of about 34M, that put the daemon in a loop where every page it touched was discarded and fetched again: 3.66 GB read from the root filesystem in twenty minutes, 90% of its page faults going to disk, and a start-up measured in minutes. 32M is more than twice what the daemon keeps resident, so that loop cannot form; what it does allow is a load to push the cgroup over the line for a moment, which costs a little I/O while the transient work of loading is reclaimed and stops as soon as it is done. The resident set grows with the rule count, so this is not a constant to copy — [Memory](./MEMORY.md) has the measurements and `ananicy-rs debug memory` checks yours.
 - **Environment Variables:** 
   - `ANANICY_RS_CONF` overrides the default config file path (defaults to `/etc/ananicy.d/ananicy.conf`).
   - `ANANICY_RS_CONFDIR` overrides the default config directory (defaults to `/etc/ananicy.d`).
@@ -271,7 +271,7 @@ of escape's *meaning*.
   `^bash(?!_script)` is a compile error rather than a rule.
 - `$` meaning "end of the name, or just before a final newline", which is PCRE's
   definition and *not* what `regex` or `regex-automata` implement. A rule written
-  `^foo$` keeps matching a process whose `argv[0]` is `foo\n…`; see §5.2 for why
+  `^foo$` keeps matching a process whose `argv[0]` is `foo\n…`; see §5.3 for why
   that case is reachable.
 - PCRE's leftmost-first alternation priority, so `^(java|javaw)$` resolves the way
   it always has rather than the way a plain DFA would.

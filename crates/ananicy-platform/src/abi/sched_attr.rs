@@ -38,20 +38,22 @@ pub struct sched_attr {
     pub sched_latency_nice: i32,
 }
 
-/// # Safety
+/// Apply scheduling attributes with the raw `sched_setattr` syscall.
 ///
-/// `attr` must point to a live `sched_attr`, and its `size` field must not
-/// exceed `size_of::<sched_attr>()`, because the kernel reads that many bytes
-/// from it. Callers initialize `size` with the full struct size. `flags` is the
-/// syscall's own flags and must be 0 on kernels that define none. `pid` is an
-/// ordinary argument: an unknown pid fails with `ESRCH`, it is not undefined
-/// behaviour.
+/// The syscall takes four arguments: `pid`, a pointer to the attribute struct,
+/// the number of bytes the kernel may read from it, and flags. `attr.size`
+/// carries the byte count, so callers must initialize it first. `flags` is the
+/// syscall's own flags and must be 0 on kernels that define none. An unknown
+/// `pid` fails with `ESRCH` rather than causing undefined behaviour.
 pub fn sched_setattr(pid: i32, attr: &sched_attr, flags: u32) -> io::Result<()> {
+    // SAFETY: `attr` is a live reference and `attr.size` is the byte count the
+    // kernel is told to read; every caller initializes it to the struct's size.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_sched_setattr,
             pid,
             attr as *const sched_attr,
+            attr.size,
             flags,
         )
     };
@@ -62,14 +64,15 @@ pub fn sched_setattr(pid: i32, attr: &sched_attr, flags: u32) -> io::Result<()> 
     }
 }
 
-/// # Safety
+/// Read scheduling attributes with the raw `sched_getattr` syscall.
 ///
-/// `attr` must point to a live, writable `sched_attr`, and `size` must not
-/// exceed `size_of::<sched_attr>()`: the kernel writes up to `size` bytes through
-/// the pointer, so a larger value would be an out-of-bounds write. Every caller
-/// passes the struct's size. `flags` must be 0 on kernels that define none, and
-/// an unknown `pid` merely fails the syscall.
+/// The syscall takes `pid`, a pointer, the size of the caller's struct and
+/// flags. All callers pass the struct's size. The kernel writes only the fields
+/// its own struct defines, so on a kernel older than this struct the extra
+/// fields are left untouched; that is not an error.
 pub fn sched_getattr(pid: i32, attr: &mut sched_attr, size: u32, flags: u32) -> io::Result<()> {
+    // SAFETY: `attr` is a live, writable reference and `size` is the byte count
+    // the kernel is told to write; every caller passes the struct's size.
     let ret = unsafe {
         libc::syscall(
             libc::SYS_sched_getattr,
@@ -83,5 +86,37 @@ pub fn sched_getattr(pid: i32, attr: &mut sched_attr, size: u32, flags: u32) -> 
         Err(io::Error::last_os_error())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The raw syscall is `sched_setattr(pid, attr, size, flags)` — four
+    /// arguments. The glibc wrapper of the same name takes three and supplies
+    /// `attr->size` itself, but `libc::syscall` is the raw entry point and
+    /// supplies nothing. With only three arguments the kernel reads `size` from
+    /// the flags slot (always 0 here) and rejects every call with EINVAL, which
+    /// is invisible except that latency nice silently never works.
+    ///
+    /// A source assertion is the only cheap guard: exercising the syscall needs
+    /// a kernel with the out-of-tree extension and suitable privileges.
+    #[test]
+    fn the_raw_setattr_call_passes_all_four_arguments() {
+        let source = include_str!("sched_attr.rs");
+        let call = source
+            .split("libc::SYS_sched_setattr")
+            .nth(1)
+            .expect("the sched_setattr syscall call site")
+            .split("};")
+            .next()
+            .expect("the end of the call");
+        assert!(
+            call.contains("attr.size"),
+            "the third syscall argument must be the byte count the kernel reads"
+        );
+        assert!(
+            call.contains("flags"),
+            "the fourth syscall argument must be the syscall flags"
+        );
     }
 }

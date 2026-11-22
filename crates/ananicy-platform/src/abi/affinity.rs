@@ -15,7 +15,9 @@ pub fn get_max_number_of_cpus() -> u32 {
     static MAX_CPUS: OnceLock<u32> = OnceLock::new();
     *MAX_CPUS.get_or_init(|| {
         // SAFETY: `sysconf` takes a constant name and no pointers, so it has no
-        // memory-safety preconditions; an error return is just a number here.
+        // memory-safety preconditions. A -1 return would be cast to u32::MAX and
+        // inflate the mask; that is a capacity bug, not undefined behaviour,
+        // and _SC_NPROCESSORS_CONF does not fail on Linux.
         let sys_cpus = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) as u32 };
         std::cmp::max(sys_cpus, 1024)
     })

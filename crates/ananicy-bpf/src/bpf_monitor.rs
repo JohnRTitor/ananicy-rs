@@ -191,8 +191,9 @@ mod tests {
     /// is a NixOS wrapper script execing the real binary — both events carry the
     /// same pid, and only the second names the program rather than its
     /// interpreter. A fork and the child's exec share the pid for the same
-    /// reason. `is_reportable` ignores `prev_pid`; these are the two event
-    /// shapes the old same-pid filter used to drop.
+    /// reason. `is_reportable` ignores `prev_pid`; the `pid == prev_pid` event
+    /// below is the shape the old filter dropped, and the other is the first
+    /// event of the same pair.
     #[test]
     fn repeated_events_for_one_pid_are_all_reported() {
         assert!(is_reportable(&event(4143, 4143)));

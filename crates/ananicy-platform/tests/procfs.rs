@@ -86,6 +86,8 @@ fn the_platform_reports_a_usable_core_count() {
     assert!(max_cores >= 1024, "the mask must span a full cpu_set_t");
     assert_eq!(max_cores % 8, 0, "the mask is addressed in whole bytes");
 
+    // SAFETY: sysconf takes a constant name, no pointers, and has no
+    // memory-safety preconditions; its result is checked below.
     let configured = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
     if configured > 0 {
         assert!(

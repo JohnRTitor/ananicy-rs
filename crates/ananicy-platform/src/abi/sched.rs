@@ -18,6 +18,8 @@ pub fn sched_setscheduler(pid: i32, policy: i32, param: &SchedParam) -> io::Resu
     let mut libc_param = unsafe { std::mem::zeroed::<libc::sched_param>() };
     libc_param.sched_priority = param.sched_priority;
 
+    // SAFETY: `libc_param` was initialized above and lives until the call
+    // returns; `pid` and `policy` are scalars whose bad values produce an errno.
     let ret = unsafe { libc::sched_setscheduler(pid, policy, &libc_param) };
     if ret < 0 {
         Err(io::Error::last_os_error())

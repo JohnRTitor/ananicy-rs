@@ -30,6 +30,8 @@ pub const fn ioprio_valid(class: i32) -> bool {
 /// Makes a raw `ioprio_set` syscall. The caller must ensure `which` and `who`
 /// are valid, and `ioprio` is correctly formatted using `ioprio_prio_value`.
 pub fn ioprio_set(which: i32, who: i32, ioprio: i32) -> io::Result<()> {
+    // SAFETY: all three are scalar syscall arguments. A bad target or an
+    // invalid priority fails with an errno; no memory is passed to the kernel.
     let ret = unsafe { libc::syscall(libc::SYS_ioprio_set, which, who, ioprio) };
     if ret < 0 {
         Err(io::Error::last_os_error())
@@ -43,6 +45,8 @@ pub fn ioprio_set(which: i32, who: i32, ioprio: i32) -> io::Result<()> {
 /// Makes a raw `ioprio_get` syscall. The caller must ensure `which` and `who`
 /// refer to valid targets.
 pub fn ioprio_get(which: i32, who: i32) -> io::Result<i32> {
+    // SAFETY: both are scalar syscall arguments; an invalid target fails with
+    // an errno and no memory is passed to the kernel.
     let ret = unsafe { libc::syscall(libc::SYS_ioprio_get, which, who) };
     if ret < 0 {
         Err(io::Error::last_os_error())

@@ -121,6 +121,8 @@ fn a_cpu_beyond_the_configured_range_is_rejected() {
     // silently widening the mask.
     let _guard = affinity_lock();
 
+    // SAFETY: sysconf takes a constant name, no pointers, and has no
+    // memory-safety preconditions; its result is checked below.
     let configured = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
     let beyond = configured as u32;
     if configured <= 0 || beyond >= get_max_number_of_cpus() {
@@ -181,6 +183,8 @@ fn a_mask_the_kernel_cannot_accept_is_reported_as_such() {
     use ananicy_core::worker::{PlatformActions, PlatformError};
 
     let _guard = affinity_lock();
+    // SAFETY: sysconf takes a constant name, no pointers, and has no
+    // memory-safety preconditions; its result is checked below.
     let configured = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
     if configured <= 0 {
         return;
