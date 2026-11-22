@@ -29,7 +29,8 @@ rule set pays for a couple of dozen distinct names once rather than per rule. Th
 rules live in one contiguous `Vec`, and the map that finds them holds a `u32`
 index rather than the rule, so a bucket is 28 bytes.
 
-Measured on a 12-core host, same machine and same build, as peak RSS:
+Measured on a 12-core host, same machine and same build, as peak RSS — recorded
+in `b91176b0` (2026-09-28):
 
 | Rules | Each rule a parsed JSON document | Rules in the map | Rules in a `Vec` |
 |------:|---------------------------------:|-----------------:|----------------:|
@@ -78,7 +79,8 @@ Twenty-four rather than sixteen because the inner `Option` spends the
 null-pointer niche and the outer one needs a discriminant of its own.
 
 They are two-byte indices into a process-wide table now, `type_name` included.
-Counting live heap across a full load:
+Counting live heap across a full load — recorded in `7471c3cd` (2026-09-29); the
+later `de0c94f` remeasurement is noted below the table:
 
 | | Rules | Live bytes | Live allocations | Per rule |
 |---|---:|---:|---:|---:|
@@ -224,8 +226,9 @@ rule said nothing about, or `"ioclass": null` stops suppressing the type's value
 The table above is about a rule set held in memory. The per-process path is a
 different budget and a different ranking, and the two do not agree.
 
-What one matched process costs, measured, on a 12-core cgroup-v2 host. This is
-the number that matters, and it is the one that was not obvious:
+What one matched process costs, measured, on a 12-core cgroup-v2 host and
+recorded in `9286b7b0` (2026-09-30). This is the number that matters, and it is
+the one that was not obvious:
 
 | step | | fires for |
 |---|---:|---|
