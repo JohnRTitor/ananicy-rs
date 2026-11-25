@@ -139,11 +139,10 @@ install -d -m 0755 %{buildroot}%{_datadir}/zsh/site-functions
 %check
 # Runs as the build user, which under mock and Koji is not root. That matters for
 # the cgroup tests in ananicy-platform: they skip themselves, with a message,
-# when the suite is unprivileged, and as root they are not merely privileged but
-# unreliable -- three of them share one cgroup name and each removes it when it
-# finishes, so they race each other, and on a runner whose /sys/fs/cgroup is
-# read-only they fail outright. Neither says anything about this package, which
-# is why the CI job runs the suite unprivileged as its own step.
+# when the suite is unprivileged. As root they serialise their mutations with
+# unique names and skip visibly when /sys/fs/cgroup is read-only or there is no
+# delegated root, so neither case says anything about this package. The CI job
+# still runs the suite unprivileged as its own step, matching mock and Koji.
 #
 # The dev profile is used on purpose: the release profile is fat-LTO with a single
 # codegen unit, which would multiply the runtime of a suite that exercises the

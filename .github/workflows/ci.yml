@@ -207,11 +207,12 @@ jobs:
       # so `--all-features` has everything its build scripts need.
       - name: Build
         run: nix develop --command cargo build --locked --all-targets --all-features
-      # Unprivileged, unlike the `test` job above, and for the reason the
-      # packaging jobs give: the cgroup tests in ananicy-platform are
-      # unreliable as root, so they skip themselves with a message instead of
-      # racing each other. `sudo -E` is not an option inside a devShell -- it
-      # would replace the shell's PATH, and with it the cargo this is testing.
-      # The root case is what the `test` job is for.
+      # Unprivileged, unlike the `test` job above: this mirrors mock/Koji and
+      # the packaging jobs, and exercises the unprivileged skip path. As root
+      # the cgroup tests now serialise their mutations with unique names and
+      # skip visibly when the hierarchy is read-only or has no delegated root,
+      # so that case is covered by the `test` job above. `sudo -E` is not an
+      # option inside a devShell -- it would replace the shell's PATH, and with
+      # it the cargo this is testing.
       - name: Test
         run: nix develop --command cargo test --locked --all-targets --all-features

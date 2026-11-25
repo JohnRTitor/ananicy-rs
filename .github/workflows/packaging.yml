@@ -105,9 +105,8 @@ jobs:
           rpmspec --parse packaging/fedora/ananicy-rs.spec
           rpmbuild -bs packaging/fedora/ananicy-rs.spec
           # --nocheck because rpmbuild runs the build as root here, and the
-          # cgroup tests in ananicy-platform are unreliable as root: three of
-          # them share one cgroup name and race each other, and a container's
-          # /sys/fs/cgroup may be read-only. The step below runs the same suite,
+          # cgroup tests in ananicy-platform can skip when a container's
+          # /sys/fs/cgroup is read-only. The step below runs the same suite,
           # unprivileged, which is how mock and Koji run it. See %check in the
           # spec and packaging/fedora/README.md.
 
@@ -122,7 +121,7 @@ jobs:
           builddir="$HOME/rpmbuild/BUILD/ananicy-rs-$version-build"
           # The same source, vendor tree and CARGO_HOME %check would have used,
           # now owned by an unprivileged user so the cgroup tests skip themselves
-          # with a message instead of racing each other as root.
+          # with a message, matching how mock and Koji run the suite.
           useradd --create-home --shell /bin/bash builder
           chown -R builder:builder "$HOME/rpmbuild/BUILD"
           su builder -s /bin/bash -c "cd '$builddir/ananicy-rs-$version' && \

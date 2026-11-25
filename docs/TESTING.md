@@ -69,10 +69,19 @@ fixture instead of the host.
 
 A handful of tests genuinely need the machine they run on. They are marked in
 their module documentation, and the ones that need privileges print a
-`skipping …` line so a skip is never mistaken for a pass:
+`skipping …` line so a skip is never mistaken for a pass. For the cgroup tests
+below, those lines are written straight to stderr (not through `eprintln!`,
+which libtest hides for passing tests), so they show up in a plain `cargo test`
+CI log:
 
 - `crates/ananicy-platform/tests/cgroups.rs` — creating a cgroup and moving a
-  process into it needs root. The read-only detection tests always run.
+  process into it needs root and a writable hierarchy: containers often run as
+  root with `/sys/fs/cgroup` mounted read-only, so those tests probe for a
+  writable hierarchy first and print a `skipping …` line when it is absent.
+  On cgroup v2 they also skip when the test process is in a transient `.scope`,
+  where the daemon disables structural mutations by design. They serialise
+  their mutations and use distinct cgroup names. The read-only detection tests
+  always run.
 - `crates/ananicy-platform/tests/affinity.rs` — calls the real syscall, but only
   ever on the test process itself, and restores the previous mask.
 - `crates/ananicy-platform/tests/mounts.rs` and `tests/procfs.rs` — read the

@@ -76,13 +76,11 @@ as written: under mock and Koji it runs as the build user, which is not root, an
 the cgroup tests in `ananicy-platform` skip themselves with a message when the
 suite is unprivileged.
 
-The CI job does not use mock, and a bare `rpmbuild -ba` runs the build as root,
-where those tests are not merely privileged but unreliable. Three of them share
-the name `UNIT_TEST_ANANICY` and each removes it on the way out, so as root they
-race each other — the project's own `ci.yml` has been failing this way on
-`ubuntu-latest`, at `cgroups.rs:132` with "the cgroup directory must exist" — and
-on a runner whose `/sys/fs/cgroup` is read-only the two that assert a successful
-`create_cgroup` fail outright. None of that says anything about this package.
+The CI job does not use mock, and a bare `rpmbuild -ba` runs the build as root.
+The cgroup tests now serialise their mutations, use distinct cgroup names, and
+print a visible `skipping …` line when the hierarchy is read-only or the test
+process has no delegated root, so they no longer race each other as root. None
+of that says anything about this package.
 
 So the job runs `rpmbuild -ba --nocheck` and then runs the same suite, against the
 same source, vendor tree and `CARGO_HOME` that `%check` would have used, as an
