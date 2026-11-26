@@ -1,5 +1,7 @@
 use std::{
+    io,
     num::NonZeroUsize,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread::available_parallelism,
@@ -15,7 +17,7 @@ use {
 };
 
 use crate::cgroup::{
-    CgroupInfo, CgroupVersion,
+    CgroupError, CgroupInfo, CgroupResult, CgroupVersion,
     ownership::{CgroupOwnership, discover_delegated_root},
 };
 
@@ -48,10 +50,39 @@ fn write_control_line(writer: &mut impl Write, line: &[u8]) -> std::io::Result<(
 }
 
 pub trait CgroupController {
-    fn ensure_child(&self, name: &str) -> Option<PathBuf>;
-    fn move_pid(&self, pid: i32, target: &Path) -> bool;
-    fn set_cpu_max(&self, target: &Path, quota: u32) -> bool;
-    fn set_cpu_weight(&self, target: &Path, weight: u32) -> bool;
+    fn ensure_child(&self, name: &str) -> CgroupResult<PathBuf>;
+    fn move_pid(&self, pid: i32, target: &Path) -> CgroupResult<()>;
+    fn set_cpu_max(&self, target: &Path, quota: u32) -> CgroupResult<()>;
+    fn set_cpu_weight(&self, target: &Path, weight: u32) -> CgroupResult<()>;
+}
+
+/// Attaches the path to an I/O failure from a control file and maps the errno.
+///
+/// An error saying "failed to open cpu.max" is not actionable; one naming the
+/// cgroup is. Only the error path formats a string, so this costs nothing on
+/// the per-process success path. `CgroupError::from` keeps the errno-specific
+/// variants (`NotFound`, `Busy`, `Gone`) distinct from a generic `Io`, whose
+/// message carries the path; the callers' existing log lines name the path
+/// for the unit variants as well.
+fn control_error(path: &Path, error: io::Error) -> CgroupError {
+    let contextual = io::Error::new(error.kind(), format!("{}: {error}", path.display()));
+    CgroupError::from(contextual)
+}
+
+/// The single way this module opens cgroup control and pid files for writing.
+///
+/// `O_NOFOLLOW` closes the check-then-open window: a control file replaced by a
+/// symlink between an existence check and the open is rejected by the kernel
+/// instead of redirecting the write. `O_CLOEXEC` is set by Rust's `OpenOptions`
+/// on Unix by default, so the fd never survives into a child process without
+/// an explicit `dup`; restating it in `custom_flags` would add nothing.
+fn open_control(target: &Path, file: &str) -> CgroupResult<fs::File> {
+    let path = joined(target, &[file]);
+    OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|error| control_error(&path, error))
 }
 
 /// `base` with each of `segments` appended, in a single allocation.
@@ -76,6 +107,32 @@ fn joined(base: &Path, segments: &[&str]) -> PathBuf {
         path.push(segment);
     }
     path
+}
+
+/// Validates a rule name or an absolute-from-root cgroup path component-wise.
+///
+/// The returned slice borrows `name` with one leading `/` removed, so validation
+/// costs no allocation on the per-process path. Both nested names
+/// (`my-app.slice/my-app.scope`) and a leading `/` are valid and keep their old
+/// meaning. Only structural components are refused: `..`, redundant `.`, empty
+/// components (other than the single leading slash), and control bytes. Any
+/// other character is allowed inside a component, because systemd escapes and
+/// existing rule files use names (`.scope`, `.slice`, `@`, `_`) that a strict
+/// `[alnum|-|_]` allowlist would reject. Since no component can be `..` and
+/// the result is relative, it cannot normalize outside the cgroup mount.
+pub fn resolve_rule_name(name: &str) -> CgroupResult<&str> {
+    let relative = name.strip_prefix('/').unwrap_or(name);
+    let valid = !name.chars().any(char::is_control)
+        && (relative.is_empty()
+            || relative
+                .split('/')
+                .all(|part| !part.is_empty() && part != ".." && part != "."));
+    if valid {
+        Ok(relative)
+    } else {
+        warn!("Security: Rejecting invalid cgroup name: {}", name);
+        Err(CgroupError::InvalidName(name.to_string()))
+    }
 }
 
 /// The CFS period a quota is expressed against: 100 ms on cgroup v2 (the kernel's
@@ -198,36 +255,66 @@ impl CgroupManager {
     }
 
     /// Helper to resolve the target directory based on the cgroup name and version.
+    ///
+    /// Kept as `Option` for backward compatibility with callers that only need
+    /// to know whether a name is usable; the typed reason is available from the
+    /// two resolution entry points below.
     pub fn resolve_target_dir(&self, name: &str) -> Option<PathBuf> {
-        // Prevent basic path traversal attacks
-        if name.contains("..") {
-            warn!(
-                "Security: Rejecting cgroup name with traversal sequence '..': {}",
-                name
-            );
-            return None;
-        }
+        self.resolve_target(name).ok()
+    }
 
-        let is_absolute = name.starts_with('/');
-        let relative_name = name.strip_prefix('/').unwrap_or(name);
+    /// Resolves a rule name or an absolute-from-root cgroup path with its reason
+    /// preserved.
+    fn resolve_target(&self, name: &str) -> CgroupResult<PathBuf> {
+        let relative_name = resolve_rule_name(name)?;
 
         match self.info.version {
-            CgroupVersion::None => None,
-            CgroupVersion::V1 => Some(joined(&self.info.mount_point, &["cpu", relative_name])),
+            CgroupVersion::None => Err(CgroupError::NoController),
+            // v1 keeps its controller directory even for a name written with a
+            // leading slash, exactly as before the resolver was split.
+            CgroupVersion::V1 => Ok(joined(&self.info.mount_point, &["cpu", relative_name])),
             CgroupVersion::V2 => {
-                // Absolute names resolve from the global mount, relative ones
-                // from the delegated root, and a relative name on a host with no
-                // delegated root falls back to the mount point.
-                let base: &Path = if is_absolute {
-                    &self.info.mount_point
-                } else if let Some(root) = self.delegated_root.as_deref() {
-                    root
-                } else {
-                    &self.info.mount_point
-                };
-                Some(joined(base, &[relative_name]))
+                if name.starts_with('/') {
+                    return self.resolve_process_path(Path::new(name));
+                }
+                // Relative names resolve from the delegated root, and a
+                // relative name on a host with no delegated root falls back to
+                // the mount point.
+                let base: &Path = self
+                    .delegated_root
+                    .as_deref()
+                    .unwrap_or(&self.info.mount_point);
+                Ok(joined(base, &[relative_name]))
             }
         }
+    }
+
+    /// Resolves an absolute path as reported by `/proc/<pid>/cgroup` (or the
+    /// equivalent absolute-from-root name in a rule).
+    ///
+    /// Such paths are relative to the cgroup *mount*, not to the delegated
+    /// unit, so they are joined to the mount point. Validation is shared with
+    /// rule names: every component is checked, and the result is verified to
+    /// stay inside the mount. A path outside the delegated root is still a
+    /// valid result — `cpu.weight` tuning of an existing foreign cgroup is a
+    /// deliberate exception; the ownership classifier decides which writes
+    /// are allowed, not this resolver.
+    pub fn resolve_process_path(&self, path: &Path) -> CgroupResult<PathBuf> {
+        if self.info.version == CgroupVersion::None {
+            return Err(CgroupError::NoController);
+        }
+        let name = path
+            .to_str()
+            .ok_or_else(|| CgroupError::InvalidName(path.display().to_string()))?;
+        if !path.is_absolute() {
+            return Err(CgroupError::InvalidName(name.to_string()));
+        }
+        let relative_name = resolve_rule_name(name)?;
+        let resolved = joined(&self.info.mount_point, &[relative_name]);
+        if !resolved.starts_with(&self.info.mount_point) {
+            return Err(CgroupError::InvalidName(name.to_string()));
+        }
+        Ok(resolved)
     }
 
     pub fn cgroup_exists(&self, name: &str) -> bool {
@@ -237,8 +324,8 @@ impl CgroupManager {
 }
 
 impl CgroupController for CgroupManager {
-    fn ensure_child(&self, name: &str) -> Option<PathBuf> {
-        let target_dir = self.resolve_target_dir(name)?;
+    fn ensure_child(&self, name: &str) -> CgroupResult<PathBuf> {
+        let target_dir = self.resolve_target(name)?;
 
         let ownership = CgroupOwnership::classify(
             &target_dir,
@@ -252,20 +339,19 @@ impl CgroupController for CgroupManager {
                     && let Err(e) = fs::create_dir_all(&target_dir)
                 {
                     error!("ensure_child(V1): Failed to create cgroup {}: {}", name, e);
-                    return None;
+                    return Err(control_error(&target_dir, e));
                 }
-                Some(target_dir)
+                Ok(target_dir)
             }
             CgroupOwnership::Owned => {
                 // Owned v2 behavior: ensure subtree control on parent before creating child
                 if let Some(parent) = target_dir.parent() {
                     let subtree_control = parent.join("cgroup.subtree_control");
                     if subtree_control.exists() {
-                        match OpenOptions::new()
-                            .write(true)
-                            .open(&subtree_control)
-                            .and_then(|mut f| f.write_all(b"+cpu\n"))
-                        {
+                        match open_control(parent, "cgroup.subtree_control").and_then(|mut f| {
+                            f.write_all(b"+cpu\n")
+                                .map_err(|e| control_error(&subtree_control, e))
+                        }) {
                             Ok(()) => {}
                             Err(e) => {
                                 // The kernel refuses `+cpu` on a cgroup that has
@@ -296,21 +382,21 @@ impl CgroupController for CgroupManager {
                     && let Err(e) = fs::create_dir_all(&target_dir)
                 {
                     error!("ensure_child(V2): Failed to create cgroup {}: {}", name, e);
-                    return None;
+                    return Err(control_error(&target_dir, e));
                 }
-                Some(target_dir)
+                Ok(target_dir)
             }
             CgroupOwnership::Foreign => {
                 debug!(
                     "ensure_child(V2): Path {:?} is Foreign (not in delegated root). Refusing to create.",
                     target_dir
                 );
-                None
+                Err(CgroupError::Foreign)
             }
         }
     }
 
-    fn move_pid(&self, pid: i32, target: &Path) -> bool {
+    fn move_pid(&self, pid: i32, target: &Path) -> CgroupResult<()> {
         let ownership = CgroupOwnership::classify(
             target,
             self.delegated_root.as_deref(),
@@ -322,12 +408,12 @@ impl CgroupController for CgroupManager {
                 "move_pid: Target {:?} is Foreign. Refusing to write.",
                 target
             );
-            return false;
+            return Err(CgroupError::Foreign);
         }
 
         if !target.exists() {
             debug!("move_pid: Cgroup {:?} does not exist.", target);
-            return false;
+            return Err(CgroupError::NotFound);
         }
 
         let procs_file = if self.info.version == CgroupVersion::V2 {
@@ -342,11 +428,11 @@ impl CgroupController for CgroupManager {
         // between the last time we look at the process and the moment the kernel
         // acts on what we read — down to a single read immediately followed by
         // the write.
-        let mut file = match OpenOptions::new().write(true).open(&procs_path) {
+        let mut file = match open_control(target, procs_file) {
             Ok(file) => file,
             Err(e) => {
                 debug!("move_pid: Failed to open {:?}: {}", procs_path, e);
-                return false;
+                return Err(e);
             }
         };
 
@@ -355,7 +441,7 @@ impl CgroupController for CgroupManager {
         let pid_to_write = if self.info.version == CgroupVersion::V2 {
             match crate::procfs::get_tgid(pid) {
                 Some(tgid) => tgid,
-                None => return false,
+                None => return Err(CgroupError::Gone),
             }
         } else {
             pid
@@ -373,7 +459,7 @@ impl CgroupController for CgroupManager {
         // window as small as possible, and to be honest in the message about what
         // has occurred.
         let Some(start_time_before) = crate::procfs::get_start_time(pid) else {
-            return false;
+            return Err(CgroupError::Gone);
         };
 
         // CRITICAL: Do NOT use writeln!() here. On an unbuffered File,
@@ -386,7 +472,7 @@ impl CgroupController for CgroupManager {
         let pid_buf = control_line(&mut buf, format_args!("{}\n", pid_to_write));
         if let Err(e) = write_control_line(&mut file, pid_buf) {
             debug!("move_pid: Failed to write to {:?}: {}", procs_path, e);
-            return false;
+            return Err(control_error(&procs_path, e));
         }
 
         match crate::procfs::get_start_time(pid) {
@@ -400,7 +486,7 @@ impl CgroupController for CgroupManager {
                     "move_pid: PID {} is gone after the move; nothing to attribute",
                     pid
                 );
-                return false;
+                return Err(CgroupError::Gone);
             }
             // A different process holds the pid, so the write moved that process
             // and not the one this was checked against. The move already happened
@@ -415,15 +501,15 @@ impl CgroupController for CgroupManager {
                      mis-tuned until it exits.",
                     pid, start_time_before, after, pid_to_write, target,
                 );
-                return false;
+                return Err(CgroupError::Gone);
             }
         }
 
         debug!("move_pid: Successfully added {} to {:?}", pid, target);
-        true
+        Ok(())
     }
 
-    fn set_cpu_max(&self, target: &Path, quota: u32) -> bool {
+    fn set_cpu_max(&self, target: &Path, quota: u32) -> CgroupResult<()> {
         let ownership = CgroupOwnership::classify(
             target,
             self.delegated_root.as_deref(),
@@ -435,7 +521,7 @@ impl CgroupController for CgroupManager {
                 "set_cpu_max: Target {:?} is Foreign. Refusing to write.",
                 target
             );
-            return false;
+            return Err(CgroupError::Foreign);
         }
 
         // The number of CPUs the quota is a percentage of. `available_parallelism`
@@ -457,44 +543,44 @@ impl CgroupController for CgroupManager {
 
         if self.info.version == CgroupVersion::V2 {
             let max_file = target.join("cpu.max");
-            let Ok(mut f) = OpenOptions::new().write(true).open(&max_file) else {
-                error!("set_cpu_max: Failed to open {:?}", max_file);
-                return false;
-            };
+            let mut f = open_control(target, "cpu.max").map_err(|e| {
+                error!("set_cpu_max: Failed to open {:?}: {}", max_file, e);
+                e
+            })?;
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{quota_val} {period}\n"));
             if let Err(e) = f.write_all(line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", max_file, e);
-                return false;
+                return Err(control_error(&max_file, e));
             }
         } else {
             let period_file = target.join("cpu.cfs_period_us");
-            let Ok(mut f) = OpenOptions::new().write(true).open(&period_file) else {
-                error!("set_cpu_max: Failed to open {:?}", period_file);
-                return false;
-            };
+            let mut f = open_control(target, "cpu.cfs_period_us").map_err(|e| {
+                error!("set_cpu_max: Failed to open {:?}: {}", period_file, e);
+                e
+            })?;
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{period}\n"));
             if let Err(e) = f.write_all(line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", period_file, e);
-                return false;
+                return Err(control_error(&period_file, e));
             }
             let quota_file = target.join("cpu.cfs_quota_us");
-            let Ok(mut f) = OpenOptions::new().write(true).open(&quota_file) else {
-                error!("set_cpu_max: Failed to open {:?}", quota_file);
-                return false;
-            };
+            let mut f = open_control(target, "cpu.cfs_quota_us").map_err(|e| {
+                error!("set_cpu_max: Failed to open {:?}: {}", quota_file, e);
+                e
+            })?;
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{quota_val}\n"));
             if let Err(e) = f.write_all(line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", quota_file, e);
-                return false;
+                return Err(control_error(&quota_file, e));
             }
         }
-        true
+        Ok(())
     }
 
-    fn set_cpu_weight(&self, target: &Path, weight: u32) -> bool {
+    fn set_cpu_weight(&self, target: &Path, weight: u32) -> CgroupResult<()> {
         let ownership = CgroupOwnership::classify(
             target,
             self.delegated_root.as_deref(),
@@ -513,34 +599,34 @@ impl CgroupController for CgroupManager {
         if self.info.version == CgroupVersion::V2 {
             let weight_val = weight.clamp(1, 10000);
             let weight_file = target.join("cpu.weight");
-            let Ok(mut f) = OpenOptions::new().write(true).open(&weight_file) else {
+            let mut f = open_control(target, "cpu.weight").map_err(|e| {
                 self.report_weightless(target, &weight_file);
-                debug!("set_cpu_weight: Failed to open {:?}", weight_file);
-                return false;
-            };
+                debug!("set_cpu_weight: Failed to open {:?}: {}", weight_file, e);
+                e
+            })?;
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{}\n", weight_val));
             if let Err(e) = f.write_all(line) {
                 debug!("set_cpu_weight: Failed to write {:?}: {}", weight_file, e);
-                return false;
+                return Err(control_error(&weight_file, e));
             }
         } else {
             let shares = (weight as f32 / 100.0 * 1024.0) as u32;
             let shares = shares.clamp(2, 262144);
             let shares_file = target.join("cpu.shares");
-            let Ok(mut f) = OpenOptions::new().write(true).open(&shares_file) else {
+            let mut f = open_control(target, "cpu.shares").map_err(|e| {
                 self.report_weightless(target, &shares_file);
-                debug!("set_cpu_weight: Failed to open {:?}", shares_file);
-                return false;
-            };
+                debug!("set_cpu_weight: Failed to open {:?}: {}", shares_file, e);
+                e
+            })?;
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{}\n", shares));
             if let Err(e) = f.write_all(line) {
                 debug!("set_cpu_weight: Failed to write {:?}: {}", shares_file, e);
-                return false;
+                return Err(control_error(&shares_file, e));
             }
         }
-        true
+        Ok(())
     }
 }
 

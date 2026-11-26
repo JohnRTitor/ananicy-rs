@@ -7,12 +7,19 @@
 
 use {
     ananicy_platform::cgroup::{
-        CgroupInfo, CgroupVersion,
-        manager::{CgroupController, CgroupManager},
+        CgroupError, CgroupInfo, CgroupVersion,
+        manager::{CgroupController, CgroupManager, resolve_rule_name},
     },
-    std::{fs, path::PathBuf, process::id},
+    common::{Failure, FakeController},
+    std::{
+        fs,
+        path::{Path, PathBuf},
+        process::id,
+    },
     tempfile::TempDir,
 };
+
+mod common;
 
 /// Builds the `root -> system.slice -> ananicy.service` layout that a packaged
 /// systemd unit with `Delegate=yes` produces, and returns the delegated root.
@@ -83,7 +90,7 @@ fn test_cgroup_manager_v2_foreign_rejection() {
     let foreign_target = "/user.slice/user-1000.slice";
 
     assert!(
-        manager.ensure_child(foreign_target).is_none(),
+        manager.ensure_child(foreign_target).is_err(),
         "Should reject structural modifications in Foreign subtree"
     );
     assert!(
@@ -104,7 +111,7 @@ fn test_cgroup_manager_v2_write_files() {
     fs::File::create(child_path.join("cpu.weight")).unwrap();
 
     assert!(
-        manager.set_cpu_max(&child_path, 50),
+        manager.set_cpu_max(&child_path, 50).is_ok(),
         "Should successfully set cpu.max in Owned subtree"
     );
     let cores = std::thread::available_parallelism()
@@ -119,7 +126,7 @@ fn test_cgroup_manager_v2_write_files() {
     );
 
     assert!(
-        manager.set_cpu_weight(&child_path, 200),
+        manager.set_cpu_weight(&child_path, 200).is_ok(),
         "Should successfully set cpu.weight in Owned subtree"
     );
     assert_eq!(
@@ -142,7 +149,7 @@ fn a_foreign_cgroup_never_receives_a_cpu_quota() {
     fs::File::create(foreign.join("cpu.max")).unwrap();
 
     assert!(
-        !manager.set_cpu_max(&foreign, 50),
+        manager.set_cpu_max(&foreign, 50).is_err(),
         "writing cpu.max into a foreign subtree must be refused"
     );
     assert_eq!(
@@ -166,7 +173,7 @@ fn a_foreign_cgroup_may_still_be_weight_tuned() {
     let foreign = info.mount_point.join("user.slice");
     fs::write(foreign.join("cpu.weight"), "").unwrap();
     assert!(
-        manager.set_cpu_weight(&foreign, 300),
+        manager.set_cpu_weight(&foreign, 300).is_ok(),
         "an existing foreign cpu.weight may be written"
     );
     assert_eq!(
@@ -176,7 +183,7 @@ fn a_foreign_cgroup_may_still_be_weight_tuned() {
 
     // Without the controller file the write is an expected, reported skip.
     let without_controller = info.mount_point.join("system.slice");
-    assert!(!manager.set_cpu_weight(&without_controller, 300));
+    assert!(manager.set_cpu_weight(&without_controller, 300).is_err());
     assert!(!without_controller.join("cpu.weight").exists());
 }
 
@@ -189,7 +196,7 @@ fn a_process_is_not_moved_into_a_foreign_cgroup() {
     fs::write(foreign.join("cgroup.procs"), "").unwrap();
 
     assert!(
-        !manager.move_pid(id() as i32, &foreign),
+        manager.move_pid(id() as i32, &foreign).is_err(),
         "moving a process into a foreign cgroup must be refused"
     );
     assert_eq!(
@@ -207,7 +214,7 @@ fn a_process_is_not_moved_into_a_cgroup_that_does_not_exist() {
     let missing = info
         .mount_point
         .join("system.slice/ananicy.service/absent.scope");
-    assert!(!manager.move_pid(id() as i32, &missing));
+    assert!(manager.move_pid(id() as i32, &missing).is_err());
 }
 
 #[test]
@@ -219,7 +226,7 @@ fn a_dead_process_is_not_moved_anywhere() {
     fs::File::create(target.join("cgroup.procs")).unwrap();
 
     assert!(
-        !manager.move_pid(i32::MAX, &target),
+        manager.move_pid(i32::MAX, &target).is_err(),
         "a process that no longer exists must not be written to cgroup.procs"
     );
 }
@@ -279,7 +286,7 @@ fn without_a_delegated_root_relative_names_stay_at_the_mount_point() {
         Some(mount_point.join("child"))
     );
     assert!(
-        manager.ensure_child("child").is_none(),
+        manager.ensure_child("child").is_err(),
         "nothing may be created"
     );
     assert!(!mount_point.join("child").exists());
@@ -318,7 +325,7 @@ fn a_successful_move_writes_the_pid_and_newline_in_one_piece() {
 
     let pid = id() as i32;
     assert!(
-        manager.move_pid(pid, &target),
+        manager.move_pid(pid, &target).is_ok(),
         "moving into an owned cgroup must succeed"
     );
     assert_eq!(
@@ -346,8 +353,8 @@ fn all_v1_control_files_receive_their_exact_values() {
         fs::File::create(child.join(file)).unwrap();
     }
 
-    assert!(manager.set_cpu_max(&child, 50));
-    assert!(manager.set_cpu_weight(&child, 200));
+    assert!(manager.set_cpu_max(&child, 50).is_ok());
+    assert!(manager.set_cpu_weight(&child, 200).is_ok());
 
     let cores = std::thread::available_parallelism()
         .map(|n| n.get() as u64)
@@ -379,7 +386,7 @@ fn a_v1_manager_reports_no_target_without_a_hierarchy() {
 
     assert_eq!(manager.resolve_target_dir("anything"), None);
     assert!(!manager.cgroup_exists("anything"));
-    assert!(manager.ensure_child("anything").is_none());
+    assert!(manager.ensure_child("anything").is_err());
 }
 
 #[test]
@@ -395,4 +402,118 @@ fn subtree_control_is_enabled_before_a_child_is_created() {
     let child = manager.ensure_child("parent.scope/child.scope").unwrap();
     assert!(child.exists());
     assert!(child.starts_with(&parent));
+}
+
+#[test]
+fn typed_errors_reach_the_caller() {
+    let fake = FakeController::new();
+
+    // A structural write into systemd's subtree is Foreign, not a generic I/O
+    // failure or a missing file.
+    assert!(matches!(
+        fake.ensure_child("/user.slice/other.service"),
+        Err(CgroupError::Foreign)
+    ));
+
+    // A target that does not exist is NotFound.
+    let missing = fake.hierarchy().delegated_root.join("absent.scope");
+    assert!(matches!(
+        fake.move_pid(id() as i32, &missing),
+        Err(CgroupError::NotFound)
+    ));
+
+    // A raw EBUSY injected by the harness is converted exactly as the real
+    // manager converts it, so the caller sees Busy rather than Io.
+    let busy = FakeController::new().failing("set_cpu_weight", Failure::Errno(libc::EBUSY));
+    let target = busy.hierarchy().owned_cgroup("busy.scope", &["cpu.weight"]);
+    assert!(matches!(
+        busy.set_cpu_weight(&target, 200),
+        Err(CgroupError::Busy)
+    ));
+
+    // Other injected kinds stay distinct too.
+    let gone = FakeController::new().failing("move_pid", Failure::Gone);
+    let target = gone.hierarchy().owned_cgroup("gone.scope", &[]);
+    assert!(matches!(
+        gone.move_pid(id() as i32, &target),
+        Err(CgroupError::Gone)
+    ));
+}
+
+#[test]
+fn the_recording_controller_keeps_every_control_line() {
+    let fake = FakeController::new();
+    let target = fake
+        .hierarchy()
+        .owned_cgroup("recorded.scope", &["cpu.max", "cpu.weight"]);
+    assert!(fake.set_cpu_max(&target, 25).is_ok());
+    assert!(fake.set_cpu_weight(&target, 300).is_ok());
+    assert_eq!(fake.lines_for("cpu.max"), ["25 100000\n"]);
+    assert_eq!(fake.lines_for("cpu.weight"), ["300\n"]);
+    assert_eq!(fake.writes().len(), 2);
+}
+
+#[test]
+fn rule_names_are_validated_component_wise_without_breaking_nested_names() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service.clone(), info.mount_point.clone());
+
+    for name in [
+        "../escape",
+        "a/../../b",
+        "..",
+        "legit/../..",
+        "a//b",
+        "trailing/",
+        "a/./b",
+        "bad\u{0}name",
+        "bad\u{1}name",
+    ] {
+        assert!(
+            manager.resolve_target_dir(name).is_none(),
+            "{name:?} must not resolve to a path"
+        );
+        assert!(
+            matches!(resolve_rule_name(name), Err(CgroupError::InvalidName(_))),
+            "{name:?} must report why it was rejected"
+        );
+    }
+
+    // Nested systemd-style names, absolute-from-root names and dots inside a
+    // component were all valid before and must stay valid.
+    assert_eq!(
+        resolve_rule_name("my-app.slice/my-app.scope").unwrap(),
+        "my-app.slice/my-app.scope"
+    );
+    assert_eq!(
+        resolve_rule_name("/my-app.slice/my-app.scope").unwrap(),
+        "my-app.slice/my-app.scope"
+    );
+    assert_eq!(
+        manager.resolve_target_dir("my-app.slice/my-app.scope"),
+        Some(ananicy_service.join("my-app.slice/my-app.scope"))
+    );
+    assert_eq!(
+        manager.resolve_target_dir("app..name.scope"),
+        Some(ananicy_service.join("app..name.scope"))
+    );
+
+    // Paths read from /proc are absolute from the mount root, not from the
+    // delegated unit; they must not be able to escape it.
+    assert_eq!(
+        manager
+            .resolve_process_path(Path::new("/user.slice/session.scope"))
+            .unwrap(),
+        info.mount_point.join("user.slice/session.scope")
+    );
+    assert!(
+        manager
+            .resolve_process_path(Path::new("../escape"))
+            .is_err()
+    );
+    assert!(
+        manager
+            .resolve_process_path(Path::new("/../../escape"))
+            .is_err()
+    );
 }

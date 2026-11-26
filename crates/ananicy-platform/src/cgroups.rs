@@ -99,8 +99,8 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
         // there yet. Both are `ensure_child`'s to answer, and it resolves the
         // name again because creating it is where the path is actually needed.
         _ => match manager.ensure_child(cgroup_name) {
-            Some(target) => (target, true),
-            None => return false,
+            Ok(target) => (target, true),
+            Err(_) => return false,
         },
     };
 
@@ -109,10 +109,14 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
     // real write error, and says so once per cgroup rather than once per
     // process.
     if let Some(quota) = settings.cpu_quota {
-        manager.set_cpu_max(&target, quota);
+        // Settings are re-applied on an existing cgroup, but `create_cgroup`
+        // still reports only whether it created the directory. Surfacing the
+        // individual write status belongs to the error-visibility work; the
+        // manager already logs each failure.
+        let _ = manager.set_cpu_max(&target, quota);
     }
     if let Some(weight) = settings.cpu_weight {
-        manager.set_cpu_weight(&target, weight);
+        let _ = manager.set_cpu_weight(&target, weight);
     }
     created
 }
@@ -128,7 +132,7 @@ pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformErro
     if !target.exists() {
         return Err(NotFound);
     }
-    if manager.move_pid(pid, &target) {
+    if manager.move_pid(pid, &target).is_ok() {
         Ok(())
     } else {
         Err(Unsupported)
@@ -138,7 +142,7 @@ pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformErro
 pub fn set_cpu_weight_for_cgroup(cgroup_name: &str, weight: u32) -> Result<(), PlatformError> {
     let manager = get_manager().ok_or(Unsupported)?;
     let target = manager.resolve_target_dir(cgroup_name).ok_or(NotFound)?;
-    if manager.set_cpu_weight(&target, weight) {
+    if manager.set_cpu_weight(&target, weight).is_ok() {
         Ok(())
     } else {
         Err(Unsupported)

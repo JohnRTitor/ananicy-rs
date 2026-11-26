@@ -119,6 +119,12 @@ pub enum Call {
 pub struct FakePlatform {
     cgroup_v2: bool,
     realtime: bool,
+    /// Whether a successful realtime policy change should flip `is_realtime`.
+    becomes_realtime_on_set_sched: bool,
+    /// The observed state, initially CFS and flipped by `set_sched` when armed.
+    /// An `Arc` keeps the builder's `self`-consuming API while the flag stays
+    /// writable from `&self` methods.
+    realtime_after_set_sched: Arc<AtomicBool>,
     tids: Option<Vec<i32>>,
     max_cores: u32,
     failures: Mutex<HashMap<&'static str, PlatformError>>,
@@ -140,6 +146,8 @@ impl FakePlatform {
         Self {
             cgroup_v2: false,
             realtime: false,
+            becomes_realtime_on_set_sched: false,
+            realtime_after_set_sched: Arc::new(AtomicBool::new(false)),
             tids: None,
             max_cores: 8,
             failures: Mutex::new(HashMap::new()),
@@ -175,6 +183,14 @@ impl FakePlatform {
             realtime: true,
             ..Self::new()
         }
+    }
+
+    /// Declares that this pid becomes realtime after a successful FIFO/RR
+    /// `set_sched`. Until then it reports as CFS, which is the stale-sample
+    /// situation a rule that sets a realtime policy creates.
+    pub fn becomes_realtime_after_set_sched(mut self) -> Self {
+        self.becomes_realtime_on_set_sched = true;
+        self
     }
 
     /// A platform that reports a fixed thread list, including the empty one.
@@ -266,7 +282,7 @@ fn operation_of(call: &Call) -> &'static str {
 
 impl PlatformActions for FakePlatform {
     fn is_realtime(&self, _pid: i32) -> bool {
-        self.realtime
+        self.realtime || self.realtime_after_set_sched.load(Ordering::SeqCst)
     }
 
     fn get_start_time(&self, _pid: i32) -> Option<u64> {
@@ -315,13 +331,24 @@ impl PlatformActions for FakePlatform {
         sched: &str,
         rtprio: u32,
     ) -> Result<(), PlatformError> {
-        self.record(
+        let result = self.record(
             "set_sched",
             Call::SetSched {
                 sched: sched.to_string(),
                 rtprio,
             },
-        )
+        );
+        // A kernel only changes policy when the call succeeds, and an RT
+        // policy with priority zero is not a realtime task by the daemon's
+        // own definition (static priority > 0).
+        if result.is_ok()
+            && self.becomes_realtime_on_set_sched
+            && matches!(sched, "fifo" | "rr")
+            && rtprio > 0
+        {
+            self.realtime_after_set_sched.store(true, Ordering::SeqCst);
+        }
+        result
     }
 
     fn set_io_priority(&self, _pid: i32, ioclass: &str, ionice: i32) -> Result<(), PlatformError> {
@@ -456,4 +483,37 @@ pub fn wait_until(mut condition: impl FnMut() -> bool) {
         thread::sleep(Duration::from_millis(1));
     }
     panic!("condition was not met in time");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_successful_realtime_policy_flips_is_realtime() {
+        let platform = FakePlatform::cgroup_v2().becomes_realtime_after_set_sched();
+        assert!(!platform.is_realtime(42), "the process starts as CFS");
+        platform.set_sched(42, &[], "fifo", 1).unwrap();
+        assert!(
+            platform.is_realtime(42),
+            "the policy change makes the process realtime"
+        );
+        assert_eq!(
+            platform.calls_of("set_sched").len(),
+            1,
+            "the fake still records the call for rule tests"
+        );
+    }
+
+    #[test]
+    fn a_failed_realtime_policy_does_not_flip_is_realtime() {
+        let platform = FakePlatform::new()
+            .becomes_realtime_after_set_sched()
+            .failing("set_sched", PlatformError::Unsupported);
+        assert!(platform.set_sched(42, &[], "rr", 1).is_err());
+        assert!(
+            !platform.is_realtime(42),
+            "a policy the kernel refused cannot make the process realtime"
+        );
+    }
 }
