@@ -177,7 +177,7 @@ Loading continues past both, so one bad line does not cost you the rest of the f
 - `name_regex`: An optional regular expression, used when no `name` matches. The `name` is
   still required and is what identifies the rule, so `{"name": "kworkers", "name_regex":
   "kworker/.*"}` matches every kernel worker. Patterns are a PCRE-compatible subset rather
-  than full PCRE2; see [COMPATIBILITY §5.4](./COMPATIBILITY.md#54-the-name_regex-engine-is-not-pcre2)
+  than full PCRE2; see the [migration guide](./COMPATIBILITY.md#name_regex)
   for the constructs the engine refuses. A pattern the engine cannot compile is logged as
   an error and skipped, and the rule still works by its exact `name`.
 - `nice: [-20..19]`: Set the nice value of the process. A process with a higher nice value will be more "polite", and will get less CPU time than processes with a lower nice value.
@@ -203,8 +203,6 @@ Loading continues past both, so one bad line does not cost you the rest of the f
 - `type`: Set the type of the rule. All options defined in the type will be used as if written explicitly in the rule, although you can override each option if needed. An attribute written with nothing usable in it — `null`, or a number written as a string — *suppresses* the value its type would otherwise supply rather than inheriting it, so `{"name": "x", "type": "T", "nice": null}` is a rule that does not set `nice`. That is what an RFC 7396 merge of the rule onto `T` gives, and what `ananicy-cpp` does.
 
 A key this daemon does not implement is kept with the rule and reported by `dump rules` rather than dropped, so a rule set that uses one is not reported as though it had never been written. It is not applied, and it is not counted as a reason the rule did nothing.
-
-What a large rule set costs, and how to check what yours costs, is in [Memory](./MEMORY.md).
 
 ## Types (`*.types`)
 

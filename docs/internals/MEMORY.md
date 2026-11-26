@@ -1,4 +1,8 @@
-# Memory
+# Memory — maintainer notes
+
+> Maintainer notes, not operator documentation. Tables are kept as they were
+> measured, including rows later superseded; check the dates and commits
+> attached to them before treating a number as current guidance.
 
 What the daemon uses memory for, how much of it is the rule set, and how to
 find out on your own machine. The two unit settings that bound it are
@@ -129,7 +133,7 @@ Two lessons from building these, both of which cost a wrong conclusion first:
 - **A measurement taken against the wrong tree is worse than none.** The
   instrument read 3.96 allocs/rule and appeared to contradict the table above.
   The table was right; the branch was not — it predated the interning work, and
-  `docs/MEMORY.md` on that branch does not have these rows at all. The only
+  `docs/internals/MEMORY.md` on that branch does not have these rows at all. The only
   reason it was caught is that a published number existed to contradict it.
 - **A benchmark's first case in a group pays setup.** A combined run once
   reported the 1-rule cache *hit* at 14.7 ns while the 100-rule hit measured

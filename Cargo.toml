@@ -72,8 +72,9 @@ harness = false
 name = "rules"
 
 # Not criterion, and deliberately so. This reports live bytes and live
-# allocations for a loaded rule set — the two columns `docs/MEMORY.md` keeps a
-# table of — and it has a `main` of its own rather than a criterion group. It
+# allocations for a loaded rule set — the two columns the internals memory note
+# (`docs/internals/MEMORY.md`) keeps a table of — and it has a `main` of its own
+# rather than a criterion group. It
 # measures a quantity, not a duration; `benches/rules.rs` owns timing.
 [[bench]]
 harness = false

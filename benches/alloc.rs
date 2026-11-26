@@ -1,8 +1,8 @@
 //! Live heap accounting for a rule load.
 //!
-//! The number this exists to produce is the one `docs/MEMORY.md` keeps in a
+//! The number this exists to produce is the one `docs/internals/MEMORY.md` keeps in a
 //! table: **live bytes and live allocations per rule** for a fully loaded rule
-//! set. Peak RSS cannot produce it. `MEMORY.md`'s own note says so directly —
+//! set. Peak RSS cannot produce it; the internals note says so directly —
 //! the peak is set by the transient work of loading, and the allocator hands
 //! those freed chunks straight to the live allocations, so a freed-then-reused
 //! page was already resident and the change never shows up. A 15,831-rule set
@@ -17,7 +17,7 @@
 //!   formatter and the tracing subscriber allocated before the measurement
 //!   opened is already in the counter and cancels out.
 //! * **live allocations** — the same, counted in pieces rather than bytes. This
-//!   is the column that catches the bug `docs/MEMORY.md` § "What the names
+//!   is the column that catches the bug `docs/internals/MEMORY.md` § "What the names
 //!   cost" documents, where a fix was invisible in the struct size and in peak
 //!   RSS and was worth 14.5% of the rule set on its own.
 //!
@@ -118,7 +118,7 @@ impl AllocationSnapshot {
     }
 }
 
-/// One line of the `docs/MEMORY.md` table.
+/// One line of the `docs/internals/MEMORY.md` table.
 struct Footprint {
     bytes_per_rule: f64,
     allocs_per_rule: f64,
@@ -227,7 +227,7 @@ fn measure(rule_count: usize, label: &str) -> Footprint {
 fn main() {
     println!(
         "\nlive heap for a loaded rule set, as {} sees it\n\
-         (docs/MEMORY.md keeps the same two columns for its own layouts)\n",
+         (docs/internals/MEMORY.md keeps the same two columns for its own layouts)\n",
         std::env::args()
             .next()
             .unwrap_or_else(|| "the allocator".into())

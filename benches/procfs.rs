@@ -109,7 +109,7 @@ fn bench_cgroup_resolution(c: &mut Criterion) {
     // before the cache lookup on both paths and is what makes a cached entry
     // attributable to its pid. A second start-time read used to follow the
     // cgroup read; removing it is what brought the cold figure down from
-    // ~20.6 us — see `docs/MEMORY.md`.
+    // ~20.6 us — see `docs/internals/MEMORY.md`.
     c.bench_function("process_cgroup_cold", |b| {
         b.iter(|| LinuxPlatform::new().process_cgroup(black_box(pid)))
     });

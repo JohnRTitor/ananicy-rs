@@ -15,13 +15,14 @@ It operates by loading rules for known applications and listening to process cre
 Comprehensive documentation is available in the `docs/` directory:
 
 - **[Configuration and Rules](docs/CONFIGURATION.md)**: How to configure the daemon, write rules, types, and cgroup specifications.
-- **[Memory](docs/MEMORY.md)**: What the daemon's memory goes on, how rule-set size scales against it, and how to measure your own.
 - **[CLI and Usage](docs/CLI.md)**: How to run the daemon, command-line arguments, and systemd integration.
 - **[systemd Reference](docs/SYSTEMD.md)**: How systemd supervises a service, what it hands to a process, cgroup v2 delegation, and what the shipped unit's hardening does.
 - **[CPU Topology and Affinity](docs/TOPOLOGY.md)**: Details on CPU pinning, `big.LITTLE` detection, and AMD X3D support.
 - **[Building](docs/BUILD.md)**: Build requirements and native dependencies, features, the release profile, installing, distribution packaging, Nix, and what each build error means.
-- **[Compatibility with the Reference Implementation](docs/COMPATIBILITY.md)**: Every behavioural difference between `ananicy-rs` and the C++ reference, plus what was verified equivalent, what this daemon adds, and what it still lacks.
+- **[Migrating from ananicy-cpp](docs/COMPATIBILITY.md)**: The differences that matter when moving an existing configuration and rule set over.
 - **[Testing](docs/TESTING.md)**: What the test suite verifies, which tests need a live system, and how the tests relate to the C++ daemon.
+
+Contributor-only design and measurement notes live in [`docs/internals/`](docs/internals/): the full compatibility audit and the memory measurements behind the unit's limits.
 
 Continuous integration is defined in the [workflows](.github/workflows/) themselves.
 
@@ -29,7 +30,7 @@ Continuous integration is defined in the [workflows](.github/workflows/) themsel
 
 **Alpha / Experimental**
 
-The project is currently under active development. While it supports loading rules, cgroups v1/v2, CPU topology detection, and both Netlink and BPF event backends, it is continuously being stabilized towards behavioral compatibility with the mature reference version. The differences that remain, and the evidence around them, are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+The project is currently under active development. While it supports loading rules, cgroups v1/v2, CPU topology detection, and both Netlink and BPF event backends, it is continuously being stabilized towards behavioral compatibility with the mature reference version. The differences that remain are in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md); the evidence behind them is in [docs/internals/COMPATIBILITY.md](docs/internals/COMPATIBILITY.md).
 
 ## Requirements
 

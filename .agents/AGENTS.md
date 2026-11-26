@@ -19,8 +19,8 @@ boundaries; core must stay independent of the Linux-specific crate.
 - The per-process path is **syscall-bound**: ~31 µs total, of which four procfs
   reads dominate; rule lookup is ~0.2%. The lever is *fewer reads*, not cheaper
   work around them. Do not spend effort micro-optimising rule matching while a
-  redundant `/proc/<pid>/…` read remains. See `docs/MEMORY.md` § "Where the time
-  goes".
+  redundant `/proc/<pid>/…` read remains. See `docs/internals/MEMORY.md`
+  § "Where the time goes".
 - PID reuse is a real correctness boundary. Any new cache keyed by pid must also
   carry `get_start_time`; existing guards are in `cgroup/process.rs`,
   `procfs.rs` (`EXE_FAIL_CACHE`), and `netlink.rs` (`ReportedNames`). Never widen
@@ -36,8 +36,8 @@ boundaries; core must stay independent of the Linux-specific crate.
 
 ## Memory & allocation discipline
 
-Allocation work is measured, not guessed. `docs/MEMORY.md` holds the published
-numbers; re-derive them before claiming an improvement:
+Allocation work is measured, not guessed. `docs/internals/MEMORY.md` holds the
+published numbers; re-derive them before claiming an improvement:
 
 - `cargo bench --bench alloc` — counting `#[global_allocator]`; live bytes and
   live allocations per rule. This is the only `GlobalAlloc` in the tree.
@@ -74,7 +74,7 @@ Rust Performance Book):
 
 Pin layout and invariants with tests: `size_of::<Rule>() == 72`,
 `size_of::<Identity>() == 16`, the cpuset mask width/coverage properties, and
-the pattern from `docs/MEMORY.md` that universal guards must be *properties*, not
+the pattern from `docs/internals/MEMORY.md` that universal guards must be *properties*, not
 lists of examples. Never weaken or delete an assertion to make a change pass; add
 a test that fails on revert.
 
@@ -88,7 +88,7 @@ a test that fails on revert.
   names); pid-keyed caches use it too because the keys are 4-byte integers. Do
   not switch to `foldhash::fast`.
 - Document non-obvious allocation/syscall costs in comments beside the code,
-  following the style in `docs/MEMORY.md` and `benches/*`.
+  following the style in `docs/internals/MEMORY.md` and `benches/*`.
 - Format with `cargo fmt --all`; the repo is checked with `cargo fmt --all --check`.
 
 ## Testing & validation
@@ -112,7 +112,7 @@ nix develop --command cargo test --locked --all-targets --all-features
 - System tests that need root or namespaces skip when unavailable. A skip is not
   a pass; check the skip output before drawing conclusions.
 - Changes to memory layout, cgroup writes, or the per-process path need both a
-  behavioural test and a re-run of the relevant bench; update `docs/MEMORY.md`
+  behavioural test and a re-run of the relevant bench; update `docs/internals/MEMORY.md`
   with the new numbers and keep its existing measured tables as history.
 
 ## Environment & tooling

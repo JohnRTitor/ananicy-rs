@@ -38,7 +38,7 @@ pub struct LinuxPlatform {
 /// already do anything at all. The only consideration is speed, and this is the
 /// faster one.
 ///
-/// See `docs/MEMORY.md` § Hashing for the same trade on the name-keyed maps.
+/// See `docs/internals/MEMORY.md` § Hashing for the same trade on the name-keyed maps.
 pub type PidHasher = foldhash::quality::RandomState;
 
 impl LinuxPlatform {

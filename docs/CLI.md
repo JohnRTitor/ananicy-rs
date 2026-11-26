@@ -100,7 +100,7 @@ still behaves the same way.
 - `--config <CONFIG>`: Override the default config file path (default: `/etc/ananicy.d/ananicy.conf`).
 - `--config-dir <CONFIG_DIR>`: Override the rules directory (default: `/etc/ananicy.d`).
 - `--reload`: Send a signal to the running `ananicy-rs` instance (via an IPC semaphore) to reload global configuration, the active log level, and the rule, type and cgroup files. A process already tuned keeps its settings until it is next seen, so nothing is re-tuned retroactively. `check_freq` still requires a restart: it is captured when the manual scanner starts.
-- `--force-remove-semaphore`: Remove the daemon's single-instance object, for the case where a crashed daemon left one behind. Exits 0 when the object is gone afterwards — including when there was none to remove — and 1 when it could not be removed, or when the object still belongs to a running `ananicy-rs`, which is reported by pid rather than unlinked. The divergences from `ananicy-cpp` are in `docs/COMPATIBILITY.md` §5.
+- `--force-remove-semaphore`: Remove the daemon's single-instance object, for the case where a crashed daemon left one behind. Exits 0 when the object is gone afterwards — including when there was none to remove — and 1 when it could not be removed, or when the object still belongs to a running `ananicy-rs`, which is reported by pid rather than unlinked. The divergences from `ananicy-cpp` are in the [compatibility audit](./internals/COMPATIBILITY.md).
 - `--manual-scanning` (`--manualscanning`): Enable periodic manual procfs scanning (useful if event listeners miss events).
 - `--benchmark`: Run the daemon in benchmark mode for performance profiling.
 - `--benchmark-count <BENCHMARK_COUNT>`: Number of iterations to run in benchmark mode.
@@ -121,7 +121,7 @@ still behaves the same way.
   daemon goes quiet, this is the first thing to check. `--memory-stats` will
   still report normally throughout, since it reads the footprint rather than
   waiting for events.
-- `--memory-stats`: Report memory usage, paging and reclaim counters once a minute. The counters that distinguish a daemon that is merely using memory from one that is being made to re-fetch it — `memory.events:high`, `pgmajfault`, `workingset_refault_file`, swap in and out — live in cgroupfs, one level above anything the process can see about itself, so without this there is nothing in the log to tell the two apart. See [COMPATIBILITY § 1](./COMPATIBILITY.md#1-project-identity-and-configuration) for what those numbers looked like when this was not visible.
+- `--memory-stats`: Report memory usage, paging and reclaim counters once a minute. The counters that distinguish a daemon that is merely using memory from one that is being made to re-fetch it — `memory.events:high`, `pgmajfault`, `workingset_refault_file`, swap in and out — live in cgroupfs, one level above anything the process can see about itself, so without this there is nothing in the log to tell the two apart. See the [compatibility audit](./internals/COMPATIBILITY.md#1-project-identity-and-configuration) for what those numbers looked like when this was not visible.
 - `-v, --verbose`: Enable verbose output. With the `bpf` event source this also turns on the eBPF loader's own diagnostics, which is the only place the reason for a refused load or attach is printed.
 
 The active `loglevel` and per-event application flags are reloaded live, as are rule, type and cgroup files. `check_freq` is captured when the manual scanner starts, so changing it requires a daemon restart.
@@ -183,7 +183,7 @@ Three fields are worth knowing about, because reading them wrong is easy:
   `ananicy-cpp` reads the same file into an `unsigned` and reports
   `4294966396`; anything arithmetic on this field has to cope with that if it is
   parsing both daemons' output. See
-  [`COMPATIBILITY.md`](./COMPATIBILITY.md) §5.1.
+  [compatibility audit](./internals/COMPATIBILITY.md).
 
 Processes with no autogroup — kernel threads, in practice — are absent from
 `dump autogroup` entirely, and report `"autogroup": null` in `dump proc`.

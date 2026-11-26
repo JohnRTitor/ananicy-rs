@@ -1320,7 +1320,7 @@ mod rule {
         Rule::from_json(&serde_json::from_str(json).expect("a JSON rule"))
     }
 
-    /// The exact size `docs/MEMORY.md` reasons about, pinned so a change to the
+    /// The exact size `docs/internals/MEMORY.md` reasons about, pinned so a change to the
     /// layout is a deliberate one rather than something the budget notices. It
     /// was 176 while the four names were `Option<Option<Arc<str>>>` at 24 bytes
     /// each, which is 96 of the struct for a few dozen distinct values — the
@@ -1336,7 +1336,7 @@ mod rule {
         assert_eq!(
             std::mem::size_of::<Rule>(),
             72,
-            "docs/MEMORY.md budgets this per rule; if it changed, that \
+            "docs/internals/MEMORY.md budgets this per rule; if it changed, that \
              document's numbers and any plan built on them need re-deriving"
         );
     }
@@ -1480,7 +1480,7 @@ mod rule {
     /// a type that declares an `ioclass` and a `sched` means two shared names
     /// per rule. Before the names were interned this was two 32-byte chunks per
     /// rule of pure duplication — 760 kB across a 15,831-rule set, and
-    /// invisible in peak RSS. `docs/MEMORY.md` § What the names cost has the
+    /// invisible in peak RSS. `docs/internals/MEMORY.md` § What the names cost has the
     /// figures.
     #[test]
     fn rules_inheriting_one_type_share_its_names() {

@@ -86,7 +86,7 @@ jobs:
   # several-percent level — enough that a threshold produces a red build a
   # couple of times a month for a change that is not a regression, and a flaky
   # gate trains people to re-run it rather than read it. The value here is the
-  # record: `docs/MEMORY.md` argues its numbers from measurement, and a
+  # record: `docs/internals/MEMORY.md` argues its numbers from measurement, and a
   # measurement nobody can reproduce after the fact is an assertion with extra
   # steps. The numbers land in this job's log and in the uploaded
   # `criterion` HTML, where a change's own before/after can be read off.
@@ -109,7 +109,7 @@ jobs:
           toolchain: stable
       - name: Build benches
         run: cargo bench --locked --no-run
-      # The memory bench, which is the one `docs/MEMORY.md` quotes: live bytes
+      # The memory bench, which is the one `docs/internals/MEMORY.md` quotes: live bytes
       # and live allocations per rule. Not criterion, and not a duration, so it
       # is not gated on a threshold either — it is printed and read.
       - name: Rule set footprint
