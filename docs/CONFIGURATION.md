@@ -119,17 +119,29 @@ else's populated cgroup to work around it — the same reason it refuses to touc
 ### `cgroup_realtime_workaround`
 
 On by default, and relevant only to rules that set a realtime policy (`fifo` or `rr`) on
-cgroup v2. Bandwidth control and realtime scheduling do not currently coexist, so for such
-a process the daemon leaves the rule's `cgroup` attribute unapplied: the task stays in
-the cgroup it is already in rather than being moved into a bandwidth-limited one it could
-not be served from. That is the whole of what this option does.
+cgroup v2. On kernels built with `CONFIG_RT_GROUP_SCHED=y`, a realtime task cannot be
+served from a cgroup with a bandwidth limit, so for such a process the daemon leaves the
+rule's `cgroup` attribute unapplied: **the task stays in its existing cgroup** rather than
+being moved into a limited one. That is the whole of what this option does. The daemon
+deliberately does not reproduce `ananicy-cpp`'s additional move of the process to the
+hierarchy root: the root is a foreign cgroup, outside this daemon's delegated subtree, so
+a cross-boundary move would be refused before reaching the kernel.
 
-It is not reported as a rule failure, and nothing is logged per process. `ananicy-cpp`
-carries the same option with the same default, but there it additionally moves the process
-to the hierarchy root; that move is not possible here, because a cgroup this daemon may
-write to is never the hierarchy root, so an attempt would be refused before reaching the
-kernel. Setting this to `false` applies the rule's `cgroup` attribute to realtime processes
-like any other.
+The realtime policy is re-read after `set_sched` succeeds. A rule that *makes* a CFS task
+realtime (`"sched": "fifo"` or `"rr"`, with `rtprio` defaulting to 1) therefore skips its
+own `cgroup` attribute in the same event. `ananicy-cpp` samples realtime status before
+applying the rule and does not recover this case; the re-check here is stronger than
+parity.
+
+When a realtime task is found in a cgroup whose own-or-ancestor `cpu.max` has a quota
+other than `max`, the daemon emits one warning per pid per burst and keeps the task where
+it is. The warning is non-fatal and is not reported as a rule failure; on kernels without
+`CONFIG_RT_GROUP_SCHED=y` it is merely informational.
+
+The `nice` → `cpu.weight` mirror described above is also skipped for realtime tasks:
+`cpu.weight` affects only fair-class tasks, so it cannot help the realtime process and
+can reweight unrelated CFS siblings in the same cgroup. Setting this option to `false`
+applies the rule's `cgroup` attribute to realtime processes like any other.
 
 ### `x3d_mode`
 

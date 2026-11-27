@@ -5,6 +5,7 @@ use {
     std::{
         fs, io,
         num::NonZeroUsize,
+        path::{Component, Path},
         sync::RwLock,
         time::{Duration, Instant},
     },
@@ -55,6 +56,47 @@ impl CgroupProcessResolver for LinuxCgroupResolver {
             path: CgroupPath::new(path),
         }))
     }
+}
+
+/// How many ancestors of a process' cgroup are checked for `cpu.max`. Real cgroup
+/// paths are shallow; the bound stops a malformed (or absurdly nested) path from
+/// turning this diagnostic into an unbounded filesystem walk.
+const MAX_CPU_MAX_ANCESTORS: usize = 64;
+
+/// Whether the process' cgroup, or any ancestor up to `mount_root`, has a
+/// `cpu.max` whose first token is not `max` — i.e. a bandwidth limit.
+///
+/// Only a diagnostic for realtime tasks: the kernel restriction is conditional
+/// on `CONFIG_RT_GROUP_SCHED=y`, and a missing `cpu.max` (the controller was
+/// never enabled here) simply means no limit was found. Nothing is written.
+pub fn has_bandwidth_limit(identity: &CgroupIdentity, mount_root: &Path) -> bool {
+    // Build the absolute path component by component rather than with `join`:
+    // the resolver already refuses `/../`, but the check here is what actually
+    // guarantees the walk cannot leave the cgroup mount, even if a caller hands
+    // us an identity from a different resolver.
+    let mut current = mount_root.to_path_buf();
+    for component in identity.path.as_path().components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Normal(part) => current.push(part),
+            _ => return false,
+        }
+    }
+
+    for ancestor in current.ancestors().take(MAX_CPU_MAX_ANCESTORS + 1) {
+        if let Ok(content) = fs::read_to_string(ancestor.join("cpu.max"))
+            && content
+                .split_whitespace()
+                .next()
+                .is_some_and(|quota| quota != "max")
+        {
+            return true;
+        }
+        if ancestor == mount_root {
+            break;
+        }
+    }
+    false
 }
 
 /// (start_time, cgroup_identity, timestamp)
@@ -220,6 +262,52 @@ mod tests {
         };
         let id = resolver.resolve_from_content().unwrap();
         assert!(id.is_none());
+    }
+
+    mod bandwidth_limit {
+        use super::*;
+
+        fn identity(path: &str) -> CgroupIdentity {
+            CgroupIdentity {
+                path: CgroupPath::new(path),
+            }
+        }
+
+        #[test]
+        fn a_limit_on_an_ancestor_is_found() {
+            let root = tempfile::tempdir().unwrap();
+            let middle = root.path().join("user.slice").join("session.scope");
+            fs::create_dir_all(&middle).unwrap();
+            fs::write(
+                root.path().join("user.slice").join("cpu.max"),
+                "50000 100000\n",
+            )
+            .unwrap();
+
+            assert!(has_bandwidth_limit(
+                &identity("/user.slice/session.scope/app.scope"),
+                root.path()
+            ));
+        }
+
+        #[test]
+        fn an_unlimited_hierarchy_is_not_reported_as_limited() {
+            let root = tempfile::tempdir().unwrap();
+            let leaf = root.path().join("app.scope");
+            fs::create_dir_all(&leaf).unwrap();
+            fs::write(leaf.join("cpu.max"), "max 100000\n").unwrap();
+
+            assert!(!has_bandwidth_limit(&identity("/app.scope"), root.path()));
+        }
+
+        #[test]
+        fn a_path_escaping_the_mount_is_refused() {
+            let root = tempfile::tempdir().unwrap();
+            assert!(!has_bandwidth_limit(
+                &identity("/../outside/cpu.max"),
+                root.path()
+            ));
+        }
     }
 
     /// The caching resolver, which until now had no tests at all.

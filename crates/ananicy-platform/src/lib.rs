@@ -21,7 +21,7 @@ use {
         cpuset::CpuSet,
         worker::{PlatformActions, Tids},
     },
-    cgroup::process::{CgroupProcessResolver, LinuxCgroupResolver},
+    cgroup::process::{CgroupProcessResolver, LinuxCgroupResolver, has_bandwidth_limit},
     mounts::{CgroupVersion, get_cgroup_info},
 };
 
@@ -82,6 +82,24 @@ impl PlatformActions for LinuxPlatform {
             Ok(()) => attr.sched_priority > 0,
             Err(_) => false,
         }
+    }
+
+    fn is_in_bandwidth_limited_cgroup(&self, pid: i32) -> bool {
+        // Only the unified hierarchy has `cpu.max`, and the mount point is
+        // where the resolver's cgroup path is rooted. Both reads are diagnostic:
+        // a process that exited, a path we cannot resolve, or a cgroup with no
+        // `cpu.max` file means "no limit found", not a failure.
+        if !self.is_cgroup_v2() {
+            return false;
+        }
+        let Some(identity) = self.process_cgroup(pid) else {
+            return false;
+        };
+        let info = get_cgroup_info();
+        if info.version != CgroupVersion::V2 || info.mount_point.as_os_str().is_empty() {
+            return false;
+        }
+        has_bandwidth_limit(&identity, &info.mount_point)
     }
 
     fn get_start_time(&self, pid: i32) -> Option<u64> {

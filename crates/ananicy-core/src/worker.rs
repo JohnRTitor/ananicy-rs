@@ -1,9 +1,11 @@
+use lru::LruCache;
 use {
     crate::{
         cgroup::CgroupIdentity, config::ConfigSnapshot, cpuset::CpuSet, rules::Rule,
         spawn_named_thread,
     },
     std::{
+        num::NonZeroUsize,
         sync::{
             atomic::{AtomicBool, Ordering::SeqCst},
             mpsc::Receiver,
@@ -46,6 +48,14 @@ pub enum PlatformError {
 pub trait PlatformActions: Send + Sync {
     /// Returns true if the process is currently running with a realtime scheduling policy (SCHED_FIFO, SCHED_RR)
     fn is_realtime(&self, pid: i32) -> bool;
+
+    /// Whether the process' current cgroup, or an ancestor up to the mount
+    /// root, has a bandwidth limit (`cpu.max` other than `max`).
+    ///
+    /// Only used for a diagnostic on realtime tasks: the kernel restriction on
+    /// moving a realtime task into a bandwidth-limited cgroup is conditional on
+    /// `CONFIG_RT_GROUP_SCHED=y`, so the daemon warns rather than assuming.
+    fn is_in_bandwidth_limited_cgroup(&self, pid: i32) -> bool;
 
     /// Fetches the process start time to protect against PID recycling races.
     fn get_start_time(&self, pid: i32) -> Option<u64>;
@@ -98,7 +108,17 @@ pub struct Worker {
     receiver: Receiver<Process>,
     benchmark_count: Option<u32>,
     shutdown_flag: Arc<AtomicBool>,
+    /// Realtime tasks already warned about in this burst. The same process is
+    /// reported to the worker several times in quick succession (one event per
+    /// exec, and a full `/proc` scan after a netlink overrun), and the condition
+    /// is a property of the cgroup rather than of any one event.
+    reported_realtime_cgroups: LruCache<i32, ()>,
 }
+
+/// How many pids the "already warned" cache remembers. One warning per pid is
+/// all a burst needs; the bound keeps a long-running daemon from growing it
+/// without limit.
+const REPORTED_REALTIME_CAPACITY: usize = 256;
 
 impl Worker {
     pub fn new(
@@ -118,6 +138,9 @@ impl Worker {
             receiver,
             benchmark_count,
             shutdown_flag,
+            reported_realtime_cgroups: LruCache::new(
+                NonZeroUsize::new(REPORTED_REALTIME_CAPACITY).unwrap_or(NonZeroUsize::MIN),
+            ),
         }
     }
 
@@ -129,7 +152,7 @@ impl Worker {
         spawn_named_thread!("ananicy-worker", move || self.work_loop())
     }
 
-    pub fn work_loop(self) -> (usize, Duration) {
+    pub fn work_loop(mut self) -> (usize, Duration) {
         let is_affected_by_cgroup_bug = self.platform.is_cgroup_v2();
         let start_time = Instant::now();
         let mut processed_count = 0;
@@ -185,7 +208,7 @@ impl Worker {
 
             let rules = self.rules.get();
             let rule = rules.get_rule(lookup_name);
-            let is_realtime = self.platform.is_realtime(p.identity.pid.0);
+            let mut is_realtime = self.platform.is_realtime(p.identity.pid.0);
 
             if let Some(rule) = rule {
                 let cfg = self.config.get();
@@ -204,7 +227,7 @@ impl Worker {
                     &tids,
                     rule,
                     &cfg,
-                    is_realtime,
+                    &mut is_realtime,
                     is_affected_by_cgroup_bug,
                     &mut parsed_cpusets,
                 ) {
@@ -278,13 +301,36 @@ impl Worker {
             // attribute skip in `apply_rule` below: a realtime task is left where it
             // is rather than moved into a bandwidth-limited cgroup it could not be
             // served from. That part works, so the option keeps its name.
+            //
+            // `is_realtime` is the value after the rule was applied, so a rule
+            // that itself sets a realtime policy is covered in this same event.
             let cfg = self.config.get();
             if is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
-                debug!(
-                    "Leaving realtime process {}({}) in its current cgroup; a realtime \
-                     task cannot be served from a bandwidth-limited one",
-                    p.name, p.identity.pid.0
-                );
+                if self
+                    .platform
+                    .is_in_bandwidth_limited_cgroup(p.identity.pid.0)
+                {
+                    // A limit only matters when the kernel has RT group
+                    // scheduling (`CONFIG_RT_GROUP_SCHED=y`); on other kernels
+                    // this is a harmless diagnostic and nothing is fatal.
+                    // Once per pid per burst, because every event for the same
+                    // process would otherwise repeat the same warning.
+                    if !self.reported_realtime_cgroups.contains(&p.identity.pid.0) {
+                        self.reported_realtime_cgroups.put(p.identity.pid.0, ());
+                        warn!(
+                            "Realtime process {}({}) is in a bandwidth-limited cgroup; leaving \
+                             it in its current cgroup. Relevant on kernels built with \
+                             CONFIG_RT_GROUP_SCHED=y.",
+                            p.name, p.identity.pid.0
+                        );
+                    }
+                } else {
+                    debug!(
+                        "Leaving realtime process {}({}) in its current cgroup; no bandwidth \
+                         limit applies",
+                        p.name, p.identity.pid.0
+                    );
+                }
             }
         }
 
@@ -298,14 +344,17 @@ impl Worker {
     )]
     // Private, with one caller in `work_loop`. Bundling the two booleans and the
     // cache into a context struct would add indirection for that one call.
+    // `is_realtime` is an out-parameter: `set_sched` can change the policy, so
+    // the sample taken before the rule is refreshed here and used by the caller
+    // for the realtime diagnostic too.
     #[allow(clippy::too_many_arguments)]
     fn apply_rule(
-        &self,
+        &mut self,
         p: &Process,
         tids: &[i32],
         rule: &Rule,
         cfg: &ConfigSnapshot,
-        is_realtime: bool,
+        is_realtime: &mut bool,
         is_affected_by_cgroup_bug: bool,
         parsed_cpusets: &mut HashMap<Box<str>, CpuSet>,
     ) -> Result<RuleApplication, PlatformError> {
@@ -336,7 +385,9 @@ impl Worker {
             // write lands on the cgroup the process already belongs to, so it
             // also reweights every other task in that cgroup;
             // `apply_cpu_weight_from_nice` turns it off for operators who do not
-            // want that.
+            // want that. Realtime tasks are skipped as well: `cpu.weight` only
+            // affects fair-class tasks, so the write cannot help the RT task and
+            // can only reweight unrelated CFS siblings in the same cgroup.
             //
             // `powi` is computed from a `f64` exponent rather than a negated
             // `i32`: a rule carrying `"nice": -2147483648` overflows that negation
@@ -345,7 +396,7 @@ impl Worker {
             // Casting the value straight to `f64` saturates at the same place the
             // clamp does, so an out-of-range nice gives the maximum weight
             // instead of panicking or wrapping.
-            if cfg.apply_cpu_weight_from_nice && self.platform.is_cgroup_v2() {
+            if cfg.apply_cpu_weight_from_nice && !*is_realtime && self.platform.is_cgroup_v2() {
                 let weight = (100.0 * 1.25f64.powf(-(nice as f64))) as u32;
                 let weight = weight.clamp(1, 10000);
                 match self.platform.set_cpu_weight(p.identity.pid.0, weight) {
@@ -392,7 +443,16 @@ impl Worker {
                 .platform
                 .set_sched(p.identity.pid.0, tids, sched, rtprio)
             {
-                Ok(()) => applied_any = true,
+                Ok(()) => {
+                    applied_any = true;
+                    // The sample taken before the rule was applied is stale for
+                    // a rule that sets `fifo`/`rr`: `rtprio` defaults to 1, so
+                    // the new policy makes the task realtime immediately. Ask
+                    // again now, before the cgroup decision below. A failed
+                    // policy change cannot make the task realtime, so there is
+                    // nothing to re-check on that path.
+                    *is_realtime = self.platform.is_realtime(p.identity.pid.0);
+                }
                 Err(e) => {
                     partial_failure.get_or_insert(e);
                 }
@@ -433,7 +493,7 @@ impl Worker {
             }
         }
 
-        if is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
+        if *is_realtime && cfg.cgroup_realtime_workaround && is_affected_by_cgroup_bug {
             // The rule's `cgroup` is deliberately not applied here, and that is the
             // option working rather than something going wrong. This is the part of
             // it that does something: a realtime task is left where it is instead of

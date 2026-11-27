@@ -125,6 +125,9 @@ pub struct FakePlatform {
     /// An `Arc` keeps the builder's `self`-consuming API while the flag stays
     /// writable from `&self` methods.
     realtime_after_set_sched: Arc<AtomicBool>,
+    /// Whether the warning condition (a realtime task in a bandwidth-limited
+    /// cgroup) holds. Settable from `&self` so a test can flip it between events.
+    bandwidth_limited_cgroup: Arc<AtomicBool>,
     tids: Option<Vec<i32>>,
     max_cores: u32,
     failures: Mutex<HashMap<&'static str, PlatformError>>,
@@ -148,6 +151,7 @@ impl FakePlatform {
             realtime: false,
             becomes_realtime_on_set_sched: false,
             realtime_after_set_sched: Arc::new(AtomicBool::new(false)),
+            bandwidth_limited_cgroup: Arc::new(AtomicBool::new(false)),
             tids: None,
             max_cores: 8,
             failures: Mutex::new(HashMap::new()),
@@ -191,6 +195,18 @@ impl FakePlatform {
     pub fn becomes_realtime_after_set_sched(mut self) -> Self {
         self.becomes_realtime_on_set_sched = true;
         self
+    }
+
+    /// Declares that this pid's cgroup (or an ancestor) has a `cpu.max` quota.
+    pub fn in_bandwidth_limited_cgroup(self) -> Self {
+        self.set_bandwidth_limited_cgroup(true);
+        self
+    }
+
+    /// Changes the reported bandwidth limit while the platform is in use.
+    pub fn set_bandwidth_limited_cgroup(&self, limited: bool) {
+        self.bandwidth_limited_cgroup
+            .store(limited, Ordering::SeqCst);
     }
 
     /// A platform that reports a fixed thread list, including the empty one.
@@ -283,6 +299,10 @@ fn operation_of(call: &Call) -> &'static str {
 impl PlatformActions for FakePlatform {
     fn is_realtime(&self, _pid: i32) -> bool {
         self.realtime || self.realtime_after_set_sched.load(Ordering::SeqCst)
+    }
+
+    fn is_in_bandwidth_limited_cgroup(&self, _pid: i32) -> bool {
+        self.bandwidth_limited_cgroup.load(Ordering::SeqCst)
     }
 
     fn get_start_time(&self, _pid: i32) -> Option<u64> {

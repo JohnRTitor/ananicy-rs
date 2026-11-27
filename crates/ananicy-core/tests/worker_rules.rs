@@ -10,7 +10,9 @@ mod common;
 
 use {
     ananicy_core::{config::ConfigSnapshot, worker::PlatformError},
-    common::{Call, FakePlatform, run_worker, run_worker_with, snapshot},
+    common::{
+        Call, CapturedEvents, FakePlatform, capture_events, run_worker, run_worker_with, snapshot,
+    },
     std::{collections::HashMap, sync::Arc},
 };
 
@@ -277,6 +279,32 @@ fn nice_is_mirrored_into_a_cgroup_v2_cpu_weight() {
 }
 
 #[test]
+fn the_cpu_weight_mirror_is_skipped_for_an_already_realtime_process() {
+    // `cpu.weight` only applies to fair-class tasks. On a realtime process the
+    // write cannot help it and can reweight unrelated CFS siblings in whatever
+    // cgroup it already lives in, so only the nice value is applied.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","nice":0}"#,
+        FakePlatform::realtime_on_cgroup_v2(),
+    );
+
+    assert!(
+        run.platform
+            .calls()
+            .contains(&Call::SetPriority { nice: 0 })
+    );
+    assert!(
+        !run.platform
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::SetCpuWeight { .. })),
+        "no cgroup may be reweighted for a realtime process: {:?}",
+        run.platform.calls()
+    );
+}
+
+#[test]
 fn a_failing_cpu_weight_does_not_prevent_the_nice_value() {
     let run = run_worker(
         snapshot(true),
@@ -369,6 +397,47 @@ fn a_realtime_process_is_not_moved_into_a_rule_cgroup() {
         !run.events
             .contains(tracing::Level::WARN, "partially failed")
     );
+}
+
+#[test]
+fn a_rule_that_makes_a_process_realtime_skips_its_own_cgroup_in_the_same_event() {
+    // D2: `set_sched` runs before the cgroup decision. The pre-rule sample says
+    // CFS, so without a re-check the task would become realtime and then be
+    // moved into the rule's bandwidth-limited cgroup in this very event.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","sched":"fifo","cgroup":"lowlatency"}"#,
+        FakePlatform::cgroup_v2().becomes_realtime_after_set_sched(),
+    );
+
+    assert!(run.platform.calls().contains(&Call::SetSched {
+        sched: "fifo".to_string(),
+        rtprio: 1
+    }));
+    assert!(
+        !run.platform
+            .calls()
+            .iter()
+            .any(|call| matches!(call, Call::AddPidToCgroup { .. })),
+        "the rule's cgroup must be skipped once the policy made the task realtime: {:?}",
+        run.platform.calls()
+    );
+}
+
+#[test]
+fn a_rule_that_keeps_a_process_cfs_still_applies_its_cgroup() {
+    // The re-check must not turn into a blanket skip for every rule carrying a
+    // `sched`: a failed policy change leaves the task CFS, and the cgroup is
+    // still applied.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","sched":"fifo","cgroup":"lowlatency"}"#,
+        FakePlatform::cgroup_v2(),
+    );
+
+    assert!(run.platform.calls().contains(&Call::AddPidToCgroup {
+        cgroup: "lowlatency".to_string()
+    }));
 }
 
 #[test]
@@ -887,5 +956,92 @@ fn an_alias_and_its_literal_cpuset_share_the_same_cache_entry() {
         platform.max_cores_calls(),
         1,
         "both rules resolve to the same cpuset and should parse it only once"
+    );
+}
+
+/// Feeds one worker several events and returns the captured log, so the
+/// once-per-pid realtime warning can be counted across a burst.
+fn run_worker_events(
+    snapshot: ConfigSnapshot,
+    rule: &str,
+    platform: Arc<FakePlatform>,
+    pids: &[i32],
+) -> CapturedEvents {
+    use {
+        ananicy_core::{
+            config::Config,
+            process::Process,
+            rules::{Rules, SharedRules},
+            types::Pid,
+            worker::Worker,
+        },
+        std::sync::{atomic::AtomicBool, mpsc},
+        tracing::Level,
+        tracing_subscriber::filter::LevelFilter,
+    };
+
+    let filter = LevelFilter::from_level(Level::from(&snapshot.loglevel));
+    let config = Arc::new(Config::new(snapshot));
+    let mut rules = Rules::new(config.clone());
+    assert!(rules.load_rule_from_string(rule), "invalid rule: {rule}");
+    let (tx, rx) = mpsc::channel();
+    for pid in pids {
+        tx.send(Process::new(Pid(*pid), "worker-test".to_string()).with_authoritative_name())
+            .unwrap();
+    }
+    drop(tx);
+
+    let worker_platform = platform.clone();
+    capture_events(filter, || {
+        Worker::new(
+            config,
+            SharedRules::new(rules),
+            worker_platform,
+            HashMap::new(),
+            rx,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .work_loop();
+    })
+}
+
+#[test]
+fn the_bandwidth_limited_warning_fires_once_per_pid_per_burst() {
+    let platform = Arc::new(FakePlatform::realtime_on_cgroup_v2().in_bandwidth_limited_cgroup());
+    let events = run_worker_events(
+        snapshot(false),
+        r#"{"name":"worker-test","nice":1}"#,
+        platform,
+        &[42, 42, 42, 43],
+    );
+
+    let warnings: Vec<_> = events
+        .all()
+        .into_iter()
+        .filter(|(level, message)| {
+            *level == tracing::Level::WARN && message.contains("bandwidth-limited cgroup")
+        })
+        .collect();
+    assert_eq!(
+        warnings.len(),
+        2,
+        "one warning for pid 42's three events and one for pid 43: {:?}",
+        events.all()
+    );
+}
+
+#[test]
+fn no_bandwidth_warning_is_emitted_without_a_limit() {
+    let events = run_worker_events(
+        snapshot(false),
+        r#"{"name":"worker-test","nice":1}"#,
+        Arc::new(FakePlatform::realtime_on_cgroup_v2()),
+        &[42, 42],
+    );
+    assert!(
+        !events.contains(tracing::Level::WARN, "bandwidth-limited cgroup"),
+        "an unlimited cgroup is not the Q2 condition: {:?}",
+        events.all()
     );
 }
