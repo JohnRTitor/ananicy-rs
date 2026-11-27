@@ -13,9 +13,11 @@ use {
     ananicy_platform::cgroups::CpuQuota,
     common::{Failure, FakeController},
     std::{
-        fs,
+        cell::Cell,
+        fs, io,
         path::{Path, PathBuf},
         process::id,
+        time::Duration,
     },
     tempfile::TempDir,
 };
@@ -681,4 +683,92 @@ fn rule_names_are_validated_component_wise_without_breaking_nested_names() {
             .resolve_process_path(Path::new("/../../escape"))
             .is_err()
     );
+}
+
+#[test]
+fn reset_cpu_settings_restores_the_kernel_defaults() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service, info.mount_point);
+    let child = manager.ensure_child("reset.scope").unwrap();
+    fs::write(child.join("cpu.max"), "0\n").unwrap();
+    fs::write(child.join("cpu.weight"), "500\n").unwrap();
+
+    manager.reset_cpu_settings(&child).unwrap();
+    assert_eq!(
+        fs::read_to_string(child.join("cpu.max")).unwrap(),
+        "max 100000\n"
+    );
+    assert_eq!(
+        fs::read_to_string(child.join("cpu.weight")).unwrap(),
+        "100\n"
+    );
+}
+
+#[test]
+fn the_delegated_root_and_foreign_paths_cannot_be_removed() {
+    let (_temp, info, root) = delegated_v2_hierarchy();
+    let manager = manager(root.clone(), info.mount_point.clone());
+    let child = manager.ensure_child("removable.scope").unwrap();
+    let foreign = info.mount_point.join("user.slice");
+
+    assert!(manager.is_removable_owned(&child));
+    assert!(
+        !manager.is_removable_owned(&root),
+        "the delegation boundary is never removable"
+    );
+    assert!(!manager.is_removable_owned(&foreign));
+
+    let no_sleep = |_: Duration| {};
+    let real_remove = |path: &Path| fs::remove_dir(path);
+    for refused in [&root, &foreign] {
+        assert!(matches!(
+            manager.remove_cgroup(refused, 2, Duration::ZERO, &no_sleep, &real_remove),
+            Err(CgroupError::Foreign)
+        ));
+    }
+    assert!(root.exists());
+    assert!(foreign.exists());
+
+    assert_eq!(
+        manager
+            .remove_cgroup(&child, 2, Duration::ZERO, &no_sleep, &real_remove)
+            .unwrap(),
+        0
+    );
+    assert!(!child.exists());
+}
+
+#[test]
+fn remove_cgroup_retries_ebusy_only_up_to_the_bound() {
+    let (_temp, info, root) = delegated_v2_hierarchy();
+    let manager = manager(root, info.mount_point);
+    let child = manager.ensure_child("busy.scope").unwrap();
+
+    let no_sleep = |_: Duration| {};
+    let always_busy = |_: &Path| Err(io::Error::from_raw_os_error(libc::EBUSY));
+    assert!(matches!(
+        manager.remove_cgroup(&child, 3, Duration::ZERO, &no_sleep, &always_busy),
+        Err(CgroupError::Busy)
+    ));
+    assert!(child.exists(), "a busy cgroup must be left in place");
+
+    let failures = Cell::new(2);
+    let sleeps = Cell::new(0);
+    let flaky = |path: &Path| {
+        if failures.get() > 0 {
+            failures.set(failures.get() - 1);
+            Err(io::Error::from_raw_os_error(libc::EBUSY))
+        } else {
+            fs::remove_dir(path)
+        }
+    };
+    let counted_sleep = |_: Duration| sleeps.set(sleeps.get() + 1);
+    assert_eq!(
+        manager
+            .remove_cgroup(&child, 3, Duration::ZERO, &counted_sleep, &flaky)
+            .unwrap(),
+        2
+    );
+    assert_eq!(sleeps.get(), 2);
+    assert!(!child.exists());
 }

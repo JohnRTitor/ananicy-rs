@@ -2,7 +2,7 @@ use {
     ananicy_core::spawn_named_thread,
     ananicy_platform::{
         LinuxPlatform,
-        cgroups::{CgroupApplyStatus, CgroupSettings, CpuQuota},
+        cgroups::{CgroupApplyStatus, CgroupSettings, CpuQuota, ReconcileSummary},
         procfs::ProcfsScanner,
         x3d::X3DMode,
     },
@@ -259,6 +259,45 @@ pub(crate) fn create_cgroups(rules: &Arc<Rules>) {
     info!("Finished creating cgroups");
 }
 
+/// Reconciles the cgroups this run created against the rules now installed.
+///
+/// Called after a reload has created the new rule cgroups: names that are no
+/// longer in the rule set have their settings reset and, when empty, are
+/// removed. Nothing here can fail the reload.
+pub(crate) fn reconcile_cgroups(active_names: &[String]) {
+    log_reconcile_summary(
+        "reload",
+        ananicy_platform::cgroups::reconcile_cgroups(active_names),
+    );
+}
+
+/// The shutdown form of the same reconciliation: with no active rules, every
+/// cgroup this run created is a candidate for cleanup.
+///
+/// The platform bounds its retries, so this cannot wait forever on a cgroup
+/// another writer keeps busy, and it returns rather than exiting the process
+/// when one cgroup cannot be cleaned. The caller must run it before dropping
+/// the worker channel / leaving the process.
+pub(crate) fn cleanup_cgroups_on_shutdown() -> ReconcileSummary {
+    let summary = ananicy_platform::cgroups::reconcile_cgroups(&[]);
+    log_reconcile_summary("shutdown", summary);
+    summary
+}
+
+fn log_reconcile_summary(context: &str, summary: ReconcileSummary) {
+    info!(
+        "Cgroup cleanup after {}: {} removed ({} retried), {} still active, {} already gone",
+        context, summary.removed, summary.busy_retries, summary.active, summary.missing
+    );
+    if summary.retained_populated > 0 || summary.skipped_foreign > 0 || summary.failures > 0 {
+        warn!(
+            "Cgroup cleanup after {context}: {} retained because populated, {} skipped as foreign, \
+             {} failures",
+            summary.retained_populated, summary.skipped_foreign, summary.failures
+        );
+    }
+}
+
 /// Starts the periodic `/proc` walk that `--manual-scanning` asks for.
 ///
 /// Without this thread there is no event source at all -- it is the whole point
@@ -397,5 +436,70 @@ mod tests {
                 "{json} must not configure anything"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_cleanup_tests {
+    use super::*;
+    use {
+        ananicy_platform::{
+            cgroup::CgroupVersion,
+            cgroups::{
+                clear_created_registry, create_cgroup, record_created_cgroup_for_tests,
+                reset_cgroup_detection, set_cgroup_manager_for_tests,
+            },
+            mounts::CgroupInfo,
+        },
+        std::{fs, sync::Mutex},
+    };
+
+    static SHUTDOWN_LOCK: Mutex<()> = Mutex::new(());
+
+    /// The hook the signal thread calls on SIGINT/SIGTERM must do real work
+    /// before the process goes away, but must never take the delegated root
+    /// with it.
+    #[test]
+    fn shutdown_cleanup_removes_registered_cgroups_but_not_the_delegated_root() {
+        let _guard = SHUTDOWN_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().expect("a temporary hierarchy");
+        let root = temp.path().join("system.slice/ananicy.service");
+        fs::create_dir_all(&root).expect("a delegated root");
+        fs::write(root.join("cgroup.procs"), "").expect("the root's procs file");
+        set_cgroup_manager_for_tests(
+            CgroupInfo {
+                version: CgroupVersion::V2,
+                mount_point: temp.path().to_path_buf(),
+            },
+            Some(root.clone()),
+        );
+        clear_created_registry();
+
+        assert!(create_cgroup("shutdown.scope", CgroupSettings::default()).created());
+        let child = root.join("shutdown.scope");
+        // A temp hierarchy's pseudo-files are regular files, which `rmdir`
+        // refuses to remove; leave only cgroup.procs so the directory behaves
+        // like an empty kernel cgroup. The missing cpu files also prove that a
+        // failed settings reset does not stop the shutdown cleanup.
+        fs::write(child.join("cgroup.procs"), "").expect("an empty child");
+        // Defensive: even a wrongly recorded root must survive shutdown.
+        record_created_cgroup_for_tests("delegated-root", &root);
+
+        let summary = cleanup_cgroups_on_shutdown();
+        assert_eq!(summary.skipped_foreign, 1, "the root is refused");
+        assert!(
+            summary.failures > 0,
+            "cleanup must have been attempted: the temp hierarchy's regular \
+             control files cannot really be written or rmdir'd by the kernel"
+        );
+        assert!(root.is_dir(), "the delegation boundary must survive");
+        // The hermetic lifecycle tests use an injected rmdir to assert the
+        // successful delete path; here the point is that the shutdown hook
+        // runs, survives failures, and refuses the delegated root.
+
+        clear_created_registry();
+        reset_cgroup_detection();
     }
 }

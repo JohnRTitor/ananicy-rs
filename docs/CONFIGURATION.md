@@ -258,6 +258,16 @@ the daemon created the cgroup or it was already there. Editing a `.cgroups` file
 therefore takes effect on the next start without the cgroup having to be deleted
 first.
 
+The daemon remembers only the cgroup v2 directories it created during this run.
+After a `SIGUSR1` reload (once the new rule cgroups have been prepared) and on a
+graceful `SIGINT`/`SIGTERM` stop, it resets `cpu.max` and `cpu.weight` to their
+kernel defaults on remembered cgroups that no rule names any more, then removes
+the ones that are empty, retrying a transient `EBUSY` a bounded number of times.
+A cgroup that still holds processes is kept and reported at `warn` level. Foreign
+paths, the delegated root itself, and cgroups left behind by a previous run are
+never reset or deleted; adopting an existing cgroup for settings re-apply does
+not make it ours to remove.
+
 ### Cgroups v2 Delegation and Ownership
 
 `ananicy-rs` respects the kernel's cgroup-v2 single-writer model. The systemd unit uses `Delegate=yes`. It does not delegate `user.slice`, desktop session scopes, or other systemd units.

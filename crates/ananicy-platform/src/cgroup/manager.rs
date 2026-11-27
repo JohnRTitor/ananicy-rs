@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread::available_parallelism,
+    time::Duration,
 };
 
 use {
@@ -19,7 +20,7 @@ use {
 use crate::{
     cgroup::{
         CgroupError, CgroupInfo, CgroupResult, CgroupVersion,
-        ownership::{CgroupOwnership, discover_delegated_root},
+        ownership::{CgroupOwnership, discover_delegated_root, is_owned},
     },
     cgroups::CpuQuota,
 };
@@ -249,6 +250,10 @@ pub struct CgroupManager {
 /// forgetting one is a log line rather than a problem.
 const REPORTED_WEIGHTLESS_CAPACITY: usize = 256;
 
+/// The kernel default `cpu.weight` on v2 (and the default `cpu.shares` divisor
+/// on v1). Used only when undoing settings on a cgroup this run created.
+const DEFAULT_CPU_WEIGHT: u32 = 100;
+
 fn reported_cache() -> LruCache<PathBuf, ()> {
     LruCache::new(NonZeroUsize::new(REPORTED_WEIGHTLESS_CAPACITY).unwrap_or(NonZeroUsize::MIN))
 }
@@ -424,6 +429,79 @@ impl CgroupManager {
     pub fn cgroup_exists(&self, name: &str) -> bool {
         self.resolve_target_dir(name)
             .is_some_and(|target| target.exists())
+    }
+
+    /// The delegated root this manager resolves relative names against, if any.
+    pub fn delegated_root(&self) -> Option<&Path> {
+        self.delegated_root.as_deref()
+    }
+
+    /// Whether a cgroup directory may be removed by this daemon.
+    ///
+    /// The root itself is `Owned` by the ownership classification but is the
+    /// delegation boundary: removing it would take the whole subtree with it.
+    /// Ancestors of the root are `Foreign` and refused for the same reason.
+    pub fn is_removable_owned(&self, target: &Path) -> bool {
+        self.info.version == CgroupVersion::V2
+            && self
+                .delegated_root()
+                .is_some_and(|root| target.starts_with(root) && target != root)
+            && is_owned(target, self.delegated_root(), true)
+    }
+
+    /// Restores the kernel defaults on a cgroup this run created.
+    ///
+    /// Both files are attempted even when the first fails: a cgroup with no
+    /// `cpu.max` (the controller was never enabled in its parent) may still
+    /// have a `cpu.weight`, and leaving that at the rule's value would keep a
+    /// setting the rule no longer asks for. The errors are returned to the
+    /// caller, which logs them and continues with the next cgroup.
+    pub fn reset_cpu_settings(&self, target: &Path) -> CgroupResult<()> {
+        if !self.is_removable_owned(target) {
+            return Err(CgroupError::Foreign);
+        }
+        let max = self.set_cpu_max(target, CpuQuota::Unlimited);
+        let weight = self.set_cpu_weight(target, DEFAULT_CPU_WEIGHT);
+        max.and(weight)
+    }
+
+    /// Removes an empty Owned cgroup, retrying only `EBUSY` a bounded number of
+    /// times. Returns how many retries were needed.
+    ///
+    /// `remove_dir` and `sleep` are parameters so the retry can be driven by a
+    /// hermetic test: a real cgroup filesystem cannot be told to return
+    /// `EBUSY` on demand, and waiting through a real backoff in a test would
+    /// make a bounded retry look like a hang. The production caller passes
+    /// `fs::remove_dir` and `thread::sleep`.
+    pub fn remove_cgroup(
+        &self,
+        target: &Path,
+        attempts: u8,
+        backoff: Duration,
+        sleep: &dyn Fn(Duration),
+        remove_dir: &dyn Fn(&Path) -> io::Result<()>,
+    ) -> CgroupResult<usize> {
+        if !self.is_removable_owned(target) {
+            return Err(CgroupError::Foreign);
+        }
+        let mut retries = 0;
+        for attempt in 0..attempts {
+            match remove_dir(target) {
+                Ok(()) => return Ok(retries),
+                Err(error) if error.raw_os_error() == Some(libc::EBUSY) => {
+                    // The kernel can briefly keep a cgroup busy while another
+                    // writer moves its last process out. Give up after the
+                    // caller's bound instead of spinning or exiting.
+                    if attempt + 1 == attempts {
+                        return Err(CgroupError::Busy);
+                    }
+                    retries += 1;
+                    sleep(backoff);
+                }
+                Err(error) => return Err(control_error(target, error)),
+            }
+        }
+        Err(CgroupError::Busy)
     }
 }
 

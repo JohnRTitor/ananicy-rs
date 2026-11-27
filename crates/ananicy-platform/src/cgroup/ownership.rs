@@ -49,6 +49,16 @@ impl CgroupOwnership {
     }
 }
 
+/// Whether a target is inside the delegated cgroup on a v2 hierarchy.
+///
+/// The single-writer rule allows structural changes only there. Callers that
+/// also remove cgroups must check the root itself separately: it is `Owned` by
+/// this classification but is the delegation boundary and must never be
+/// deleted.
+pub fn is_owned(target: &Path, delegated_root: Option<&Path>, is_v2: bool) -> bool {
+    CgroupOwnership::classify(target, delegated_root, is_v2) == CgroupOwnership::Owned
+}
+
 /// The `DelegateSubgroup` value used by the shipped unit
 /// (`data/ananicy-rs.service.in`). It is the only layout in which a step up
 /// from the discovered root can be proven to stay inside our own unit.

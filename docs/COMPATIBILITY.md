@@ -28,6 +28,10 @@ adds, and what it deliberately does not reproduce — is in
   it either way.
 - Reload with `SIGUSR1`. It takes effect immediately and rebuilds rules, types
   and cgroups as well as configuration; `check_freq` still needs a restart.
+  Unlike the reference, a cgroup created by this run and no longer named by a
+  `.cgroups` rule is reset to kernel defaults and removed if it is empty; this
+  also happens on `SIGINT`/`SIGTERM`. Cgroups that are populated, outside the
+  delegated subtree, or left by a previous run are never removed.
 - A few CLI exit codes and diagnostic fields differ from the reference. See
   [CLI](./CLI.md) for the exact behaviour and
   [internals/COMPATIBILITY.md](./internals/COMPATIBILITY.md) for the reasons.

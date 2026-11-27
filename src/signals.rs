@@ -6,7 +6,7 @@ use {
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
-    tracing::{error, info},
+    tracing::{debug, error, info},
 };
 
 /// Everything a `SIGUSR1` needs, and the reload itself.
@@ -83,6 +83,14 @@ impl Reload {
         }
 
         let previous = self.rules.get();
+        // Captured before the swap: the old rule set is what tells us which
+        // names the operator removed. Reconciliation itself diffs the registry
+        // against the names still active after the swap.
+        let previous_names: Vec<String> = previous
+            .get_cgroups()
+            .keys()
+            .map(|name| name.0.to_string())
+            .collect();
         let fresh = crate::startup::load_rules(self.config.clone(), &self.config_dir_path);
         let (count, types, cgroups) = (
             fresh.size(),
@@ -97,10 +105,20 @@ impl Reload {
         // a partial one.
         let installed = self.rules.get();
         crate::runtime::create_cgroups(&installed);
+        let installed_names: Vec<String> = installed
+            .get_cgroups()
+            .keys()
+            .map(|name| name.0.to_string())
+            .collect();
+        crate::runtime::reconcile_cgroups(&installed_names);
 
+        let removed_names: Vec<&String> = previous_names
+            .iter()
+            .filter(|name| !installed_names.contains(name))
+            .collect();
         info!(
             "Rules reloaded from {}: {} rules, {} types, {} cgroups (was {} rules, {} types, \
-             {} cgroups)",
+             {} cgroups); {} cgroup rules removed",
             self.config_dir_path,
             count,
             types,
@@ -108,7 +126,11 @@ impl Reload {
             previous.size(),
             previous.get_types().len(),
             previous.get_cgroups().len(),
+            removed_names.len(),
         );
+        if !removed_names.is_empty() {
+            debug!("Cgroup rules removed on reload: {removed_names:?}");
+        }
     }
 }
 
@@ -145,6 +167,12 @@ pub(crate) fn install(
                 signal_hook::consts::SIGINT | signal_hook::consts::SIGTERM => {
                     info!("Received termination signal. Shutting down...");
                     shutdown_flag.store(true, Ordering::SeqCst);
+                    // Clean up before the channel closes or the process exits,
+                    // while the manager still knows which cgroups this run
+                    // created. This is bounded and never exits the process:
+                    // one cgroup failing to be removed must not skip the X3D
+                    // restore or the STOPPING notification below.
+                    crate::runtime::cleanup_cgroups_on_shutdown();
                     drop(tx);
                     #[cfg(feature = "systemd")]
                     if is_systemd {

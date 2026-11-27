@@ -1,6 +1,10 @@
 use std::{
-    fmt,
-    sync::{Arc, RwLock},
+    fmt, fs, io,
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, RwLock},
+    thread,
+    time::Duration,
 };
 
 use {
@@ -8,7 +12,8 @@ use {
         PlatformError,
         PlatformError::{NotFound, Unsupported},
     },
-    tracing::debug,
+    lru::LruCache,
+    tracing::{debug, warn},
 };
 
 use crate::{
@@ -16,7 +21,7 @@ use crate::{
         CgroupError,
         manager::{CgroupController, CgroupManager},
     },
-    mounts::get_cgroup_info,
+    mounts::{CgroupInfo, get_cgroup_info},
 };
 
 /// The manager for the currently detected hierarchy.
@@ -192,10 +197,259 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> CgroupApply
     if let Some(weight) = settings.cpu_weight {
         failed |= manager.set_cpu_weight(&target, weight).is_err();
     }
-    if failed {
+    let status = if failed {
         CgroupApplyStatus::SettingsFailed { created }
     } else {
         CgroupApplyStatus::Applied { created }
+    };
+
+    // Only cgroups *this run* created are eligible for cleanup later. A cgroup
+    // that already existed is adopted for settings re-apply (above), but nobody
+    // can prove it was ours to delete — it may be left by a previous run or by
+    // another tool. `is_removable_owned` also keeps a sync of the delegation
+    // boundary itself out of the registry.
+    if matches!(status, CgroupApplyStatus::Applied { created: true })
+        && manager.is_removable_owned(&target)
+    {
+        record_created(cgroup_name, &target);
+    }
+
+    status
+}
+
+/// The cgroups this run actually created, keyed by the rule name that asked
+/// for them. The value is the path that was created: ownership is re-checked
+/// against the current manager at cleanup time, because delegation can be
+/// re-detected between creation and a reload.
+///
+/// Behind the same bounded, clone-shared pattern as the manager's
+/// `reported_weightless` cache: the registry lives in a process-global, so the
+/// `Arc` makes a shared handle possible, and a bounded LRU stops a daemon that
+/// churns rule files from holding every name it has ever seen.
+type CreatedRegistry = Arc<Mutex<LruCache<String, PathBuf>>>;
+const CREATED_REGISTRY_CAPACITY: usize = 1024;
+
+fn created_registry() -> &'static CreatedRegistry {
+    static REGISTRY: OnceLock<CreatedRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let capacity = NonZeroUsize::new(CREATED_REGISTRY_CAPACITY).unwrap_or(NonZeroUsize::MIN);
+        Arc::new(Mutex::new(LruCache::new(capacity)))
+    })
+}
+
+fn record_created(name: &str, path: &Path) {
+    if let Ok(mut registry) = created_registry().lock() {
+        registry.put(name.to_string(), path.to_path_buf());
+    }
+}
+
+fn forget_created(name: &str) {
+    if let Ok(mut registry) = created_registry().lock() {
+        registry.pop(name);
+    }
+}
+
+/// The rule names of cgroups created by this run that are still remembered.
+pub fn created_cgroup_names() -> Vec<String> {
+    let Ok(registry) = created_registry().lock() else {
+        return Vec::new();
+    };
+    registry.iter().map(|(name, _)| name.clone()).collect()
+}
+
+/// Forgets every recorded cgroup. Intended for tests, which replace the
+/// hierarchy between scenarios and must not inherit one another's registry.
+pub fn clear_created_registry() {
+    if let Ok(mut registry) = created_registry().lock() {
+        registry.clear();
+    }
+}
+
+/// Installs a manager directly, for hermetic tests that run against a
+/// temporary hierarchy instead of the machine's cgroup mount.
+#[doc(hidden)]
+pub fn set_cgroup_manager_for_tests(info: CgroupInfo, delegated_root: Option<PathBuf>) {
+    if let Ok(mut guard) = MANAGER.write() {
+        *guard = Some(Arc::new(CgroupManager::new_with_root(info, delegated_root)));
+    }
+}
+
+/// Adds an entry to the created-cgroup registry, for tests that need to model
+/// a cgroup created earlier in this run without going through `create_cgroup`.
+#[doc(hidden)]
+pub fn record_created_cgroup_for_tests(name: &str, path: &Path) {
+    record_created(name, path);
+}
+
+/// How many times an `EBUSY` rmdir is retried, and how long to wait between
+/// attempts. Matches the bounded `EBUSY` retry RUM uses when destroying a
+/// cgroup: long enough for the kernel to finish moving a last process out,
+/// short enough that shutdown cannot hang on a cgroup nobody will ever empty.
+const REMOVE_ATTEMPTS: u8 = 20;
+const RETRY_DELAY: Duration = Duration::from_millis(50);
+
+/// The injected rmdir operation. Separated out because a `Fn` over a borrowed
+/// path is awkward to read at every use site.
+pub type RemoveDirFn = Arc<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
+
+/// The injected parts of a reconciliation. The defaults act on the real
+/// filesystem; tests pass recording closures so they can observe the order of
+/// reset-before-delete and drive the `EBUSY` retry without sleeping.
+pub struct ReconcileOptions {
+    pub sleep: Arc<dyn Fn(Duration) + Send + Sync>,
+    pub remove_dir: RemoveDirFn,
+}
+
+impl Default for ReconcileOptions {
+    fn default() -> Self {
+        Self {
+            sleep: Arc::new(thread::sleep as fn(Duration)),
+            remove_dir: Arc::new(|path: &Path| fs::remove_dir(path)),
+        }
+    }
+}
+
+/// What one reconciliation attempt did. Counts are enough for both the log
+/// line at reload/shutdown and the hermetic lifecycle tests.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReconcileSummary {
+    /// Registered cgroups whose rule is still active; left alone.
+    pub active: usize,
+    /// Registered cgroups that were successfully removed.
+    pub removed: usize,
+    /// Registered cgroups that had already disappeared.
+    pub missing: usize,
+    /// Cgroups kept because they still hold processes (or have children).
+    pub retained_populated: usize,
+    /// Entries refused because the path is no longer inside the delegated root.
+    pub skipped_foreign: usize,
+    /// `EBUSY` rmdir retries that succeeded on a later attempt.
+    pub busy_retries: usize,
+    /// Settings resets or rmdirs that failed; the daemon carries on regardless.
+    pub failures: usize,
+}
+
+/// Removes the cgroups this run created that are no longer named by an active
+/// `.cgroups` rule.
+///
+/// Nothing here is fatal: a failed reset or rmdir is logged and the next entry
+/// is still processed. A cgroup whose path is no longer Owned (for example
+/// because delegation was re-detected) and the delegated root itself are
+/// refused before any write. A cgroup that is populated is kept, with one
+/// warning, since deleting it would also evict the processes in it.
+///
+/// `active_names` is the *new* rule set: a directory is removed only when no
+/// currently installed rule still asks for that name.
+pub fn reconcile_cgroups(active_names: &[String]) -> ReconcileSummary {
+    reconcile_cgroups_with(active_names, &ReconcileOptions::default())
+}
+
+/// The injectable form of [`reconcile_cgroups`], used by hermetic tests.
+pub fn reconcile_cgroups_with(
+    active_names: &[String],
+    options: &ReconcileOptions,
+) -> ReconcileSummary {
+    let mut summary = ReconcileSummary::default();
+    let Some(manager) = get_manager() else {
+        return summary;
+    };
+
+    // Snapshot before touching the filesystem: the lock protects the map, not
+    // the cgroups, and holding it across I/O would stall a concurrent reload.
+    let entries: Vec<(String, PathBuf)> = {
+        let Ok(registry) = created_registry().lock() else {
+            return summary;
+        };
+        registry
+            .iter()
+            .map(|(name, path)| (name.clone(), path.clone()))
+            .collect()
+    };
+
+    for (name, path) in entries {
+        if active_names.iter().any(|active| active == &name) {
+            summary.active += 1;
+            continue;
+        }
+        if !manager.is_removable_owned(&path) {
+            summary.skipped_foreign += 1;
+            warn!(
+                "Cgroup '{}' at {} is no longer inside our delegated cgroup; refusing to clean it up",
+                name,
+                path.display()
+            );
+            continue;
+        }
+        if !path.exists() {
+            summary.missing += 1;
+            forget_created(&name);
+            continue;
+        }
+
+        if let Err(error) = manager.reset_cpu_settings(&path) {
+            summary.failures += 1;
+            warn!(
+                "Could not reset cpu settings of cgroup '{}' at {}: {}; continuing with cleanup",
+                name,
+                path.display(),
+                error
+            );
+        }
+
+        if !cgroup_is_empty(&path) {
+            summary.retained_populated += 1;
+            warn!(
+                "Cgroup '{}' at {} still holds processes; keeping it and its settings rather than removing it",
+                name,
+                path.display()
+            );
+            continue;
+        }
+
+        match manager.remove_cgroup(
+            &path,
+            REMOVE_ATTEMPTS,
+            RETRY_DELAY,
+            &*options.sleep,
+            &*options.remove_dir,
+        ) {
+            Ok(retries) => {
+                summary.removed += 1;
+                summary.busy_retries += retries;
+                forget_created(&name);
+            }
+            Err(error) => {
+                summary.failures += 1;
+                warn!(
+                    "Could not remove empty cgroup '{}' at {}: {}; leaving it in place",
+                    name,
+                    path.display(),
+                    error
+                );
+            }
+        }
+    }
+
+    summary
+}
+
+/// Whether a cgroup has no processes, including processes in its children.
+///
+/// `cgroup.events` is the authoritative answer when the kernel exposes it: an
+/// empty `cgroup.procs` can still have tasks in a child cgroup, and `rmdir`
+/// would fail with `ENOTEMPTY`. Older or synthetic hierarchies may only have
+/// `cgroup.procs`; there, an unreadable file means "keep it", never "delete".
+fn cgroup_is_empty(target: &Path) -> bool {
+    if let Ok(events) = fs::read_to_string(target.join("cgroup.events"))
+        && let Some(populated) = events
+            .lines()
+            .find_map(|line| line.strip_prefix("populated "))
+    {
+        return populated.trim() == "0";
+    }
+    match fs::read_to_string(target.join("cgroup.procs")) {
+        Ok(procs) => procs.trim().is_empty(),
+        Err(_) => false,
     }
 }
 
@@ -370,5 +624,56 @@ mod tests {
             !hierarchy.path().join("cpu/after-reset").exists(),
             "nothing is created in the hierarchy that was cached before the reset"
         );
+    }
+
+    /// `cgroup.events` accounts for processes in descendant cgroups too, so it
+    /// wins over an empty `cgroup.procs`; a missing events file falls back to
+    /// the procs list, and an unreadable procs file means "keep it".
+    #[test]
+    fn emptiness_checks_events_first_and_is_conservative_without_them() {
+        let hierarchy = tempfile::tempdir().expect("a temporary hierarchy");
+        let cgroup = hierarchy.path().join("cgroup.scope");
+        fs::create_dir(&cgroup).expect("a cgroup");
+        fs::write(cgroup.join("cgroup.procs"), "").expect("an empty procs file");
+
+        assert!(cgroup_is_empty(&cgroup), "empty procs means empty");
+        fs::write(cgroup.join("cgroup.events"), "populated 1\n").expect("events");
+        assert!(
+            !cgroup_is_empty(&cgroup),
+            "a populated child is reported by events, not by the parent's procs"
+        );
+        fs::write(cgroup.join("cgroup.events"), "populated 0\n").expect("events");
+        fs::write(cgroup.join("cgroup.procs"), "42\n").expect("procs");
+        assert!(
+            cgroup_is_empty(&cgroup),
+            "events is authoritative even when procs disagrees"
+        );
+        fs::remove_file(cgroup.join("cgroup.events")).expect("remove events");
+        assert!(!cgroup_is_empty(&cgroup));
+        fs::remove_file(cgroup.join("cgroup.procs")).expect("remove procs");
+        assert!(
+            !cgroup_is_empty(&cgroup),
+            "an unreadable procs file must never be mistaken for an empty cgroup"
+        );
+    }
+
+    /// The registry is a bounded LRU, shared behind an `Arc`, and can be
+    /// emptied between scenarios.
+    #[test]
+    fn the_created_registry_is_bounded_and_can_be_cleared() {
+        clear_created_registry();
+        for i in 0..(CREATED_REGISTRY_CAPACITY * 2) {
+            record_created(
+                &format!("cgroup-{i}"),
+                Path::new(&format!("/tmp/cgroup-{i}")),
+            );
+        }
+        assert_eq!(
+            created_cgroup_names().len(),
+            CREATED_REGISTRY_CAPACITY,
+            "the registry must not grow without bound"
+        );
+        clear_created_registry();
+        assert!(created_cgroup_names().is_empty());
     }
 }

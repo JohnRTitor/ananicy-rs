@@ -18,7 +18,10 @@
 
 use {
     ananicy_platform::{
-        cgroups::{CgroupSettings, CpuQuota, add_pid_to_cgroup, create_cgroup},
+        cgroups::{
+            CgroupSettings, CpuQuota, add_pid_to_cgroup, clear_created_registry, create_cgroup,
+            created_cgroup_names,
+        },
         mounts::{CgroupVersion, get_cgroup_info},
     },
     std::{
@@ -232,6 +235,41 @@ fn create_cgroup_refuses_to_recreate_an_existing_cgroup() {
     );
 
     let _ = fs::remove_dir(&path);
+}
+
+/// Only the creation is recorded. Re-applying settings to an existing cgroup
+/// (which is what the previous test checks) must not claim it as ours to
+/// clean up later.
+#[test]
+fn create_cgroup_records_only_the_cgroup_it_created() {
+    let test = "create_cgroup_records_only_the_cgroup_it_created";
+    let Some((_guard, base)) = writable_hierarchy(test) else {
+        return;
+    };
+    let name = unique_name("REGISTRY");
+    remove_if_present(&base, &name);
+    clear_created_registry();
+
+    assert!(create_cgroup(&name, CgroupSettings::default()).created());
+    assert!(
+        created_cgroup_names().contains(&name),
+        "the created cgroup must be registered for later reconciliation"
+    );
+
+    assert!(!create_cgroup(&name, CgroupSettings::default()).created());
+    assert_eq!(
+        created_cgroup_names()
+            .iter()
+            .filter(|recorded| *recorded == &name)
+            .count(),
+        1,
+        "re-applying to an existing cgroup must not add a second entry"
+    );
+
+    clear_created_registry();
+    if let Some(path) = find_cgroup(&base, &name) {
+        let _ = fs::remove_dir(&path);
+    }
 }
 
 #[test]
