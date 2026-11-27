@@ -121,10 +121,16 @@ pub struct FakePlatform {
     realtime: bool,
     /// Whether a successful realtime policy change should flip `is_realtime`.
     becomes_realtime_on_set_sched: bool,
+    /// Whether a successful CFS policy change should clear `is_realtime` for a
+    /// process that started realtime.
+    becomes_cfs_on_set_sched: bool,
     /// The observed state, initially CFS and flipped by `set_sched` when armed.
     /// An `Arc` keeps the builder's `self`-consuming API while the flag stays
     /// writable from `&self` methods.
     realtime_after_set_sched: Arc<AtomicBool>,
+    /// Complementary observed state for a process that started realtime and
+    /// was moved back into the fair class by `set_sched`.
+    cfs_after_set_sched: Arc<AtomicBool>,
     /// Whether the warning condition (a realtime task in a bandwidth-limited
     /// cgroup) holds. Settable from `&self` so a test can flip it between events.
     bandwidth_limited_cgroup: Arc<AtomicBool>,
@@ -150,7 +156,9 @@ impl FakePlatform {
             cgroup_v2: false,
             realtime: false,
             becomes_realtime_on_set_sched: false,
+            becomes_cfs_on_set_sched: false,
             realtime_after_set_sched: Arc::new(AtomicBool::new(false)),
+            cfs_after_set_sched: Arc::new(AtomicBool::new(false)),
             bandwidth_limited_cgroup: Arc::new(AtomicBool::new(false)),
             tids: None,
             max_cores: 8,
@@ -194,6 +202,15 @@ impl FakePlatform {
     /// situation a rule that sets a realtime policy creates.
     pub fn becomes_realtime_after_set_sched(mut self) -> Self {
         self.becomes_realtime_on_set_sched = true;
+        self
+    }
+
+    /// Declares that this pid starts realtime but becomes fair-class after a
+    /// successful CFS (`normal`/`other`/`batch`/`idle`) `set_sched`. The mirror
+    /// image of [`FakePlatform::becomes_realtime_after_set_sched`], for rules
+    /// that take an RT task back out of the realtime class.
+    pub fn becomes_cfs_after_set_sched(mut self) -> Self {
+        self.becomes_cfs_on_set_sched = true;
         self
     }
 
@@ -298,7 +315,11 @@ fn operation_of(call: &Call) -> &'static str {
 
 impl PlatformActions for FakePlatform {
     fn is_realtime(&self, _pid: i32) -> bool {
-        self.realtime || self.realtime_after_set_sched.load(Ordering::SeqCst)
+        if self.cfs_after_set_sched.load(Ordering::SeqCst) {
+            false
+        } else {
+            self.realtime || self.realtime_after_set_sched.load(Ordering::SeqCst)
+        }
     }
 
     fn is_in_bandwidth_limited_cgroup(&self, _pid: i32) -> bool {
@@ -361,12 +382,15 @@ impl PlatformActions for FakePlatform {
         // A kernel only changes policy when the call succeeds, and an RT
         // policy with priority zero is not a realtime task by the daemon's
         // own definition (static priority > 0).
-        if result.is_ok()
-            && self.becomes_realtime_on_set_sched
-            && matches!(sched, "fifo" | "rr")
-            && rtprio > 0
-        {
-            self.realtime_after_set_sched.store(true, Ordering::SeqCst);
+        if result.is_ok() {
+            if self.becomes_realtime_on_set_sched && matches!(sched, "fifo" | "rr") && rtprio > 0 {
+                self.realtime_after_set_sched.store(true, Ordering::SeqCst);
+            }
+            if self.becomes_cfs_on_set_sched
+                && matches!(sched, "normal" | "other" | "batch" | "idle")
+            {
+                self.cfs_after_set_sched.store(true, Ordering::SeqCst);
+            }
         }
         result
     }
@@ -522,6 +546,17 @@ mod tests {
             platform.calls_of("set_sched").len(),
             1,
             "the fake still records the call for rule tests"
+        );
+    }
+
+    #[test]
+    fn a_cfs_policy_flips_an_initially_realtime_process_back_to_cfs() {
+        let platform = FakePlatform::realtime_on_cgroup_v2().becomes_cfs_after_set_sched();
+        assert!(platform.is_realtime(42), "the process starts as realtime");
+        platform.set_sched(42, &[], "normal", 1).unwrap();
+        assert!(
+            !platform.is_realtime(42),
+            "a successful fair-class policy change clears the realtime state"
         );
     }
 

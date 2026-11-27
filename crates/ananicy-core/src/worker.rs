@@ -380,38 +380,6 @@ impl Worker {
                     partial_failure.get_or_insert(e);
                 }
             }
-
-            // On cgroup v2 a nice value is also mirrored into `cpu.weight`. The
-            // write lands on the cgroup the process already belongs to, so it
-            // also reweights every other task in that cgroup;
-            // `apply_cpu_weight_from_nice` turns it off for operators who do not
-            // want that. Realtime tasks are skipped as well: `cpu.weight` only
-            // affects fair-class tasks, so the write cannot help the RT task and
-            // can only reweight unrelated CFS siblings in the same cgroup.
-            //
-            // `powi` is computed from a `f64` exponent rather than a negated
-            // `i32`: a rule carrying `"nice": -2147483648` overflows that negation
-            // in a debug build, and wraps to `i32::MIN` in a release one, which
-            // `powi` then answers with an infinity that saturates to `u32::MAX`.
-            // Casting the value straight to `f64` saturates at the same place the
-            // clamp does, so an out-of-range nice gives the maximum weight
-            // instead of panicking or wrapping.
-            if cfg.apply_cpu_weight_from_nice && !*is_realtime && self.platform.is_cgroup_v2() {
-                let weight = (100.0 * 1.25f64.powf(-(nice as f64))) as u32;
-                let weight = weight.clamp(1, 10000);
-                match self.platform.set_cpu_weight(p.identity.pid.0, weight) {
-                    Ok(()) => {
-                        applied_any = true;
-                        debug!("Applied cpu.weight {} for {}", weight, p.name);
-                    }
-                    Err(e) => {
-                        debug!(
-                            "Skipping optional cgroup-v2 cpu.weight {} for {}: {:?}",
-                            weight, p.name, e
-                        );
-                    }
-                }
-            }
         }
         if cfg.apply_latnice
             && let Some(latnice) = rule.effective_latency_nice()
@@ -446,15 +414,59 @@ impl Worker {
                 Ok(()) => {
                     applied_any = true;
                     // The sample taken before the rule was applied is stale for
-                    // a rule that sets `fifo`/`rr`: `rtprio` defaults to 1, so
-                    // the new policy makes the task realtime immediately. Ask
-                    // again now, before the cgroup decision below. A failed
-                    // policy change cannot make the task realtime, so there is
-                    // nothing to re-check on that path.
+                    // a rule that changes the policy: `fifo`/`rr` with the
+                    // default `rtprio` of 1 makes the task realtime immediately,
+                    // while `normal`/`batch`/`idle` puts an RT task back into
+                    // the fair class. Ask again now, before the `cpu.weight`
+                    // mirror and the cgroup decision below. A failed policy
+                    // change cannot change the class, so there is nothing to
+                    // re-check on that path.
                     *is_realtime = self.platform.is_realtime(p.identity.pid.0);
                 }
                 Err(e) => {
                     partial_failure.get_or_insert(e);
+                }
+            }
+        }
+
+        // On cgroup v2 a nice value is also mirrored into `cpu.weight`. The
+        // write lands on the cgroup the process already belongs to, so it
+        // also reweights every other task in that cgroup;
+        // `apply_cpu_weight_from_nice` turns it off for operators who do not
+        // want that. Realtime tasks are skipped as well: `cpu.weight` only
+        // affects fair-class tasks, so the write cannot help the RT task and
+        // can only reweight unrelated CFS siblings in the same cgroup.
+        //
+        // This deliberately runs after `set_sched` refreshed `is_realtime`:
+        // the mirror has to decide on the task's final class, not the one it
+        // had before the rule. It is best-effort, so a refused write is only
+        // logged and does not count against the rule.
+        //
+        // `powi` is computed from a `f64` exponent rather than a negated
+        // `i32`: a rule carrying `"nice": -2147483648` overflows that negation
+        // in a debug build, and wraps to `i32::MIN` in a release one, which
+        // `powi` then answers with an infinity that saturates to `u32::MAX`.
+        // Casting the value straight to `f64` saturates at the same place the
+        // clamp does, so an out-of-range nice gives the maximum weight
+        // instead of panicking or wrapping.
+        if cfg.apply_nice
+            && let Some(nice) = rule.nice()
+            && cfg.apply_cpu_weight_from_nice
+            && !*is_realtime
+            && self.platform.is_cgroup_v2()
+        {
+            let weight = (100.0 * 1.25f64.powf(-(nice as f64))) as u32;
+            let weight = weight.clamp(1, 10000);
+            match self.platform.set_cpu_weight(p.identity.pid.0, weight) {
+                Ok(()) => {
+                    applied_any = true;
+                    debug!("Applied cpu.weight {} for {}", weight, p.name);
+                }
+                Err(e) => {
+                    debug!(
+                        "Skipping optional cgroup-v2 cpu.weight {} for {}: {:?}",
+                        weight, p.name, e
+                    );
                 }
             }
         }

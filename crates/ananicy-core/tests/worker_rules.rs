@@ -305,6 +305,88 @@ fn the_cpu_weight_mirror_is_skipped_for_an_already_realtime_process() {
 }
 
 #[test]
+fn a_rule_moving_an_rt_process_to_cfs_mirrors_its_nice_into_cpu_weight() {
+    // The mirror has to decide on the task's class *after* the rule: an RT task
+    // put back into the fair class by `sched: normal` is exactly the case where
+    // `cpu.weight` matters again. Deciding on the pre-rule sample silently
+    // dropped the write for this process.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","nice":0,"sched":"normal"}"#,
+        FakePlatform::realtime_on_cgroup_v2().becomes_cfs_after_set_sched(),
+    );
+
+    let calls = run.platform.calls();
+    assert!(calls.contains(&Call::SetPriority { nice: 0 }));
+    assert!(calls.contains(&Call::SetSched {
+        sched: "normal".to_string(),
+        rtprio: 1
+    }));
+    assert!(
+        calls.contains(&Call::SetCpuWeight { weight: 100 }),
+        "nice must now be mirrored into cpu.weight for the fair-class task: {calls:?}"
+    );
+}
+
+#[test]
+fn a_rule_making_a_cfs_process_realtime_does_not_mirror_its_nice() {
+    // Mirror case in the other direction: `fifo` with the default rtprio makes
+    // the task realtime in this very event. Writing `cpu.weight` afterwards
+    // would reweight unrelated CFS siblings without helping the RT task.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","nice":0,"sched":"fifo"}"#,
+        FakePlatform::cgroup_v2().becomes_realtime_after_set_sched(),
+    );
+
+    let calls = run.platform.calls();
+    assert!(calls.contains(&Call::SetPriority { nice: 0 }));
+    assert!(calls.contains(&Call::SetSched {
+        sched: "fifo".to_string(),
+        rtprio: 1
+    }));
+    assert!(
+        !calls
+            .iter()
+            .any(|call| matches!(call, Call::SetCpuWeight { .. })),
+        "no cgroup may be reweighted for the now-realtime task: {calls:?}"
+    );
+}
+
+#[test]
+fn a_cfs_process_with_nice_and_no_sched_still_mirrors_its_nice() {
+    // No regression for the ordinary case, and a check that moving the mirror
+    // past `set_sched` kept it ahead of the remaining attributes.
+    let run = run_worker(
+        all_attributes_enabled(),
+        r#"{"name":"worker-test","nice":0,"latency_nice":-3,"ioclass":"idle",
+            "oom_score_adj":5,"cgroup":"low","cpuset":"0-1"}"#,
+        FakePlatform::cgroup_v2().with_max_cores(8),
+    );
+
+    assert_eq!(
+        run.platform.calls(),
+        vec![
+            Call::SetPriority { nice: 0 },
+            Call::SetLatencyNice { value: -3 },
+            Call::SetCpuWeight { weight: 100 },
+            Call::SetIoPriority {
+                ioclass: "idle".to_string(),
+                ionice: 0
+            },
+            Call::SetOomScoreAdj { value: 5 },
+            Call::AddPidToCgroup {
+                cgroup: "low".to_string()
+            },
+            Call::SetAffinity {
+                cpuset: "0-1".to_string()
+            },
+        ],
+        "nice, latnice, then the mirror, then the remaining attributes"
+    );
+}
+
+#[test]
 fn a_failing_cpu_weight_does_not_prevent_the_nice_value() {
     let run = run_worker(
         snapshot(true),
