@@ -265,10 +265,23 @@ pub(crate) fn create_cgroups(rules: &Arc<Rules>) {
 /// longer in the rule set have their settings reset and, when empty, are
 /// removed. Nothing here can fail the reload.
 pub(crate) fn reconcile_cgroups(active_names: &[String]) {
+    #[cfg(test)]
+    RECONCILE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     log_reconcile_summary(
         "reload",
         ananicy_platform::cgroups::reconcile_cgroups(active_names),
     );
+}
+
+/// Test-only seam: log lines can be filtered by another test's log-level
+/// reload, so reload wiring is asserted with a plain counter instead.
+#[cfg(test)]
+pub(crate) static RECONCILE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reconcile_calls() -> usize {
+    RECONCILE_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// The shutdown form of the same reconciliation: with no active rules, every

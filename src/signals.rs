@@ -233,8 +233,15 @@ mod reload_wiring_tests {
     /// `SIGUSR1` reload must reach both platform calls after swapping in the
     /// fresh rule set. `rule_load = false` is the documented exception: the
     /// config is still reloaded, but neither caller runs.
+    // Other tests in this binary also swap `tracing` subscribers and reload
+    // log levels. `with_default` is thread-local, but a config reload still
+    // modifies the shared reload layer, so serialize these scenarios.
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_reload_reaches_both_platform_callers_and_rule_load_false_skips_them() {
+        let _guard = LOG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let reconcile_before = crate::runtime::reconcile_calls();
         let temp = tempfile::tempdir().expect("a temporary config and rule directory");
         let config_path = temp.path().join("ananicy.conf");
         let rules_dir = temp.path().join("rules");
@@ -252,7 +259,11 @@ mod reload_wiring_tests {
 
         let config = Arc::new(Config::new(ConfigSnapshot::default()));
         let rules = SharedRules::new(Rules::new(config.clone()));
-        let (filter, handle) = tracing_subscriber::reload::Layer::new(LevelFilter::INFO);
+        // A permissive filter: `Reload::apply` rewrites the active level from
+        // the config, and another test's config may leave it above `info`.
+        // The recorder itself is thread-local to `with_default`, so widening
+        // the filter cannot pick up events from other tests.
+        let (filter, handle) = tracing_subscriber::reload::Layer::new(LevelFilter::TRACE);
         let reload = Reload::new(
             config,
             config_path.to_string_lossy().into_owned(),
@@ -278,9 +289,9 @@ mod reload_wiring_tests {
                     .any(|line| line.contains("Finished creating cgroups")),
                 "the reload must call the cgroup creation path"
             );
-            assert!(
-                seen.iter()
-                    .any(|line| line.contains("Cgroup cleanup after reload")),
+            assert_eq!(
+                crate::runtime::reconcile_calls(),
+                reconcile_before + 1,
                 "the reload must call the cgroup reconciliation path with the new rules"
             );
             assert!(
@@ -314,10 +325,9 @@ mod reload_wiring_tests {
                     .any(|line| line.contains("Finished creating cgroups")),
                 "rule_load=false must skip cgroup creation"
             );
-            assert!(
-                !seen
-                    .iter()
-                    .any(|line| line.contains("Cgroup cleanup after reload")),
+            assert_eq!(
+                crate::runtime::reconcile_calls(),
+                reconcile_before + 1,
                 "rule_load=false must skip cgroup reconciliation too"
             );
             assert!(
