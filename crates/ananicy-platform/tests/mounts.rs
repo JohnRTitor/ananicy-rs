@@ -173,6 +173,46 @@ fn a_cgroup2_root_is_recognised_without_being_written_to() {
     );
 }
 
+/// Detection is a read-only operation: it must never create a probe cgroup,
+/// even transiently. Comparing the full directory listing before and after
+/// catches the old `mkdir`/`rmdir ananicy_test_cgroup2` fallback as well as any
+/// other mutation of the foreign hierarchy.
+#[test]
+fn a_cpu_cgroup2_mount_is_detected_without_creating_any_directory() {
+    let hierarchy = tempfile::tempdir().unwrap();
+    std::fs::write(
+        hierarchy.path().join("cgroup.controllers"),
+        "cpuset cpu io memory pids\n",
+    )
+    .unwrap();
+    std::fs::write(hierarchy.path().join("cgroup.procs"), "").unwrap();
+    let before: Vec<_> = std::fs::read_dir(hierarchy.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+
+    let mut info = empty_info();
+    parse_cgroups_from_str(
+        &mount_line("cgroup2", hierarchy.path(), "cgroup2"),
+        &mut info,
+    );
+
+    assert_eq!(info.version, CgroupVersion::V2);
+    assert_eq!(info.mount_point, hierarchy.path());
+    assert!(
+        !hierarchy.path().join("ananicy_test_cgroup2").exists(),
+        "the removed probe must not be reintroduced"
+    );
+    let after: Vec<_> = std::fs::read_dir(hierarchy.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        before, after,
+        "detection must leave the hierarchy untouched"
+    );
+}
+
 /// The same root without a `cpu` controller is not a hierarchy this daemon can
 /// apply `CPUQuota` to, and saying so is better than detecting it and failing
 /// every cgroup rule later.

@@ -197,6 +197,25 @@ impl CgroupController for FakeController {
         if !self.owned(&target) {
             return Err(CgroupError::Foreign);
         }
+        // Mirror the real manager's one-time `+cpu` enablement so a recording
+        // test can assert that sibling `ensure_child` calls write it once.
+        if let Some(parent) = target.parent()
+            && self.owned(parent)
+        {
+            let subtree_control = parent.join("cgroup.subtree_control");
+            if subtree_control.exists()
+                && !fs::read_to_string(&subtree_control).is_ok_and(|controllers| {
+                    controllers
+                        .split_whitespace()
+                        .any(|c| c == "cpu" || c == "+cpu")
+                })
+            {
+                self.record(parent, "cgroup.subtree_control", "+cpu\n".to_string());
+                // The kernel normalises the written `+cpu` to a bare `cpu`
+                // line; model that so later calls see cpu already enabled.
+                fs::write(&subtree_control, "cpu\n").map_err(CgroupError::from)?;
+            }
+        }
         if !target.exists() {
             fs::create_dir_all(&target).map_err(CgroupError::from)?;
         }

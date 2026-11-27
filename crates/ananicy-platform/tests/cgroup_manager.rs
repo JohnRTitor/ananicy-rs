@@ -404,6 +404,66 @@ fn subtree_control_is_enabled_before_a_child_is_created() {
     assert!(child.starts_with(&parent));
 }
 
+/// Two rules creating siblings under the same parent must not issue the same
+/// `+cpu` write twice. A sentinel is inserted at offset 0 between the calls:
+/// the second write starts at offset 0 too, so an unconditional write would
+/// overwrite the sentinel and be visible here.
+#[test]
+fn two_ensure_child_calls_enable_cpu_on_the_parent_only_once() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service.clone(), info.mount_point);
+    let subtree_control = ananicy_service.join("cgroup.subtree_control");
+    fs::write(&subtree_control, "").unwrap();
+
+    let first = manager.ensure_child("first.scope").unwrap();
+    assert_eq!(fs::read_to_string(&subtree_control).unwrap(), "+cpu\n");
+    fs::write(&subtree_control, "SENTINEL\n+cpu\n").unwrap();
+
+    let second = manager.ensure_child("second.scope").unwrap();
+    assert_eq!(first.parent(), second.parent());
+    assert_eq!(
+        fs::read_to_string(&subtree_control).unwrap(),
+        "SENTINEL\n+cpu\n",
+        "the second call must see cpu already enabled and skip the write"
+    );
+}
+
+/// The recorded-write harness sees the same single write for sibling children.
+#[test]
+fn the_recording_harness_sees_exactly_one_cpu_enablement() {
+    let fake = FakeController::new();
+    fake.hierarchy()
+        .owned_cgroup("parent.scope", &["cgroup.subtree_control"]);
+
+    fake.ensure_child("parent.scope/first").unwrap();
+    fake.ensure_child("parent.scope/second").unwrap();
+
+    assert_eq!(
+        fake.lines_for("cgroup.subtree_control"),
+        ["+cpu\n"],
+        "exactly one +cpu write for two children of the same parent"
+    );
+}
+
+/// The target itself can be Owned while its parent is not: enabling cpu on
+/// that parent would cross the delegation boundary.
+#[test]
+fn a_foreign_parent_never_receives_a_cpu_enablement() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let mount_point = info.mount_point.clone();
+    let manager = manager(ananicy_service.clone(), mount_point.clone());
+    let slice_control = mount_point.join("system.slice/cgroup.subtree_control");
+    fs::write(&slice_control, "").unwrap();
+
+    // An empty rule name resolves to the delegated root itself.
+    assert_eq!(manager.ensure_child("").unwrap(), ananicy_service);
+    assert_eq!(
+        fs::read_to_string(&slice_control).unwrap(),
+        "",
+        "the Foreign system.slice must be left untouched"
+    );
+}
+
 #[test]
 fn typed_errors_reach_the_caller() {
     let fake = FakeController::new();

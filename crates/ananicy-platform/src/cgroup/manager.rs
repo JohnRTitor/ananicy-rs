@@ -348,31 +348,55 @@ impl CgroupController for CgroupManager {
                 if let Some(parent) = target_dir.parent() {
                     let subtree_control = parent.join("cgroup.subtree_control");
                     if subtree_control.exists() {
-                        match open_control(parent, "cgroup.subtree_control").and_then(|mut f| {
-                            f.write_all(b"+cpu\n")
-                                .map_err(|e| control_error(&subtree_control, e))
-                        }) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                // The kernel refuses `+cpu` on a cgroup that has
-                                // processes in it ("no internal process" rule,
-                                // cgroup_vet_subtree_control_enable()). A delegated
-                                // unit's own cgroup always has one: the service
-                                // itself. Without `cpu` in the parent's
-                                // subtree_control the cgroup about to be created
-                                // has no `cpu.max` and no `cpu.weight`, so every
-                                // `CPUQuota`/`CPUWeight` in a `.cgroups` rule and
-                                // every nice-mirroring weight below it silently
-                                // does nothing. That is worth one line, once, at
-                                // the level an operator is reading.
-                                warn!(
-                                    "Could not enable the cpu controller on {}: {}. \
-                                     Cgroups created under it will have no cpu.max \
-                                     and no cpu.weight, so CPUQuota and CPUWeight \
-                                     rules cannot be applied to them.",
-                                    parent.display(),
-                                    e
-                                );
+                        // Read before writing: systemd (or an earlier call)
+                        // may already have enabled cpu, and a repeated write
+                        // is needless traffic into the single-writer subtree.
+                        let cpu_enabled =
+                            fs::read_to_string(&subtree_control).is_ok_and(|controllers| {
+                                // The kernel reports enabled controllers as
+                                // bare names; a plain test file may still
+                                // hold the `+cpu` line that was written.
+                                controllers
+                                    .split_whitespace()
+                                    .any(|c| c == "cpu" || c == "+cpu")
+                            });
+                        // An Owned target can sit directly on the delegated
+                        // root, whose own parent is still Foreign. Never
+                        // enable controllers above the delegation boundary.
+                        let parent_owned = CgroupOwnership::classify(
+                            parent,
+                            self.delegated_root.as_deref(),
+                            self.info.version == CgroupVersion::V2,
+                        ) != CgroupOwnership::Foreign;
+                        if !cpu_enabled && parent_owned {
+                            match open_control(parent, "cgroup.subtree_control").and_then(
+                                |mut f| {
+                                    f.write_all(b"+cpu\n")
+                                        .map_err(|e| control_error(&subtree_control, e))
+                                },
+                            ) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    // The kernel refuses `+cpu` on a cgroup that has
+                                    // processes in it ("no internal process" rule,
+                                    // cgroup_vet_subtree_control_enable()). A delegated
+                                    // unit's own cgroup always has one: the service
+                                    // itself. Without `cpu` in the parent's
+                                    // subtree_control the cgroup about to be created
+                                    // has no `cpu.max` and no `cpu.weight`, so every
+                                    // `CPUQuota`/`CPUWeight` in a `.cgroups` rule and
+                                    // every nice-mirroring weight below it silently
+                                    // does nothing. That is worth one line, once, at
+                                    // the level an operator is reading.
+                                    warn!(
+                                        "Could not enable the cpu controller on {}: {}. \
+                                         Cgroups created under it will have no cpu.max \
+                                         and no cpu.weight, so CPUQuota and CPUWeight \
+                                         rules cannot be applied to them.",
+                                        parent.display(),
+                                        e
+                                    );
+                                }
                             }
                         }
                     }

@@ -51,13 +51,36 @@ pub fn reset_cgroup_info() {
 ///
 /// Returns whether a hierarchy is available.
 pub fn init_cgroups() -> bool {
-    for _ in 0..CGROUP_INIT_ATTEMPTS {
-        if get_cgroup_info().version != CgroupVersion::None {
+    let found = init_cgroups_with(
+        || {
+            // A cached `None` would make every attempt re-read the same stale
+            // answer. Dropping it before each detection lets a hierarchy that
+            // is mounted during the wait be seen by the next attempt.
+            reset_cgroup_info();
+            get_cgroup_info()
+        },
+        CGROUP_INIT_ATTEMPTS,
+        CGROUP_INIT_INTERVAL,
+    );
+    if !found {
+        reset_cgroup_info();
+    }
+    found
+}
+
+/// The retry loop with its detector injected, so the late-mount behaviour can
+/// be tested without waiting for the real interval or touching the real mount.
+fn init_cgroups_with<F: Fn() -> CgroupInfo>(
+    reader: F,
+    attempts: usize,
+    interval: Duration,
+) -> bool {
+    for _ in 0..attempts {
+        if reader().version != CgroupVersion::None {
             return true;
         }
-        sleep(CGROUP_INIT_INTERVAL);
+        sleep(interval);
     }
-    reset_cgroup_info();
     false
 }
 
@@ -99,40 +122,6 @@ fn v2_has_cpu_controller(mount_point: &Path) -> bool {
     has_cpu && mount_point.join("cgroup.procs").exists()
 }
 
-/// The `mkdir`-based probe, kept only for a hierarchy whose `cgroup.controllers`
-/// could not be read at all. It is the last resort, not the first: see
-/// [`v2_has_cpu_controller`].
-fn v2_probe_by_creating_a_cgroup(mount_point: &Path) -> bool {
-    let test_cgroup = mount_point.join("ananicy_test_cgroup2");
-
-    if test_cgroup.exists() {
-        let _ = fs::remove_dir(&test_cgroup);
-    }
-
-    if fs::create_dir(&test_cgroup).is_err() {
-        trace!(
-            "get_cgroup_version: cannot create a probe cgroup at {}",
-            mount_point.display()
-        );
-        return false;
-    }
-
-    let controllers_path = test_cgroup.join("cgroup.controllers");
-    let mut has_cpu_controller = false;
-
-    if let Ok(controllers) = fs::read_to_string(&controllers_path)
-        && controllers.split_whitespace().any(|c| c == "cpu")
-    {
-        has_cpu_controller = true;
-    }
-
-    let has_cpu_max = test_cgroup.join("cpu.max").exists();
-
-    let _ = fs::remove_dir(&test_cgroup);
-
-    has_cpu_controller && has_cpu_max
-}
-
 pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
     for line in content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -144,8 +133,7 @@ pub fn parse_cgroups_from_str(content: &str, info: &mut CgroupInfo) {
         let mount_point = PathBuf::from(parts[1]);
 
         if fs_type == "cgroup2" {
-            if !v2_has_cpu_controller(&mount_point) && !v2_probe_by_creating_a_cgroup(&mount_point)
-            {
+            if !v2_has_cpu_controller(&mount_point) {
                 continue;
             }
             trace!("Found cgroup v2 at {}", mount_point.display());
@@ -171,12 +159,11 @@ pub fn get_cgroup_info() -> CgroupInfo {
         return i.clone();
     }
 
-    // A cached answer is not published here: the detection below reads the mount
-    // table and, in the fallback case, creates a directory in the cgroup root,
-    // and two threads doing that at once used to overwrite each other's result
-    // with whichever finished last — including overwriting a correct
-    // "cgroup v2" with "none". A repeat costs one read of `/proc/self/mounts`,
-    // which is a few kilobytes and happens at most once per `reset_cgroup_info`.
+    // A cached answer is not published here: the detection below reads the
+    // mount table, and publishing only when nothing is cached keeps the first
+    // successful detection authoritative if two threads detect at once. A
+    // repeat costs one read of `/proc/self/mounts`, which is a few kilobytes
+    // and happens at most once per `reset_cgroup_info`.
     let mut info = CgroupInfo {
         version: CgroupVersion::None,
         mount_point: PathBuf::new(),
@@ -195,4 +182,79 @@ pub fn get_cgroup_info() -> CgroupInfo {
     }
 
     info
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        std::{cell::Cell, sync::Mutex},
+    };
+
+    // These tests reset the process-global detection cache, and they count
+    // reader calls, so they must not interleave with each other.
+    static DETECTION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn detected(version: CgroupVersion) -> CgroupInfo {
+        CgroupInfo {
+            version,
+            mount_point: if version == CgroupVersion::None {
+                PathBuf::new()
+            } else {
+                PathBuf::from("/sys/fs/cgroup")
+            },
+        }
+    }
+
+    /// A hierarchy mounted while the startup loop is waiting is picked up on
+    /// the next attempt instead of being hidden by a cached `None`. The reader
+    /// is injected and the interval is zero, so this costs no real waiting.
+    #[test]
+    fn a_hierarchy_that_appears_on_the_third_attempt_is_found() {
+        let _guard = DETECTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let calls = Cell::new(0);
+
+        let found = init_cgroups_with(
+            || {
+                let attempt = calls.get();
+                calls.set(attempt + 1);
+                if attempt < 2 {
+                    detected(CgroupVersion::None)
+                } else {
+                    detected(CgroupVersion::V2)
+                }
+            },
+            5,
+            Duration::ZERO,
+        );
+
+        assert!(found, "the hierarchy installed on attempt 3 must be found");
+        assert_eq!(
+            calls.get(),
+            3,
+            "detection must stop as soon as the hierarchy appears"
+        );
+    }
+
+    #[test]
+    fn every_attempt_is_made_when_no_hierarchy_ever_appears() {
+        let _guard = DETECTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let calls = Cell::new(0);
+
+        let found = init_cgroups_with(
+            || {
+                calls.set(calls.get() + 1);
+                detected(CgroupVersion::None)
+            },
+            4,
+            Duration::ZERO,
+        );
+
+        assert!(!found);
+        assert_eq!(calls.get(), 4, "each attempt must make a fresh detection");
+    }
 }
