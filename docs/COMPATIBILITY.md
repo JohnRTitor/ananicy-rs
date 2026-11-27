@@ -80,14 +80,25 @@ require an edit to a rule:
   `cpu.weight`, which also reweights other tasks sharing that cgroup. Set
   `apply_cpu_weight_from_nice = false` to keep `nice` only. The mirror is
   skipped for realtime tasks, for which `cpu.weight` has no effect.
-- Real-time (`fifo`/`rr`) tasks stay in their existing cgroup. Unlike
-  `ananicy-cpp`, this daemon does not move them to the hierarchy root, which is
-  a foreign cgroup outside the delegated subtree. The policy is re-checked
-  after `set_sched`, so a rule that itself makes a task realtime also skips its
-  own `cgroup` attribute in that event. A realtime task in a cgroup with a
-  `cpu.max` quota produces at most one warning per pid while the bounded cache
-  retains it; this matters on kernels built with `CONFIG_RT_GROUP_SCHED=y` and is
-  otherwise informational.
+- Real-time (`fifo`/`rr`) tasks stay in their existing cgroup: while
+  `cgroup_realtime_workaround` is on, the `cgroup` attribute is skipped
+  unconditionally for them on cgroup v2. Unlike `ananicy-cpp`, this daemon does
+  not move them to the hierarchy root, which is a foreign cgroup outside the
+  delegated subtree. The policy is re-checked after `set_sched`, so a rule that
+  itself makes a task realtime also skips its own `cgroup` attribute in that
+  event. A realtime task in a cgroup with a `cpu.max` quota produces at most one
+  warning per pid (bounded cache); `CONFIG_RT_GROUP_SCHED=y` is what makes the
+  quota a real restriction, and without it the warning is informational.
+- `CPUQuota: 0` is intentionally **not** inherited from `ananicy-cpp`. The
+  reference would give the cgroup no CPU time at all; here the value is ignored
+  with a warning and the kernel's unlimited default is left in place. Quotas
+  above 100% are clamped to 100%, and values above `u32::MAX` for `CPUQuota` or
+  `CPUWeight` are ignored with a warning rather than truncated.
+- A `.cgroups` entry removed on `SIGUSR1` reload is cleaned up: a cgroup created
+  by this run has its settings reset to kernel defaults and is removed if it is
+  empty; a populated one is kept with its settings untouched. The same cleanup
+  runs on `SIGINT`/`SIGTERM`; cgroups outside the delegated subtree or left by a
+  previous run are never removed.
 - On a hybrid cgroup v1/v2 host this daemon prefers the unified hierarchy;
   the reference stops at the first mount it recognises. A rule's cgroup can
   therefore land in a different directory.

@@ -65,6 +65,7 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Netlink Overrun Recovery:** If the Netlink listener is overwhelmed and drops events (`ENOBUFS`), `ananicy-cpp` will exit. `ananicy-rs` recovers automatically by falling back to a full `procfs` scan, waiting briefly, and reconnecting without terminating the daemon.
 - **Startup Cgroup Detection:** On systems where cgroup filesystems mount slightly after the daemon starts during early boot, `ananicy-cpp` may fail to detect cgroups. `ananicy-rs` implements a retry loop (up to ~10 seconds) to wait for cgroup mounts to become available before giving up.
 - **Resilient Priority Application:** If standard process priority adjustments (like `nice` values) are rejected by the kernel (e.g., due to Permission Denied), `ananicy-cpp` aborts applying the rule entirely. `ananicy-rs` will log the failure but continue executing, ensuring that the `cgroup_realtime_workaround` (if enabled in your config) is still applied.
+- **Realtime tasks and the `nice` mirror:** With `cgroup_realtime_workaround` on, the rule's `cgroup` attribute is skipped unconditionally for realtime tasks on cgroup v2; `CONFIG_RT_GROUP_SCHED=y` decides only whether the `cpu.max` diagnostic matters. The `nice` → `cpu.weight` mirror is also skipped for realtime tasks, independently of that option, because `cpu.weight` affects only fair-class tasks. Realtime status is re-read after `set_sched` succeeds and before the mirror and `cgroup` decisions, so a rule that itself makes a CFS task realtime skips both in the same event — an improvement over both upstream daemons' earlier sampling.
 - **Unconditional Regex Support:** While `ananicy-cpp` treats regex support as an optional compile-time dependency, `ananicy-rs` includes it unconditionally by default, as the Rust regex engine is lightweight and avoids the complexities of maintaining a separate feature-gated build variant. It is also pure Rust, so it needs no system library and no pkg-config probe.
 - **NixOS wrapper executables:** A process whose name starts with `.` and ends with `-wrapped` (how NixOS names the real binary of a shell-script wrapper) is looked up without the leading `.` and the `-wrapped` suffix, so the rule written for the program inside the wrapper applies. `ananicy-cpp` matches the literal name and finds nothing.
 - **Strict Success Semantics:** When `log_applied_rule` is enabled, `ananicy-cpp` logs the rule application message *before* applying the rule attributes. If the application fails, a false positive success message remains in the log. `ananicy-rs` intentionally emits the message only after all enabled rule attributes complete successfully; partial, skipped, and failed applications are reported separately. Rust also keeps the opt-in applied-rule event independent of its separate debug rule-match event.
@@ -400,7 +401,7 @@ indistinguishable from never having looked: this table is the evidence of covera
   | `create_cgroup` idempotence | yes | yes |
   | `cgroup.subtree_control` | `+cpu` | `+cpu` |
   | `cgroup.procs` vs `tasks` | correct per version | same |
-  | Realtime cgroup target | hierarchy root | root move intentionally absent; rule cgroup skipped for RT |
+  | Realtime cgroup target | hierarchy root | root move intentionally absent; rule cgroup skipped for realtime tasks |
   | Kernel-thread detection | computed, unused | absent |
   | No cgroup hierarchy | starts anyway | starts anyway | — |
   | Panic backtrace | custom handler | panic hook |
@@ -451,6 +452,12 @@ the test each was held to.
   | `.foo-wrapped` config support | absent | present |
   | `apply_cpu_weight_from_nice` | absent | gates the mirror |
   | `deadline` scheduler availability | n/a | falls back with a warning |
+
+Two of the rows above interact with realtime handling: the `nice` → `cpu.weight` mirror is
+skipped for realtime tasks on cgroup v2 (independently of `apply_cpu_weight_from_nice`),
+and realtime status is re-checked after `sched` is applied, before the mirror and `cgroup`
+decisions, so a rule that makes a CFS task realtime skips both in that event. The
+re-check goes beyond the reference's pre-application sample; see §5.
 
 ## 9. Capabilities `ananicy-cpp` Has and This Daemon Does Not
 

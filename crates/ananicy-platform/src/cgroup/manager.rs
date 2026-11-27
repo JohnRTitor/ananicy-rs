@@ -107,6 +107,35 @@ fn is_errno(error: &CgroupError, errno: i32) -> bool {
     matches!(error, CgroupError::Io(e) if e.raw_os_error() == Some(errno))
 }
 
+/// Refuse a target whose path crosses a symbolic link.
+///
+/// `resolve_rule_name` validates components lexically, and `create_dir_all`
+/// follows symlinks: a link named `delegated/escape` pointing at `user.slice`
+/// would let a rule create a directory outside the delegated subtree even
+/// though the name passed every lexical check. Real cgroupfs forbids symlinks,
+/// but a writable temp hierarchy or a mis-mounted base does not, so check the
+/// existing ancestors before any directory is created.
+fn no_symlink_component(path: &Path, base: &Path) -> CgroupResult<()> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current == base {
+            return Ok(());
+        }
+        if let Ok(meta) = fs::symlink_metadata(&current)
+            && meta.file_type().is_symlink()
+        {
+            warn!(
+                "Security: Refusing cgroup target {:?}: a component is a symlink",
+                path
+            );
+            return Err(CgroupError::InvalidName(path.display().to_string()));
+        }
+        if !current.pop() {
+            return Ok(());
+        }
+    }
+}
+
 /// The single way this module opens cgroup control and pid files for writing.
 ///
 /// `O_NOFOLLOW` closes the check-then-open window: a control file replaced by a
@@ -508,6 +537,10 @@ impl CgroupManager {
 impl CgroupController for CgroupManager {
     fn ensure_child(&self, name: &str) -> CgroupResult<PathBuf> {
         let target_dir = self.resolve_target(name)?;
+        // Check the existing ancestors before `create_dir_all` can follow a
+        // symlink out of the delegated subtree. The mount point is the trusted
+        // base; everything below it must be a real directory.
+        no_symlink_component(&target_dir, &self.info.mount_point)?;
 
         let ownership = CgroupOwnership::classify(
             &target_dir,

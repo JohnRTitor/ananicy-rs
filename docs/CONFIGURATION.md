@@ -128,15 +128,16 @@ reproduce `ananicy-cpp`'s additional move of the process to the hierarchy root: 
 is a foreign cgroup, outside this daemon's delegated subtree, so a cross-boundary move
 would be refused before reaching the kernel.
 
-The realtime policy is re-read after `set_sched` succeeds. A rule that *makes* a CFS task
-realtime (`"sched": "fifo"` or `"rr"`, with `rtprio` defaulting to 1) therefore skips its
-own `cgroup` attribute in the same event. `ananicy-cpp` samples realtime status before
-applying the rule and does not recover this case; the re-check here is stronger than
-parity.
+The realtime policy is re-read after `set_sched` succeeds and before the `cgroup` and
+mirror decisions. A rule that *makes* a CFS task realtime (`"sched": "fifo"` or `"rr"`,
+with `rtprio` defaulting to 1) therefore skips both its own `cgroup` attribute and the
+`nice` → `cpu.weight` mirror in the same event. `ananicy-cpp` samples realtime status
+before applying the rule and does not recover this case; the re-check here is stronger
+than parity.
 
 When a realtime task is found in a cgroup whose own-or-ancestor `cpu.max` has a quota
-other than `max`, the daemon emits at most one warning per pid while the bounded cache
-retains it and keeps the task where it is. The warning is non-fatal and is not reported as a rule failure; on
+other than `max`, the daemon emits at most one warning per pid (bounded cache) and keeps
+the task where it is. The warning is non-fatal and is not reported as a rule failure; on
 kernels without `CONFIG_RT_GROUP_SCHED=y` it is merely informational.
 
 The `nice` → `cpu.weight` mirror described above is also skipped for realtime tasks on
@@ -299,11 +300,9 @@ shipped sub-cgroup that path is `…/ananicy-rs.service/delegated`, and the cgro
 manages from is the parent of that sub-cgroup — the unit's own cgroup — because the
 sub-cgroup holds the daemon and cannot take a controller itself. The step up is bounded
 to one level and happens only for the shipped unit's `delegated` subgroup with the parent
-verified as ours: a readable, empty cgroup strictly inside the mount point, with a
-`trusted.delegate`/`user.delegate` xattr or, when xattrs cannot be read, the daemon's
-own `/proc/self/cgroup` path at or below that `delegated` sub-cgroup. The mount point
-itself is never adopted, so an empty path outside the delegated subtree cannot widen
-ownership to the rest of the hierarchy.
+verified as ours: a readable, empty cgroup strictly inside the mount point. The mount
+point itself is never adopted, so an empty path outside the delegated subtree cannot
+widen ownership to the rest of the hierarchy.
 
 What does *not* work is `CPUWeight=` on the unit, which is the obvious thing to reach for.
 A unit's `cgroup.subtree_control` is populated from what the unit's *children* require,

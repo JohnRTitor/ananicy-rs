@@ -187,3 +187,143 @@ pub(crate) fn install(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod reload_wiring_tests {
+    use {
+        super::*,
+        ananicy_core::{config::ConfigSnapshot, rules::Rules},
+        std::{fmt, fs, sync::Mutex},
+        tracing::{Event, Subscriber, field::Field, field::Visit},
+        tracing_subscriber::{
+            filter::LevelFilter,
+            layer::{Context, Layer},
+            prelude::*,
+        },
+    };
+
+    /// The smallest event recorder that can answer "did this caller reach the
+    /// platform?" without injecting into `runtime` or touching the machine's
+    /// cgroups: the two platform callers each log a fixed line on the way out.
+    #[derive(Default)]
+    struct Messages(Arc<Mutex<Vec<String>>>);
+
+    #[derive(Default)]
+    struct MessageVisitor(String);
+
+    impl Visit for MessageVisitor {
+        fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    impl<S: Subscriber> Layer<S> for Messages {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = MessageVisitor::default();
+            event.record(&mut visitor);
+            self.0
+                .lock()
+                .expect("the recorder is not poisoned")
+                .push(visitor.0);
+        }
+    }
+
+    /// `SIGUSR1` reload must reach both platform calls after swapping in the
+    /// fresh rule set. `rule_load = false` is the documented exception: the
+    /// config is still reloaded, but neither caller runs.
+    #[test]
+    fn a_reload_reaches_both_platform_callers_and_rule_load_false_skips_them() {
+        let temp = tempfile::tempdir().expect("a temporary config and rule directory");
+        let config_path = temp.path().join("ananicy.conf");
+        let rules_dir = temp.path().join("rules");
+        fs::create_dir(&rules_dir).expect("a rules directory");
+        fs::write(
+            &config_path,
+            "rule_load=true\ncgroup_load=true\nloglevel=info\n",
+        )
+        .expect("a config file");
+        fs::write(
+            rules_dir.join("probe.rules"),
+            "{\"name\":\"reload-wiring-probe\",\"nice\":1}\n",
+        )
+        .expect("a rule file");
+
+        let config = Arc::new(Config::new(ConfigSnapshot::default()));
+        let rules = SharedRules::new(Rules::new(config.clone()));
+        let (filter, handle) = tracing_subscriber::reload::Layer::new(LevelFilter::INFO);
+        let reload = Reload::new(
+            config,
+            config_path.to_string_lossy().into_owned(),
+            rules_dir.to_string_lossy().into_owned(),
+            rules.clone(),
+            handle,
+            None,
+        );
+
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(Messages(messages.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            reload.apply();
+
+            let seen = messages
+                .lock()
+                .expect("the recorder is not poisoned")
+                .clone();
+            assert!(
+                seen.iter()
+                    .any(|line| line.contains("Finished creating cgroups")),
+                "the reload must call the cgroup creation path"
+            );
+            assert!(
+                seen.iter()
+                    .any(|line| line.contains("Cgroup cleanup after reload")),
+                "the reload must call the cgroup reconciliation path with the new rules"
+            );
+            assert!(
+                rules.get().get_rule("reload-wiring-probe").is_some(),
+                "the freshly loaded rule set must have been installed"
+            );
+
+            messages
+                .lock()
+                .expect("the recorder is not poisoned")
+                .clear();
+            fs::write(
+                rules_dir.join("skipped.rules"),
+                "{\"name\":\"reload-wiring-skipped\",\"nice\":2}\n",
+            )
+            .expect("a second rule file");
+            fs::write(&config_path, "rule_load=false\nloglevel=info\n").expect("a new config file");
+            reload.apply();
+
+            assert!(
+                !reload.config.get().rule_load,
+                "the new config must be in force after the reload"
+            );
+            let seen = messages
+                .lock()
+                .expect("the recorder is not poisoned")
+                .clone();
+            assert!(
+                !seen
+                    .iter()
+                    .any(|line| line.contains("Finished creating cgroups")),
+                "rule_load=false must skip cgroup creation"
+            );
+            assert!(
+                !seen
+                    .iter()
+                    .any(|line| line.contains("Cgroup cleanup after reload")),
+                "rule_load=false must skip cgroup reconciliation too"
+            );
+            assert!(
+                rules.get().get_rule("reload-wiring-skipped").is_none(),
+                "rule_load=false must leave the rules already installed alone"
+            );
+        });
+    }
+}

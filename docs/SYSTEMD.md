@@ -182,7 +182,9 @@ mutation outside it. What that means in practice:
   for the shipped unit's `delegated` subgroup, and only with the parent verified as
   ours: a readable, empty cgroup strictly inside the mount point. The step up is
   bounded to one level and the mount point itself is never adopted, so ownership
-  cannot widen to the rest of the hierarchy. An empty parent alone does not qualify.
+  cannot widen to the rest of the hierarchy. An empty parent alone does not qualify:
+  the discovered sub-cgroup must be this daemon's own, not a path that merely looks
+  like the shipped unit's.
 
   `CPUWeight=` on the unit would *not* fix it, and it is worth saying why because it is
   the obvious thing to try. A unit's `cgroup.subtree_control` is enabled from what the
@@ -237,6 +239,12 @@ Three things about what a reload can and cannot reach:
   cgroup that does not exist yet has no directory until one is made, and a restart
   would have made it, so a reload does too. Settings are applied whether or not
   the cgroup already existed, so editing an existing entry works as well.
+* **It cleans up a removed `.cgroups` entry.** For a cgroup this run created and
+  no rule names any more, `cpu.max` and `cpu.weight` are reset to the kernel
+  defaults and the cgroup is removed when it is empty; a populated one is kept
+  with its settings untouched. The same cleanup runs on a graceful `SIGTERM`
+  (or `SIGINT`) stop. Cgroups left by earlier runs or outside the delegated
+  subtree are never removed.
 
 The rule set is swapped in atomically. A process being matched at the moment of the
 swap is matched against one consistent set rather than a mixture of the old and the

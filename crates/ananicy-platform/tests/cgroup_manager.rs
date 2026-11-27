@@ -439,6 +439,30 @@ fn two_ensure_child_calls_enable_cpu_on_the_parent_only_once() {
     );
 }
 
+/// The kernel reports enabled controllers as bare names after accepting
+/// `+cpu`, so the skip must also work on a normalized `cpu\n` line. The
+/// sentinel would be overwritten by an unconditional write.
+#[test]
+fn a_normalized_cpu_line_on_the_parent_suppresses_the_second_write() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service.clone(), info.mount_point);
+    let subtree_control = ananicy_service.join("cgroup.subtree_control");
+    fs::write(&subtree_control, "").unwrap();
+
+    let first = manager.ensure_child("first.scope").unwrap();
+    assert_eq!(fs::read_to_string(&subtree_control).unwrap(), "+cpu\n");
+    // What the kernel leaves in the file after that write.
+    fs::write(&subtree_control, "SENTINEL\ncpu\n").unwrap();
+
+    let second = manager.ensure_child("second.scope").unwrap();
+    assert_eq!(first.parent(), second.parent());
+    assert_eq!(
+        fs::read_to_string(&subtree_control).unwrap(),
+        "SENTINEL\ncpu\n",
+        "a bare `cpu` means cpu is enabled: the second call must not write again"
+    );
+}
+
 /// The recorded-write harness sees the same single write for sibling children.
 #[test]
 fn the_recording_harness_sees_exactly_one_cpu_enablement() {
@@ -541,6 +565,11 @@ fn the_recording_controller_keeps_every_control_line() {
 /// The quota matrix at the write boundary: 100% is preserved, and `Unlimited`
 /// writes the kernel's `max` (v2) / `-1` (v1) rather than a zero-bandwidth
 /// limit. A percentage above 100 is clamped by the manager as before.
+///
+/// `Percentage(0)` is included at this boundary even though the runtime rejects
+/// `CPUQuota = 0` when it parses a rule and leaves the field unset: the manager
+/// is a public library API, and its write path still has to render the value it
+/// is given rather than silently substituting a different one.
 #[test]
 fn quota_matrix_at_the_write_boundary() {
     let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
@@ -554,6 +583,9 @@ fn quota_matrix_at_the_write_boundary() {
         .unwrap_or(1);
 
     for (quota, expected) in [
+        // The runtime rejects 0 before it reaches this layer; here the manager
+        // must write the exact zero-bandwidth line the caller asked for.
+        (CpuQuota::Percentage(0), "0 100000\n".to_string()),
         (
             CpuQuota::Percentage(100),
             format!("{} 100000\n", 100_000 * cores),
@@ -771,4 +803,28 @@ fn remove_cgroup_retries_ebusy_only_up_to_the_bound() {
     );
     assert_eq!(sleeps.get(), 2);
     assert!(!child.exists());
+}
+
+/// A symlink inside the delegated subtree must not let `create_dir_all`
+/// create a child outside it. Real cgroupfs forbids symlinks, but the lexical
+/// name validation cannot tell a link from a directory on a writable or
+/// mis-mounted hierarchy, so `ensure_child` checks each existing ancestor.
+#[test]
+fn a_symlink_cannot_escape_the_delegated_subtree() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service.clone(), info.mount_point.clone());
+
+    let foreign = info.mount_point.join("user.slice");
+    let escape = ananicy_service.join("escape");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign, &escape).expect("a symlink in the test hierarchy");
+
+    assert!(
+        manager.ensure_child("escape/x").is_err(),
+        "a rule whose path crosses a symlink must be refused"
+    );
+    assert!(
+        !foreign.join("x").exists(),
+        "nothing may be created outside the delegated subtree"
+    );
 }

@@ -24,9 +24,9 @@ include it, use `cargo test --workspace`.
 
 Component tests use dependency injection and temporary directories: the rules
 engine is driven through a recording `PlatformActions` implementation
-(`crates/ananicy-core/tests/common/mod.rs`), cgroup hierarchies are simulated in
-a `tempfile` directory, and CPU topology is read from a checked-in `sysfs`
-fixture instead of the host.
+(`crates/ananicy-core/tests/common/mod.rs`), with a matching helper for cgroup
+hierarchies (`crates/ananicy-platform/tests/common/mod.rs`), and CPU topology is
+read from a checked-in `sysfs` fixture instead of the host.
 
 ## What lives where
 
@@ -55,6 +55,7 @@ fixture instead of the host.
 | `tests/mounts.rs` | cgroup v1/v2 detection from a mount table |
 | `tests/topology.rs` | big/little, LLC and NUMA detection from a `sysfs` fixture |
 | `tests/cgroup_manager.rs` | owned vs. foreign cgroup mutations against a simulated hierarchy |
+| `tests/cgroup_lifecycle.rs` | hermetic cgroup lifecycle reconciliation: removed rules reset and delete empty cgroups, failed settings still registered, populated/foreign/prior-run cgroups and the delegated root retained, bounded `EBUSY` retries |
 | `tests/cgroups.rs` | **system test**: the cgroup hierarchy of the host |
 | `tests/affinity.rs` | **system test**: `sched_setaffinity` on the test process itself |
 

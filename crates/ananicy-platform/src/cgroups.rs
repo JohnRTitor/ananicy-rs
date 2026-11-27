@@ -1,6 +1,6 @@
 use std::{
+    collections::HashMap,
     fmt, fs, io,
-    num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, RwLock},
     thread,
@@ -12,7 +12,6 @@ use {
         PlatformError,
         PlatformError::{NotFound, Unsupported},
     },
-    lru::LruCache,
     tracing::{debug, warn},
 };
 
@@ -223,30 +222,35 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> CgroupApply
 /// against the current manager at cleanup time, because delegation can be
 /// re-detected between creation and a reload.
 ///
-/// Behind the same bounded, clone-shared pattern as the manager's
-/// `reported_weightless` cache: the registry lives in a process-global, so the
-/// `Arc` makes a shared handle possible, and a bounded LRU stops a daemon that
-/// churns rule files from holding every name it has ever seen.
-type CreatedRegistry = Arc<Mutex<LruCache<String, PathBuf>>>;
+/// Deliberately *unbounded*: this is a cleanup ledger, not a cache. An LRU
+/// eviction here silently dropped the only record that a directory was ours to
+/// remove, so the evicted cgroup was never cleaned up at reload or shutdown and
+/// leaked for the life of the host. Entries are removed by `forget_created`
+/// when the cgroup is actually reconciled; the number of entries is bounded in
+/// practice by the number of `.cgroups` rules, which is a property of the rule
+/// set rather than of how long the daemon has been running. Do not reintroduce
+/// a capacity without adding an eviction path that cleans the evicted path too.
+type CreatedRegistry = Arc<Mutex<HashMap<String, PathBuf>>>;
+
+/// The old LRU capacity, kept only so the regression test can exceed the
+/// bound that used to drop entries before reconciliation.
+#[cfg(test)]
 const CREATED_REGISTRY_CAPACITY: usize = 1024;
 
 fn created_registry() -> &'static CreatedRegistry {
     static REGISTRY: OnceLock<CreatedRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(|| {
-        let capacity = NonZeroUsize::new(CREATED_REGISTRY_CAPACITY).unwrap_or(NonZeroUsize::MIN);
-        Arc::new(Mutex::new(LruCache::new(capacity)))
-    })
+    REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
 fn record_created(name: &str, path: &Path) {
     if let Ok(mut registry) = created_registry().lock() {
-        registry.put(name.to_string(), path.to_path_buf());
+        registry.insert(name.to_string(), path.to_path_buf());
     }
 }
 
 fn forget_created(name: &str) {
     if let Ok(mut registry) = created_registry().lock() {
-        registry.pop(name);
+        registry.remove(name);
     }
 }
 
@@ -255,7 +259,7 @@ pub fn created_cgroup_names() -> Vec<String> {
     let Ok(registry) = created_registry().lock() else {
         return Vec::new();
     };
-    registry.iter().map(|(name, _)| name.clone()).collect()
+    registry.keys().cloned().collect()
 }
 
 /// Forgets every recorded cgroup. Intended for tests, which replace the
@@ -665,12 +669,16 @@ mod tests {
         );
     }
 
-    /// The registry is a bounded LRU, shared behind an `Arc`, and can be
-    /// emptied between scenarios.
+    /// The registry is a cleanup ledger, not a cache: it keeps every entry
+    /// until reconciliation removes it, and can be emptied between scenarios.
     #[test]
-    fn the_created_registry_is_bounded_and_can_be_cleared() {
+    fn the_created_registry_keeps_every_entry_and_can_be_cleared() {
+        // The registry is process-global: other cgroups tests run in parallel
+        // and add entries, so this scenario needs the same lock they take.
+        let _guard = MANAGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_created_registry();
-        for i in 0..(CREATED_REGISTRY_CAPACITY * 2) {
+        let count = CREATED_REGISTRY_CAPACITY * 2;
+        for i in 0..count {
             record_created(
                 &format!("cgroup-{i}"),
                 Path::new(&format!("/tmp/cgroup-{i}")),
@@ -678,10 +686,71 @@ mod tests {
         }
         assert_eq!(
             created_cgroup_names().len(),
-            CREATED_REGISTRY_CAPACITY,
-            "the registry must not grow without bound"
+            count,
+            "dropping an entry here would leak the cgroup it points at"
         );
         clear_created_registry();
         assert!(created_cgroup_names().is_empty());
+    }
+
+    /// The regression behind the old bound: a cgroup created after the LRU
+    /// filled up had no record left and survived every later reload and
+    /// shutdown. More entries than the old capacity must all be reconciled.
+    #[test]
+    fn reconciling_past_the_old_registry_bound_removes_every_cgroup() {
+        let _guard = MANAGER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let hierarchy = tempfile::tempdir().expect("a temporary hierarchy");
+        let root = hierarchy.path().join("system.slice/ananicy.service");
+        fs::create_dir_all(&root).expect("a delegated root");
+        fs::write(root.join("cgroup.procs"), "").expect("the root's procs file");
+        set_cgroup_manager_for_tests(
+            CgroupInfo {
+                version: CgroupVersion::V2,
+                mount_point: hierarchy.path().to_path_buf(),
+            },
+            Some(root.clone()),
+        );
+        clear_created_registry();
+
+        let count = CREATED_REGISTRY_CAPACITY + 37;
+        for i in 0..count {
+            let name = format!("overflow-{i}.scope");
+            assert!(
+                create_cgroup(&name, CgroupSettings::default()).created(),
+                "{name} must be created and registered"
+            );
+            // A real cgroup exposes cgroup.procs as a pseudo-file; the temp
+            // hierarchy uses a regular file, which the injected rmdir removes
+            // first so the delete mirrors the kernel's behaviour.
+            fs::write(root.join(&name).join("cgroup.procs"), "").expect("an empty cgroup");
+        }
+        assert_eq!(created_cgroup_names().len(), count);
+
+        let remove_dir = Arc::new(|path: &Path| {
+            match fs::remove_file(path.join("cgroup.procs")) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            fs::remove_dir(path)
+        });
+        let summary = reconcile_cgroups_with(
+            &[],
+            &ReconcileOptions {
+                sleep: Arc::new(|_| {}),
+                remove_dir,
+            },
+        );
+        assert_eq!(
+            summary.removed, count,
+            "every recorded cgroup must be removed, not only the ones that fit the old LRU"
+        );
+        assert!(created_cgroup_names().is_empty());
+        for i in 0..count {
+            assert!(!root.join(format!("overflow-{i}.scope")).exists());
+        }
+
+        clear_created_registry();
+        reset_cgroup_detection();
     }
 }

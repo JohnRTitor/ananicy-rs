@@ -52,13 +52,13 @@ pub fn reset_cgroup_info() {
 /// Returns whether a hierarchy is available.
 pub fn init_cgroups() -> bool {
     let found = init_cgroups_with(
-        || {
-            // A cached `None` would make every attempt re-read the same stale
-            // answer. Dropping it before each detection lets a hierarchy that
-            // is mounted during the wait be seen by the next attempt.
-            reset_cgroup_info();
-            get_cgroup_info()
-        },
+        get_cgroup_info,
+        // A cached `None` would make every attempt re-read the same stale
+        // answer. Dropping it before each detection lets a hierarchy that is
+        // mounted during the wait be seen by the next attempt. The reset is
+        // injected alongside the reader so a test can drive the same pairing
+        // as production instead of a stand-in that omits it.
+        reset_cgroup_info,
         CGROUP_INIT_ATTEMPTS,
         CGROUP_INIT_INTERVAL,
     );
@@ -68,14 +68,20 @@ pub fn init_cgroups() -> bool {
     found
 }
 
-/// The retry loop with its detector injected, so the late-mount behaviour can
-/// be tested without waiting for the real interval or touching the real mount.
-fn init_cgroups_with<F: Fn() -> CgroupInfo>(
+/// The retry loop with its detector and cache reset injected, so the
+/// late-mount behaviour can be tested without waiting for the real interval or
+/// touching the real mount. Both halves are parameters because the production
+/// closure pairs `reset_cgroup_info()` with `get_cgroup_info()`: leaving the
+/// reset out of the seam was what let a cached `None` hide a hierarchy mounted
+/// during the wait from a test.
+fn init_cgroups_with<F: Fn() -> CgroupInfo, R: Fn()>(
     reader: F,
+    reset: R,
     attempts: usize,
     interval: Duration,
 ) -> bool {
     for _ in 0..attempts {
+        reset();
         if reader().version != CgroupVersion::None {
             return true;
         }
@@ -188,7 +194,10 @@ pub fn get_cgroup_info() -> CgroupInfo {
 mod tests {
     use {
         super::*,
-        std::{cell::Cell, sync::Mutex},
+        std::{
+            cell::{Cell, RefCell},
+            sync::Mutex,
+        },
     };
 
     // These tests reset the process-global detection cache, and they count
@@ -207,25 +216,35 @@ mod tests {
     }
 
     /// A hierarchy mounted while the startup loop is waiting is picked up on
-    /// the next attempt instead of being hidden by a cached `None`. The reader
-    /// is injected and the interval is zero, so this costs no real waiting.
+    /// the next attempt instead of being hidden by a cached `None`. The test
+    /// mirrors the production pair: the reader returns a cached answer when
+    /// there is one and only consults the "mount table" when the injected reset
+    /// has cleared it. A seam without that reset would keep returning the
+    /// first `None` and never see the hierarchy.
     #[test]
     fn a_hierarchy_that_appears_on_the_third_attempt_is_found() {
         let _guard = DETECTION_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let calls = Cell::new(0);
+        let cache = RefCell::new(Some(detected(CgroupVersion::None)));
 
         let found = init_cgroups_with(
             || {
+                if let Some(cached) = cache.borrow().clone() {
+                    return cached;
+                }
                 let attempt = calls.get();
                 calls.set(attempt + 1);
-                if attempt < 2 {
+                let fresh = if attempt < 2 {
                     detected(CgroupVersion::None)
                 } else {
                     detected(CgroupVersion::V2)
-                }
+                };
+                *cache.borrow_mut() = Some(fresh.clone());
+                fresh
             },
+            || *cache.borrow_mut() = None,
             5,
             Duration::ZERO,
         );
@@ -235,6 +254,33 @@ mod tests {
             calls.get(),
             3,
             "detection must stop as soon as the hierarchy appears"
+        );
+    }
+
+    /// The reset is part of the contract, not an implementation detail of the
+    /// production closure: it runs before every read, including the last one.
+    #[test]
+    fn the_reset_runs_before_every_read() {
+        let _guard = DETECTION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let events = RefCell::new(Vec::new());
+
+        let found = init_cgroups_with(
+            || {
+                events.borrow_mut().push("read");
+                detected(CgroupVersion::None)
+            },
+            || events.borrow_mut().push("reset"),
+            3,
+            Duration::ZERO,
+        );
+
+        assert!(!found);
+        assert_eq!(
+            events.into_inner(),
+            ["reset", "read", "reset", "read", "reset", "read"],
+            "each attempt must drop the cached answer before detecting again"
         );
     }
 
@@ -250,6 +296,7 @@ mod tests {
                 calls.set(calls.get() + 1);
                 detected(CgroupVersion::None)
             },
+            || {},
             4,
             Duration::ZERO,
         );
