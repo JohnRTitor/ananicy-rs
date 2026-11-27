@@ -18,7 +18,7 @@ use {
 use crate::{
     cgroup::{
         CgroupError,
-        manager::{CgroupController, CgroupManager},
+        manager::{CgroupController, CgroupManager, no_symlink_component},
     },
     mounts::{CgroupInfo, get_cgroup_info},
 };
@@ -172,7 +172,16 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> CgroupApply
     // resolved the same name again — two identical `PathBuf`s built to ask one
     // question, on a path that runs for every `.cgroups` rule at every reload.
     let (target, created) = match manager.resolve_target_dir(cgroup_name) {
-        Some(target) if target.exists() => (target, false),
+        Some(target) if target.exists() => {
+            // `Path::exists()` follows symlinks: an adopted cgroup whose path
+            // crosses a link would let a control-file write land outside the
+            // delegated subtree. Apply the same guard as the creation path.
+            if let Err(e) = no_symlink_component(&target, &manager.info().mount_point) {
+                debug!("cgroup {cgroup_name} rejected: {e}");
+                return CgroupApplyStatus::Failed;
+            }
+            (target, false)
+        }
         // Either there is no hierarchy to name a path in, or the cgroup is not
         // there yet. Both are `ensure_child`'s to answer, and it resolves the
         // name again because creating it is where the path is actually needed.

@@ -115,7 +115,7 @@ fn is_errno(error: &CgroupError, errno: i32) -> bool {
 /// though the name passed every lexical check. Real cgroupfs forbids symlinks,
 /// but a writable temp hierarchy or a mis-mounted base does not, so check the
 /// existing ancestors before any directory is created.
-fn no_symlink_component(path: &Path, base: &Path) -> CgroupResult<()> {
+pub(crate) fn no_symlink_component(path: &Path, base: &Path) -> CgroupResult<()> {
     let mut current = path.to_path_buf();
     loop {
         if current == base {

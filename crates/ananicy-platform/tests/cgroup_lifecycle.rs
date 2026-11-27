@@ -394,3 +394,26 @@ fn a_persistently_busy_cgroup_is_left_in_place_after_the_retry_bound() {
     assert_eq!(*sleeps.lock().unwrap(), 19, "20 attempts means 19 backoffs");
     teardown();
 }
+
+/// The symlink guard must also run when a rule names a cgroup that already
+/// exists: `Path::exists()` follows the link, so the "adopt existing" branch
+/// is otherwise a bypass around `ensure_child`'s check.
+#[test]
+fn an_existing_symlinked_cgroup_is_refused_on_the_adoption_path() {
+    let hierarchy = SimHierarchy::new();
+    let _guard = install(&hierarchy);
+    let foreign = hierarchy.mount_point.join("user.slice");
+    fs::create_dir_all(&foreign).unwrap();
+    fs::write(foreign.join("cgroup.procs"), "").unwrap();
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&foreign, hierarchy.delegated_root.join("escape.scope")).unwrap();
+
+    let status = create_cgroup("escape.scope", CgroupSettings::default());
+    assert_eq!(
+        status,
+        CgroupApplyStatus::Failed,
+        "an adopted cgroup behind a symlink must be refused"
+    );
+    teardown();
+}
