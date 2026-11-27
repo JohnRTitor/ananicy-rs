@@ -78,9 +78,16 @@ const DELEGATED_SUBGROUP: &str = "delegated";
 /// other root, an empty parent is just as likely to be a systemd slice holding
 /// a sibling unit, and adopting it would classify those siblings as `Owned`.
 /// The parent must also be readable, empty, and strictly inside the mount
-/// point — never the hierarchy root itself. A root we cannot improve is
-/// returned unchanged, and the caller reports the `-EBUSY` it gets.
-fn usable_root(root: PathBuf, mount_point: &Path) -> PathBuf {
+/// point — never the hierarchy root itself. Finally, the name alone is not
+/// evidence: it must be exactly the parent of this process's own cgroup, with
+/// the `delegated` component stripped. That path comes from `/proc/self/cgroup`
+/// and cannot be guessed by another process that happens to create a cgroup
+/// named `delegated`. A root we cannot improve is returned unchanged, and the
+/// caller reports the `-EBUSY` it gets.
+///
+/// `own_cgroup` is the v2 path from `/proc/self/cgroup`, passed in by the
+/// discovery path so tests can supply a hermetic value.
+fn usable_root(root: PathBuf, mount_point: &Path, own_cgroup: Option<&str>) -> PathBuf {
     if root.file_name().and_then(|name| name.to_str()) != Some(DELEGATED_SUBGROUP) {
         return root;
     }
@@ -96,16 +103,44 @@ fn usable_root(root: PathBuf, mount_point: &Path) -> PathBuf {
     if parent == mount_point || !parent.starts_with(mount_point) {
         return root;
     }
-    if parent.join("cgroup.procs").exists() && !has_tasks(parent) {
+    if !parent.join("cgroup.procs").exists() || has_tasks(parent) {
+        return root;
+    }
+    if !own_cgroup.is_some_and(|own| parent_is_own_unit(parent, mount_point, own)) {
         debug!(
-            "Cgroup v2: Delegated root {} still holds processes, so a controller cannot \
-             be enabled in it; using its parent {} instead.",
+            "Cgroup v2: Not stepping from {} into {}: the parent is empty but is not \
+             the parent of this process's own cgroup.",
             root.display(),
             parent.display()
         );
-        return parent.to_path_buf();
+        return root;
     }
-    root
+    debug!(
+        "Cgroup v2: Delegated root {} still holds processes, so a controller cannot \
+         be enabled in it; using its parent {} instead.",
+        root.display(),
+        parent.display()
+    );
+    parent.to_path_buf()
+}
+
+/// The candidate parent is provably this unit's cgroup only when the process's
+/// own cgroup is exactly `parent/delegated`.
+///
+/// `/proc/self/cgroup` is the only source of that path: with
+/// `DelegateSubgroup=delegated`, systemd places the daemon in
+/// `…/<unit>.service/delegated` and delegates `…/<unit>.service` to it. A
+/// different process that creates a cgroup named `delegated` cannot make its
+/// parent match the path this daemon actually runs in. A `..` component is
+/// rejected before the value is joined to the mount point.
+fn parent_is_own_unit(parent: &Path, mount_point: &Path, own_cgroup: &str) -> bool {
+    if own_cgroup.split('/').any(|part| part == "..") {
+        return false;
+    }
+    let own = mount_point.join(own_cgroup.trim_start_matches('/'));
+    own.file_name().and_then(|name| name.to_str()) == Some(DELEGATED_SUBGROUP)
+        && own.parent() == Some(parent)
+        && own.starts_with(mount_point)
 }
 
 /// Whether a cgroup currently holds any process.
@@ -175,7 +210,7 @@ pub fn discover_delegated_root(mount_point: &Path) -> Option<PathBuf> {
             // Check if we actually have write access to it.
             // A good heuristic for delegation is if we can write to cgroup.procs
             if is_writable(&full_path.join("cgroup.procs")) {
-                return Some(usable_root(full_path, mount_point));
+                return Some(usable_root(full_path, mount_point, Some(path)));
             }
         }
     }
@@ -273,9 +308,65 @@ mod usable_root_tests {
         let sub = cgroup(&unit.join("delegated"), &[4242]);
 
         assert_eq!(
-            usable_root(sub, dir.path()),
+            usable_root(sub, dir.path(), Some("ananicy-rs.service/delegated")),
             unit,
             "the sub-cgroup holds the daemon, so the unit cgroup is the boundary"
+        );
+    }
+
+    /// The step-up requires the candidate parent to be exactly the parent of
+    /// this process's own cgroup, not merely an empty directory named like a
+    /// unit. A different unit's `delegated` path must not qualify.
+    #[test]
+    fn the_parent_must_be_the_parent_of_our_own_cgroup() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let unit = cgroup(&dir.path().join("ananicy-rs.service"), &[]);
+        let sub = cgroup(&unit.join(DELEGATED_SUBGROUP), &[4242]);
+
+        assert_eq!(
+            usable_root(
+                sub.clone(),
+                dir.path(),
+                Some("system.slice/other.service/delegated")
+            ),
+            sub,
+            "another unit's delegated path must not prove this parent is ours"
+        );
+        assert_eq!(
+            usable_root(sub, dir.path(), Some("ananicy-rs.service/delegated")),
+            unit,
+            "the exact parent of our own cgroup does qualify"
+        );
+    }
+
+    /// The finding this guards against: the name `delegated` under an empty
+    /// parent is only a guess. Without an xattr or the daemon's own cgroup
+    /// underneath it, the parent may be a systemd slice with sibling units, so
+    /// it must not be adopted.
+    #[test]
+    fn a_delegated_child_under_an_arbitrary_empty_parent_is_not_stepped_up() {
+        let dir = tempfile::tempdir().expect("a temporary hierarchy");
+        let arbitrary = cgroup(&dir.path().join("unrelated.slice"), &[]);
+        let sub = cgroup(&arbitrary.join(DELEGATED_SUBGROUP), &[4242]);
+
+        assert_eq!(
+            usable_root(sub.clone(), dir.path(), None),
+            sub,
+            "an empty parent with no delegation evidence is not ours"
+        );
+        assert_eq!(
+            usable_root(
+                sub.clone(),
+                dir.path(),
+                Some("system.slice/other.service/delegated")
+            ),
+            sub,
+            "the daemon being elsewhere rules out this parent as its delegation"
+        );
+        assert_eq!(
+            usable_root(sub.clone(), dir.path(), Some("/../escape")),
+            sub,
+            "a procfs path with traversal must not prove anything"
         );
     }
 
@@ -290,7 +381,7 @@ mod usable_root_tests {
         let unit = cgroup(&slice.join("ananicy-rs.service"), &[4242]);
 
         assert_eq!(
-            usable_root(unit, dir.path()),
+            usable_root(unit, dir.path(), None),
             slice.join("ananicy-rs.service"),
             "system.slice is not empty, so stepping up would leave the delegation"
         );
@@ -307,7 +398,7 @@ mod usable_root_tests {
         let unit = cgroup(&slice.join("ananicy-rs.service"), &[4242]);
 
         assert_eq!(
-            usable_root(unit.clone(), dir.path()),
+            usable_root(unit.clone(), dir.path(), None),
             unit,
             "an empty systemd slice is not provably our delegated unit"
         );
@@ -321,7 +412,7 @@ mod usable_root_tests {
         let unit = cgroup(&dir.path().join("ananicy-rs.service"), &[]);
         cgroup(&unit.join("..").join("system.slice"), &[1]);
 
-        assert_eq!(usable_root(unit.clone(), dir.path()), unit);
+        assert_eq!(usable_root(unit.clone(), dir.path(), None), unit);
     }
 
     /// A container's root is the mount point itself, which has no parent inside
@@ -331,12 +422,15 @@ mod usable_root_tests {
         let dir = tempfile::tempdir().expect("a temporary hierarchy");
         let root = cgroup(dir.path(), &[1]);
 
-        assert_eq!(usable_root(root.clone(), dir.path()), root);
+        assert_eq!(usable_root(root.clone(), dir.path(), None), root);
 
         // Even a `delegated` child must not step into the hierarchy root: that
         // is systemd's, not this unit's, cgroup.
         let delegated = cgroup(&root.join(DELEGATED_SUBGROUP), &[4242]);
-        assert_eq!(usable_root(delegated.clone(), dir.path()), delegated);
+        assert_eq!(
+            usable_root(delegated.clone(), dir.path(), Some("delegated")),
+            delegated
+        );
     }
 
     /// A cgroup whose cgroup.procs cannot be read is treated as populated. That
@@ -356,7 +450,7 @@ mod usable_root_tests {
         std::fs::write(sub.join("cgroup.procs"), "4242\n").expect("cgroup.procs");
 
         assert_eq!(
-            usable_root(sub.clone(), dir.path()),
+            usable_root(sub.clone(), dir.path(), None),
             sub,
             "an unreadable parent must not qualify as an empty one to step up into"
         );

@@ -79,7 +79,7 @@ nothing left to gate, and the key has been inert ever since.
 
 ### Applied-rule logging
 
-`log_applied_rule` is opt-in. When it is `true`, the daemon emits one `INFO` event for each task whose matching rule has at least one enabled attribute and whose application completes without an error or a skipped attribute. The event includes the task name, PID, and matched rule. On cgroup v2, mirroring `nice` to the optional `cpu.weight` controller is best-effort; if that controller is unavailable, a successful `nice` application is still reported and the mirror failure is available at DEBUG level.
+`log_applied_rule` is opt-in. When it is `true`, the daemon emits one `INFO` event for each task whose matching rule has at least one enabled attribute and whose application completes without an error or a skipped attribute. The event includes the task name, PID, and matched rule. On cgroup v2, mirroring `nice` to the optional `cpu.weight` controller is best-effort; if that controller is unavailable or a write is refused, a successful `nice` application is still reported. The mirror failure is logged at WARN level, once per cgroup, naming the cgroup and the file — a failed write also includes the kernel's error (with the errno).
 
 The event is intentionally not emitted for a rule match with no enabled applicable attributes, a partial application, or a failed application. A process can produce more than one event when it is observed through multiple monitor events or repeated procfs scans; the daemon does not deduplicate those observations. `loglevel` still applies normally, so `warn`, `error`, and `critical` suppress the `INFO` event. Use `loglevel = info` (or a more verbose level) when enabling this option.
 
@@ -119,13 +119,14 @@ else's populated cgroup to work around it — the same reason it refuses to touc
 ### `cgroup_realtime_workaround`
 
 On by default, and relevant only to rules that set a realtime policy (`fifo` or `rr`) on
-cgroup v2. On kernels built with `CONFIG_RT_GROUP_SCHED=y`, a realtime task cannot be
-served from a cgroup with a bandwidth limit, so for such a process the daemon leaves the
-rule's `cgroup` attribute unapplied: **the task stays in its existing cgroup** rather than
-being moved into a limited one. That is the whole of what this option does. The daemon
-deliberately does not reproduce `ananicy-cpp`'s additional move of the process to the
-hierarchy root: the root is a foreign cgroup, outside this daemon's delegated subtree, so
-a cross-boundary move would be refused before reaching the kernel.
+cgroup v2. For a realtime process the daemon leaves the rule's `cgroup` attribute
+unapplied while this option is on: **the task stays in its existing cgroup** rather than
+being moved. That skip is unconditional on v2 — `CONFIG_RT_GROUP_SCHED=y` is what makes
+moving a realtime task into a bandwidth-limited cgroup a kernel restriction, and it only
+governs whether the bandwidth diagnostic below matters. The daemon deliberately does not
+reproduce `ananicy-cpp`'s additional move of the process to the hierarchy root: the root
+is a foreign cgroup, outside this daemon's delegated subtree, so a cross-boundary move
+would be refused before reaching the kernel.
 
 The realtime policy is re-read after `set_sched` succeeds. A rule that *makes* a CFS task
 realtime (`"sched": "fifo"` or `"rr"`, with `rtprio` defaulting to 1) therefore skips its
@@ -134,14 +135,15 @@ applying the rule and does not recover this case; the re-check here is stronger 
 parity.
 
 When a realtime task is found in a cgroup whose own-or-ancestor `cpu.max` has a quota
-other than `max`, the daemon emits one warning per pid per burst and keeps the task where
-it is. The warning is non-fatal and is not reported as a rule failure; on kernels without
-`CONFIG_RT_GROUP_SCHED=y` it is merely informational.
+other than `max`, the daemon emits at most one warning per pid while the bounded cache
+retains it and keeps the task where it is. The warning is non-fatal and is not reported as a rule failure; on
+kernels without `CONFIG_RT_GROUP_SCHED=y` it is merely informational.
 
-The `nice` → `cpu.weight` mirror described above is also skipped for realtime tasks:
-`cpu.weight` affects only fair-class tasks, so it cannot help the realtime process and
-can reweight unrelated CFS siblings in the same cgroup. Setting this option to `false`
-applies the rule's `cgroup` attribute to realtime processes like any other.
+The `nice` → `cpu.weight` mirror described above is also skipped for realtime tasks on
+v2, independently of this option: `cpu.weight` affects only fair-class tasks, so it
+cannot help the realtime process and can reweight unrelated CFS siblings in the same
+cgroup. Setting `cgroup_realtime_workaround` to `false` re-enables applying the rule's
+`cgroup` attribute to realtime processes like any other; it does not re-enable the mirror.
 
 ### `x3d_mode`
 
@@ -251,19 +253,24 @@ Example:
 ```
 
 An attribute whose value is not a number is ignored, so a malformed rule configures nothing rather
-than an arbitrary amount. Values outside the kernel's range are clamped to it.
+than an arbitrary amount. `CPUQuota: 0` is ignored with a warning: a zero quota would give the
+cgroup no CPU time at all, so the kernel's unlimited default stays in place and the control file
+is not written. A quota above 100% is clamped to 100% with a warning. Values above `u32::MAX` for
+`CPUQuota` or `CPUWeight` are ignored with a warning rather than truncated modulo 2³². Values
+that do fit in a `u32` are clamped to the range the kernel accepts — `CPUQuota` to 1–100% and
+`CPUWeight` to 1–10000 on cgroup v2 (`cpu.shares` is scaled from the weight on v1).
 
 These settings are applied every time the cgroup is prepared at start-up, whether
 the daemon created the cgroup or it was already there. Editing a `.cgroups` file
 therefore takes effect on the next start without the cgroup having to be deleted
 first.
 
-The daemon remembers only the cgroup v2 directories it created during this run.
+The daemon tracks only cgroup v2 directories this run created and still remembers.
 After a `SIGUSR1` reload (once the new rule cgroups have been prepared) and on a
-graceful `SIGINT`/`SIGTERM` stop, it resets `cpu.max` and `cpu.weight` to their
-kernel defaults on remembered cgroups that no rule names any more, then removes
-the ones that are empty, retrying a transient `EBUSY` a bounded number of times.
-A cgroup that still holds processes is kept and reported at `warn` level. Foreign
+graceful `SIGINT`/`SIGTERM` stop, a remembered cgroup that no rule names any more
+has `cpu.max` and `cpu.weight` reset to their kernel defaults when it is removed;
+removal retries a transient `EBUSY` a bounded number of times. A cgroup that still
+holds processes is kept with its settings untouched and reported at `warn` level. Foreign
 paths, the delegated root itself, and cgroups left behind by a previous run are
 never reset or deleted; adopting an existing cgroup for settings re-apply does
 not make it ours to remove.
@@ -272,7 +279,14 @@ not make it ours to remove.
 
 `ananicy-rs` respects the kernel's cgroup-v2 single-writer model. The systemd unit uses `Delegate=yes`. It does not delegate `user.slice`, desktop session scopes, or other systemd units.
 
-**What `Delegate=yes` actually hands over is one level wider than it looks.** `Delegate=yes` gives the service ownership of its own cgroup *and* delegation of that cgroup's subtree, but the daemon discovers its root by taking the parent of `/proc/self/cgroup` — which lands on the unit's parent (`…/system.slice`), not on the unit's own cgroup. The unit's own cgroup contains the daemon process, and the kernel's "no internal process" rule means a cgroup with processes in it cannot have `+cpu` added to its `subtree_control`. So under the shipped unit the daemon is unable to enable the `cpu` controller on the parent, every cgroup it creates below lacks `cpu.max` and `cpu.weight`, and **`CPUQuota` and `CPUWeight` rules and `nice`→`cpu.weight` mirroring are no-ops**. The daemon logs a `warn` for this at start-up rather than skipping silently.
+**`Delegate=yes` on its own does not give the daemon a usable `cpu` controller.** It
+gives the service ownership of its own cgroup *and* delegation of that cgroup's subtree,
+but without `DelegateSubgroup=` the daemon runs in the unit's own cgroup. That cgroup
+holds the daemon process, and the kernel's "no internal process" rule means a cgroup with
+processes in it cannot have `+cpu` added to its `subtree_control`. The daemon then cannot
+enable `cpu` there, cgroups it creates below lack `cpu.max` and `cpu.weight`, and
+**`CPUQuota` and `CPUWeight` rules and `nice`→`cpu.weight` mirroring are no-ops**. It
+logs a `warn` when enabling `cpu` fails rather than skipping silently.
 
 Two changes fix it, and the shipped unit makes both. `DelegateSubgroup=delegated` on the
 unit makes systemd start the daemon in a sub-cgroup of the unit, which leaves the unit's
@@ -280,14 +294,16 @@ own cgroup with no processes in it — and an empty cgroup is what the kernel re
 before a domain controller can be enabled underneath it. Note it takes a name, not a
 boolean: `DelegateSubgroup=yes` would create a cgroup literally called `yes`.
 
-The daemon does the other half. Because systemd puts it in the sub-cgroup, the cgroup it
-would naturally manage from is the sub-cgroup — and that one holds the daemon itself, so
-it can never take a controller. At start-up it therefore checks whether the cgroup it
-discovered still holds processes and whether its parent is empty, and if so manages from
-the parent instead. That step up is bounded to one level and requires the parent to be
-genuinely empty, so it cannot leave the delegated subtree: the hierarchy root always
-holds PID 1 and so can never qualify, and a container's root has no parent inside its
-own mount.
+The daemon does the other half. It discovers its root from `/proc/self/cgroup`: with the
+shipped sub-cgroup that path is `…/ananicy-rs.service/delegated`, and the cgroup it
+manages from is the parent of that sub-cgroup — the unit's own cgroup — because the
+sub-cgroup holds the daemon and cannot take a controller itself. The step up is bounded
+to one level and happens only for the shipped unit's `delegated` subgroup with the parent
+verified as ours: a readable, empty cgroup strictly inside the mount point, with a
+`trusted.delegate`/`user.delegate` xattr or, when xattrs cannot be read, the daemon's
+own `/proc/self/cgroup` path at or below that `delegated` sub-cgroup. The mount point
+itself is never adopted, so an empty path outside the delegated subtree cannot widen
+ownership to the rest of the hierarchy.
 
 What does *not* work is `CPUWeight=` on the unit, which is the obvious thing to reach for.
 A unit's `cgroup.subtree_control` is populated from what the unit's *children* require,

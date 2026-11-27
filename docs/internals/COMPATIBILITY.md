@@ -52,7 +52,7 @@ To allow both implementations to coexist on the same system without colliding, `
 - **Delegated structural ownership:** The packaged systemd unit sets `Delegate=yes`. Within the service's delegated subtree, `ananicy-rs` may create cgroups, enable supported controllers, move processes, and apply `CPUQuota`/`CPUWeight`.
 - **Foreign structural protection:** It refuses to create foreign cgroups, enable foreign `cgroup.subtree_control`, write foreign `cpu.max`, or move processes into foreign cgroups.
 - **Optional resource tuning:** It may attempt an already-existing `cpu.weight` or `cpu.shares` write in a foreign cgroup when the kernel exposes that controller. It does not create the file or enable the controller; an absent file is an expected DEBUG-level skip.
-- **`nice` mirror scope:** On cgroup v2, an applied `nice` value is mirrored into the `cpu.weight` of the cgroup the process *already* belongs to. That is a cgroup write, so it also reweights the other tasks sharing that cgroup — for a desktop application typically its whole systemd session scope. `ananicy-cpp` only calls `setpriority(2)` and has no such side effect. Set `apply_cpu_weight_from_nice = false` in `ananicy.conf` to keep the `nice` value and drop the mirror. See [Configuration and Rules](../CONFIGURATION.md#the-nice--cpuweight-mirror).
+- **`nice` mirror scope:** On cgroup v2, an applied `nice` value is mirrored into the `cpu.weight` of the cgroup the process *already* belongs to. That is a cgroup write, so it also reweights the other tasks sharing that cgroup — for a desktop application typically its whole systemd session scope. `ananicy-cpp` only calls `setpriority(2)` and has no such side effect. Set `apply_cpu_weight_from_nice = false` in `ananicy.conf` to keep the `nice` value and drop the mirror. The mirror is skipped for realtime tasks, for which `cpu.weight` has no effect. See [Configuration and Rules](../CONFIGURATION.md#the-nice--cpuweight-mirror).
 - **Scope of `Delegate=yes`:** Delegation applies only to the `ananicy-rs.service` subtree, not `user.slice`, desktop session scopes, or other systemd units.
 - **Transient scopes:** Running manually from a terminal leaves the daemon in a systemd-managed transient scope, so it cannot safely perform delegated structural mutations.
 - **Where a rule's cgroup lands:** A rule's `cgroup` name is resolved relative to the delegated subtree, so `{"cgroup": "cpu80"}` creates `/sys/fs/cgroup/system.slice/ananicy-rs.service/cpu80` where `ananicy-cpp` creates `/sys/fs/cgroup/cpu80`. A name that starts with `/` is resolved from the hierarchy root instead. The consequence for a rule set written for the reference is that a `cgroup` naming a cgroup somebody else manages — the reference's README suggests that cgroups "can be any cgroup, including those created outside ananicy-cpp" — is refused rather than used.
@@ -400,7 +400,7 @@ indistinguishable from never having looked: this table is the evidence of covera
   | `create_cgroup` idempotence | yes | yes |
   | `cgroup.subtree_control` | `+cpu` | `+cpu` |
   | `cgroup.procs` vs `tasks` | correct per version | same |
-  | Realtime cgroup target | hierarchy root | hierarchy root |
+  | Realtime cgroup target | hierarchy root | root move intentionally absent; rule cgroup skipped for RT |
   | Kernel-thread detection | computed, unused | absent |
   | No cgroup hierarchy | starts anyway | starts anyway | — |
   | Panic backtrace | custom handler | panic hook |

@@ -208,9 +208,10 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> CgroupApply
     // can prove it was ours to delete — it may be left by a previous run or by
     // another tool. `is_removable_owned` also keeps a sync of the delegation
     // boundary itself out of the registry.
-    if matches!(status, CgroupApplyStatus::Applied { created: true })
-        && manager.is_removable_owned(&target)
-    {
+    // A cgroup is registered even if its settings failed: the directory exists
+    // and belongs to this run, so leaving it out of the registry would leak it
+    // at the next reload or at shutdown.
+    if status.created() && manager.is_removable_owned(&target) {
         record_created(cgroup_name, &target);
     }
 
@@ -293,8 +294,8 @@ const RETRY_DELAY: Duration = Duration::from_millis(50);
 pub type RemoveDirFn = Arc<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
 
 /// The injected parts of a reconciliation. The defaults act on the real
-/// filesystem; tests pass recording closures so they can observe the order of
-/// reset-before-delete and drive the `EBUSY` retry without sleeping.
+/// filesystem; tests pass recording closures so they can observe that settings
+/// are reset before the delete and drive the `EBUSY` retry without sleeping.
 pub struct ReconcileOptions {
     pub sleep: Arc<dyn Fn(Duration) + Send + Sync>,
     pub remove_dir: RemoveDirFn,
@@ -335,8 +336,10 @@ pub struct ReconcileSummary {
 /// Nothing here is fatal: a failed reset or rmdir is logged and the next entry
 /// is still processed. A cgroup whose path is no longer Owned (for example
 /// because delegation was re-detected) and the delegated root itself are
-/// refused before any write. A cgroup that is populated is kept, with one
-/// warning, since deleting it would also evict the processes in it.
+/// refused before any write. A cgroup that is populated is kept untouched, with
+/// one warning, since deleting it would also evict the processes in it; its
+/// settings are not reset either, because the rule that owns them is still
+/// doing its job for those processes.
 ///
 /// `active_names` is the *new* rule set: a directory is removed only when no
 /// currently installed rule still asks for that name.
@@ -386,6 +389,21 @@ pub fn reconcile_cgroups_with(
             continue;
         }
 
+        // Check emptiness first: a cgroup that still holds processes is kept,
+        // and keeping it includes keeping the settings the rule applied.
+        // Resetting here would silently undo those settings while the warning
+        // claimed they were preserved. Only entries that will actually be
+        // removed have their defaults restored.
+        if !cgroup_is_empty(&path) {
+            summary.retained_populated += 1;
+            warn!(
+                "Cgroup '{}' at {} still holds processes; keeping it with its settings untouched rather than removing it",
+                name,
+                path.display()
+            );
+            continue;
+        }
+
         if let Err(error) = manager.reset_cpu_settings(&path) {
             summary.failures += 1;
             warn!(
@@ -394,16 +412,6 @@ pub fn reconcile_cgroups_with(
                 path.display(),
                 error
             );
-        }
-
-        if !cgroup_is_empty(&path) {
-            summary.retained_populated += 1;
-            warn!(
-                "Cgroup '{}' at {} still holds processes; keeping it and its settings rather than removing it",
-                name,
-                path.display()
-            );
-            continue;
         }
 
         match manager.remove_cgroup(

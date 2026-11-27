@@ -11,8 +11,8 @@ use {
     ananicy_platform::{
         cgroup::{CgroupInfo, CgroupVersion},
         cgroups::{
-            CgroupSettings, ReconcileOptions, clear_created_registry, create_cgroup,
-            created_cgroup_names, reconcile_cgroups, reconcile_cgroups_with,
+            CgroupApplyStatus, CgroupSettings, CpuQuota, ReconcileOptions, clear_created_registry,
+            create_cgroup, created_cgroup_names, reconcile_cgroups, reconcile_cgroups_with,
             record_created_cgroup_for_tests, reset_cgroup_detection, set_cgroup_manager_for_tests,
         },
     },
@@ -50,6 +50,9 @@ fn install(hierarchy: &SimHierarchy) -> MutexGuard<'static, ()> {
 
 fn teardown() {
     clear_created_registry();
+    // `reset_cgroup_detection` clears the cached manager, so a test that
+    // replaced it (e.g. to model a re-detected foreign root) must not leave
+    // the next test rebuilding from the host's real cgroup hierarchy.
     reset_cgroup_detection();
 }
 
@@ -162,6 +165,42 @@ fn a_removed_rule_has_its_settings_reset_and_its_empty_cgroup_deleted() {
 }
 
 #[test]
+fn a_new_cgroup_whose_settings_failed_is_still_registered() {
+    let hierarchy = SimHierarchy::new();
+    let _guard = install(&hierarchy);
+    // The simulated hierarchy has no cpu.max file yet, so the quota write
+    // fails while the directory itself is created.
+    let status = create_cgroup(
+        "failed-settings.scope",
+        CgroupSettings {
+            cpu_quota: Some(CpuQuota::Percentage(50)),
+            ..Default::default()
+        },
+    );
+    assert_eq!(status, CgroupApplyStatus::SettingsFailed { created: true });
+    assert!(
+        created_cgroup_names().contains(&"failed-settings.scope".to_string()),
+        "a created cgroup must be registered even when its settings failed"
+    );
+
+    // Registration is what lets reconciliation clean it up later. Seed the
+    // procs file the kernel would expose so the cgroup is known to be empty.
+    let path = hierarchy.delegated_root.join("failed-settings.scope");
+    fs::write(path.join("cgroup.procs"), "").unwrap();
+    let options = ReconcileOptions {
+        sleep: no_sleep(),
+        remove_dir: Arc::new(clean_remove),
+    };
+    let summary = reconcile_cgroups_with(&[], &options);
+    assert_eq!(
+        summary.removed, 1,
+        "the failed cgroup must still be cleaned up"
+    );
+    assert!(!path.exists());
+    teardown();
+}
+
+#[test]
 fn a_still_active_rule_keeps_its_cgroup() {
     let hierarchy = SimHierarchy::new();
     let _guard = install(&hierarchy);
@@ -195,8 +234,13 @@ fn a_populated_cgroup_is_retained_with_a_warning() {
     assert!(path.exists(), "a populated cgroup must never be deleted");
     assert_eq!(
         fs::read_to_string(path.join("cpu.max")).unwrap(),
-        "max 100000\n",
-        "the reset still happens even though the directory is kept"
+        "0\n",
+        "a retained cgroup's settings must be left untouched"
+    );
+    assert_eq!(
+        fs::read_to_string(path.join("cpu.weight")).unwrap(),
+        "500\n",
+        "both settings must survive retention"
     );
     assert!(
         messages
@@ -244,6 +288,15 @@ fn a_foreign_path_is_never_deleted() {
     fs::write(foreign.join("cgroup.procs"), "").unwrap();
     assert!(reconcile_cgroups(&[]).removed == 0);
     assert!(foreign.exists());
+    // Restore this test's own hierarchy before releasing the lock: a later
+    // test must not inherit a manager pointed at the foreign root.
+    set_cgroup_manager_for_tests(
+        CgroupInfo {
+            version: CgroupVersion::V2,
+            mount_point: hierarchy.mount_point.clone(),
+        },
+        Some(hierarchy.delegated_root.clone()),
+    );
     teardown();
 }
 

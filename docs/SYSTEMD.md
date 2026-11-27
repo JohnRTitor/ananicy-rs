@@ -175,14 +175,14 @@ mutation outside it. What that means in practice:
   would create a cgroup called `yes`.
 
   **Both halves are needed, and the daemon does the other one.** Because systemd puts
-  us in the sub-cgroup, the cgroup we would naturally manage from is the sub-cgroup —
-  and that one holds this process, so it can never take a controller. The daemon
-  therefore checks, at start-up, whether the cgroup it discovered still holds
-  processes and whether its parent is empty, and if so manages from the parent instead.
-  The step up is bounded to one level and requires the parent to be genuinely empty,
-  which is what keeps it inside the delegated subtree: the hierarchy root always holds
-  PID 1, so it can never qualify, and a container's root has no parent inside its own
-  mount.
+  us in the sub-cgroup, `/proc/self/cgroup` names `…/ananicy-rs.service/delegated`;
+  the cgroup we manage from is that sub-cgroup's parent — the unit's own cgroup —
+  because the sub-cgroup holds this process and cannot take a controller itself.
+  At start-up the daemon steps up from the discovered sub-cgroup to that parent only
+  for the shipped unit's `delegated` subgroup, and only with the parent verified as
+  ours: a readable, empty cgroup strictly inside the mount point. The step up is
+  bounded to one level and the mount point itself is never adopted, so ownership
+  cannot widen to the rest of the hierarchy. An empty parent alone does not qualify.
 
   `CPUWeight=` on the unit would *not* fix it, and it is worth saying why because it is
   the obvious thing to try. A unit's `cgroup.subtree_control` is enabled from what the
@@ -227,7 +227,7 @@ changed `rule_load` either.
 `rule_load = false` is honoured as the deliberate choice it is: the rules already
 loaded stay in force and the reload says so.
 
-Two things about what a reload can and cannot reach:
+Three things about what a reload can and cannot reach:
 
 * **It applies to processes as they are seen.** A process already tuned keeps the
   values it was given until the next time it produces an event, which for an
