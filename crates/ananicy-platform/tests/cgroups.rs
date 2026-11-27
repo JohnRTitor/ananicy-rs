@@ -18,7 +18,7 @@
 
 use {
     ananicy_platform::{
-        cgroups::{CgroupSettings, add_pid_to_cgroup, create_cgroup},
+        cgroups::{CgroupSettings, CpuQuota, add_pid_to_cgroup, create_cgroup},
         mounts::{CgroupVersion, get_cgroup_info},
     },
     std::{
@@ -220,14 +220,14 @@ fn create_cgroup_refuses_to_recreate_an_existing_cgroup() {
     remove_if_present(&base, &name);
 
     assert!(
-        create_cgroup(&name, CgroupSettings::default()),
+        create_cgroup(&name, CgroupSettings::default()).created(),
         "the first creation succeeds"
     );
     let path =
         find_cgroup(&base, &name).expect("the created cgroup can be found under the hierarchy");
     assert!(path.is_dir(), "the cgroup directory must exist");
     assert!(
-        !create_cgroup(&name, CgroupSettings::default()),
+        !create_cgroup(&name, CgroupSettings::default()).created(),
         "an existing cgroup is reported, not recreated"
     );
 
@@ -243,13 +243,16 @@ fn create_cgroup_can_apply_a_cpu_quota() {
     let name = unique_name("QUOTA");
     remove_if_present(&base, &name);
 
-    assert!(create_cgroup(
-        &name,
-        CgroupSettings {
-            cpu_quota: Some(90),
-            ..Default::default()
-        },
-    ));
+    assert!(
+        create_cgroup(
+            &name,
+            CgroupSettings {
+                cpu_quota: Some(CpuQuota::Percentage(90)),
+                ..Default::default()
+            },
+        )
+        .is_ok()
+    );
 
     remove_if_present(&base, &name);
 }
@@ -264,7 +267,7 @@ fn a_process_can_be_moved_into_a_cgroup_and_back() {
     remove_if_present(&base, &name);
 
     assert!(
-        create_cgroup(&name, CgroupSettings::default()),
+        create_cgroup(&name, CgroupSettings::default()).created(),
         "the test cgroup is created"
     );
     let path =

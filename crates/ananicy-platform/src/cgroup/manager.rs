@@ -16,9 +16,12 @@ use {
     tracing::{debug, error, warn},
 };
 
-use crate::cgroup::{
-    CgroupError, CgroupInfo, CgroupResult, CgroupVersion,
-    ownership::{CgroupOwnership, discover_delegated_root},
+use crate::{
+    cgroup::{
+        CgroupError, CgroupInfo, CgroupResult, CgroupVersion,
+        ownership::{CgroupOwnership, discover_delegated_root},
+    },
+    cgroups::CpuQuota,
 };
 
 /// Render a whole control-file line into a caller-provided stack buffer.
@@ -49,24 +52,58 @@ fn write_control_line(writer: &mut impl Write, line: &[u8]) -> std::io::Result<(
     writer.write_all(line)
 }
 
+/// How many times a transient control-line write is attempted. The kernel can
+/// reject a `cgroup.procs` write with `EINVAL` or `EINTR` while a process is
+/// being moved between cgroups by another writer; retrying a bounded number of
+/// times absorbs that without hiding a persistent failure.
+const CONTROL_WRITE_ATTEMPTS: u8 = 3;
+
+/// Retries only the transient errnos; everything else is returned at once.
+fn write_control_line_with_retry(
+    writer: &mut impl Write,
+    line: &[u8],
+    attempts: u8,
+) -> io::Result<()> {
+    let mut last = None;
+    for _ in 0..attempts {
+        match write_control_line(writer, line) {
+            Ok(()) => return Ok(()),
+            Err(e) if matches!(e.raw_os_error(), Some(libc::EINVAL | libc::EINTR)) => {
+                last = Some(e)
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.expect("at least one attempt is made"))
+}
+
 pub trait CgroupController {
     fn ensure_child(&self, name: &str) -> CgroupResult<PathBuf>;
     fn move_pid(&self, pid: i32, target: &Path) -> CgroupResult<()>;
-    fn set_cpu_max(&self, target: &Path, quota: u32) -> CgroupResult<()>;
+    fn set_cpu_max(&self, target: &Path, quota: CpuQuota) -> CgroupResult<()>;
     fn set_cpu_weight(&self, target: &Path, weight: u32) -> CgroupResult<()>;
 }
 
-/// Attaches the path to an I/O failure from a control file and maps the errno.
+/// Maps an I/O failure from a control file to a typed cgroup error.
 ///
-/// An error saying "failed to open cpu.max" is not actionable; one naming the
-/// cgroup is. Only the error path formats a string, so this costs nothing on
-/// the per-process success path. `CgroupError::from` keeps the errno-specific
-/// variants (`NotFound`, `Busy`, `Gone`) distinct from a generic `Io`, whose
-/// message carries the path; the callers' existing log lines name the path
-/// for the unit variants as well.
+/// `CgroupError::from` keeps the errno-specific variants (`NotFound`, `Busy`,
+/// `Gone`) distinct from a generic `Io`. A generic error that carries a raw
+/// errno keeps it too: callers need to tell `EINVAL` (retryable on a v1 period
+/// write) from `EACCES` (not retryable), and formatting the path into the
+/// `io::Error` would discard `raw_os_error()`. The callers' log lines name the
+/// path instead; only the error path formats anything here.
 fn control_error(path: &Path, error: io::Error) -> CgroupError {
-    let contextual = io::Error::new(error.kind(), format!("{}: {error}", path.display()));
-    CgroupError::from(contextual)
+    match CgroupError::from(error) {
+        CgroupError::Io(e) if e.raw_os_error().is_none() => {
+            CgroupError::Io(io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+        }
+        other => other,
+    }
+}
+
+/// Whether a typed cgroup error carries a particular raw errno.
+fn is_errno(error: &CgroupError, errno: i32) -> bool {
+    matches!(error, CgroupError::Io(e) if e.raw_os_error() == Some(errno))
 }
 
 /// The single way this module opens cgroup control and pid files for writing.
@@ -158,6 +195,30 @@ fn bandwidth_us(cores: u64, quota: u32, period: u64) -> u64 {
         / 100
 }
 
+/// Writes the cgroup v1 period, then the quota.
+///
+/// A v1 `cpu.cfs_period_us` write can fail with `EINVAL` if the quota currently
+/// in the file is not a valid multiple of the new period. crun and runc handle
+/// this by temporarily setting the quota to `-1` (unlimited), retrying the
+/// period, and then writing the intended quota. The normal case keeps the
+/// period-then-quota order and issues only those two writes.
+fn v1_write_period_then_quota(
+    period_line: &[u8],
+    quota_line: &[u8],
+    mut write_period: impl FnMut(&[u8]) -> CgroupResult<()>,
+    mut write_quota: impl FnMut(&[u8]) -> CgroupResult<()>,
+) -> CgroupResult<()> {
+    match write_period(period_line) {
+        Ok(()) => {}
+        Err(e) if is_errno(&e, libc::EINVAL) => {
+            write_quota(b"-1\n")?;
+            write_period(period_line)?;
+        }
+        Err(e) => return Err(e),
+    }
+    write_quota(quota_line)
+}
+
 #[derive(Debug, Clone)]
 pub struct CgroupManager {
     info: CgroupInfo,
@@ -174,6 +235,13 @@ pub struct CgroupManager {
     /// so a bound of this size is never reached in practice, and being wrong
     /// about that costs a repeated warning and nothing else.
     reported_weightless: Arc<Mutex<LruCache<PathBuf, ()>>>,
+    /// Cgroups already reported for a real write failure of their weight file.
+    ///
+    /// Separate from `reported_weightless`: "the controller file is missing"
+    /// and "the kernel refused the write" are different conditions, and a
+    /// cgroup that hits one should still be reported if it later hits the
+    /// other. Shared across clones for the same reason as the first cache.
+    reported_weight_write_failures: Arc<Mutex<LruCache<PathBuf, ()>>>,
 }
 
 /// How many cgroups the "already reported" set remembers. Comfortably above the
@@ -206,6 +274,7 @@ impl CgroupManager {
             info,
             delegated_root,
             reported_weightless: Arc::new(Mutex::new(reported_cache())),
+            reported_weight_write_failures: Arc::new(Mutex::new(reported_cache())),
         }
     }
 
@@ -216,6 +285,7 @@ impl CgroupManager {
             info,
             delegated_root,
             reported_weightless: Arc::new(Mutex::new(reported_cache())),
+            reported_weight_write_failures: Arc::new(Mutex::new(reported_cache())),
         }
     }
 
@@ -235,23 +305,57 @@ impl CgroupManager {
     /// Once per path rather than once per process, because the condition repeats
     /// for every process in that cgroup and saying it again adds nothing.
     fn report_weightless(&self, target: &Path, file: &Path) {
-        let Ok(mut seen) = self.reported_weightless.lock() else {
+        Self::report_once(&self.reported_weightless, target, || {
+            format!(
+                "Cgroup {} has no {}: nice applied, implied cpu weight skipped. \
+                 Needs +cpu in the parent's cgroup.subtree_control.",
+                target.display(),
+                file.file_name().unwrap_or_default().to_string_lossy(),
+            )
+        });
+    }
+
+    /// Reports a real kernel refusal to write a cgroup's weight file, once per
+    /// cgroup. The path and the typed error (which includes the errno for
+    /// `EACCES`/`EINVAL`) are both in the message: at the default log level a
+    /// `debug!` line here was invisible, and the process's `nice` had been
+    /// applied whether or not the cgroup could be reweighted.
+    fn report_weight_write_failure(&self, target: &Path, file: &Path, error: &CgroupError) {
+        Self::report_once(&self.reported_weight_write_failures, target, || {
+            Self::weight_write_failure_message(target, file, error)
+        });
+    }
+
+    /// The exact warning text, kept separate from the logging so a test can
+    /// assert the path and errno are present without depending on the global
+    /// `tracing` callsite registry.
+    fn weight_write_failure_message(target: &Path, file: &Path, error: &CgroupError) -> String {
+        format!(
+            "Cgroup {} could not write {}: {error}. The nice value was still applied, \
+             but the cgroup keeps its previous weight.",
+            target.display(),
+            file.display(),
+        )
+    }
+
+    /// The bounded, clone-shared once-per-cgroup warning cache used by both the
+    /// missing-controller and the write-failure reports.
+    fn report_once(
+        cache: &Arc<Mutex<LruCache<PathBuf, ()>>>,
+        target: &Path,
+        message: impl FnOnce() -> String,
+    ) {
+        let Ok(mut seen) = cache.lock() else {
             return;
         };
         // Borrowed check before the owned insert. `to_path_buf` copies the whole
-        // path, and this is called for every process in a cgroup that has no
-        // weight file, of which all but the first are the case where the copy is
-        // thrown away again.
+        // path, and this is called for every process in a cgroup that has
+        // already been reported, where the copy would be thrown away again.
         if seen.contains(target) {
             return;
         }
         seen.put(target.to_path_buf(), ());
-        warn!(
-            "Cgroup {} has no {}: nice applied, implied cpu weight skipped. \
-             Needs +cpu in the parent's cgroup.subtree_control.",
-            target.display(),
-            file.file_name().unwrap_or_default().to_string_lossy(),
-        );
+        warn!("{}", message());
     }
 
     /// Helper to resolve the target directory based on the cgroup name and version.
@@ -494,8 +598,11 @@ impl CgroupController for CgroupManager {
         // write_all() issues one atomic write() syscall.
         let mut buf = [0u8; 48];
         let pid_buf = control_line(&mut buf, format_args!("{}\n", pid_to_write));
-        if let Err(e) = write_control_line(&mut file, pid_buf) {
-            debug!("move_pid: Failed to write to {:?}: {}", procs_path, e);
+        if let Err(e) = write_control_line_with_retry(&mut file, pid_buf, CONTROL_WRITE_ATTEMPTS) {
+            debug!(
+                "move_pid: Failed to write to {:?} after {} attempts: {}",
+                procs_path, CONTROL_WRITE_ATTEMPTS, e
+            );
             return Err(control_error(&procs_path, e));
         }
 
@@ -533,7 +640,7 @@ impl CgroupController for CgroupManager {
         Ok(())
     }
 
-    fn set_cpu_max(&self, target: &Path, quota: u32) -> CgroupResult<()> {
+    fn set_cpu_max(&self, target: &Path, quota: CpuQuota) -> CgroupResult<()> {
         let ownership = CgroupOwnership::classify(
             target,
             self.delegated_root.as_deref(),
@@ -553,7 +660,6 @@ impl CgroupController for CgroupManager {
         // reports, so it is the machine's CPU count unless the unit pins the
         // daemon — which a `.cgroups` rule cannot see and cannot correct.
         let logical_cores = available_parallelism().map(|n| n.get()).unwrap_or(1) as u64;
-        let clamped_quota = quota.clamp(0, 100);
 
         // `period * cores * quota / 100` in `u32` wraps on any machine with more
         // than ~430 CPUs at a 100% quota: 100_000 * 430 * 100 is 4.3e9, one more
@@ -563,7 +669,31 @@ impl CgroupController for CgroupManager {
         } else {
             V1_PERIOD_US
         };
-        let quota_val = bandwidth_us(logical_cores, clamped_quota, period);
+
+        // Render both possible values up front so the v1 retry path can reuse
+        // the intended line. `max` on v2 and `-1` on v1 mean "no limit"; a rule
+        // asking for `Unlimited` explicitly gets the kernel default written.
+        let mut quota_buf = [0u8; 48];
+        let mut period_buf = [0u8; 48];
+        let quota_line = match quota {
+            CpuQuota::Unlimited => {
+                if self.info.version == CgroupVersion::V2 {
+                    control_line(&mut quota_buf, format_args!("max {period}\n"))
+                } else {
+                    control_line(&mut quota_buf, format_args!("-1\n"))
+                }
+            }
+            CpuQuota::Percentage(percent) => {
+                let clamped = percent.clamp(0, 100);
+                let quota_val = bandwidth_us(logical_cores, clamped, period);
+                if self.info.version == CgroupVersion::V2 {
+                    control_line(&mut quota_buf, format_args!("{quota_val} {period}\n"))
+                } else {
+                    control_line(&mut quota_buf, format_args!("{quota_val}\n"))
+                }
+            }
+        };
+        let period_line = control_line(&mut period_buf, format_args!("{period}\n"));
 
         if self.info.version == CgroupVersion::V2 {
             let max_file = target.join("cpu.max");
@@ -571,35 +701,35 @@ impl CgroupController for CgroupManager {
                 error!("set_cpu_max: Failed to open {:?}: {}", max_file, e);
                 e
             })?;
-            let mut buf = [0u8; 48];
-            let line = control_line(&mut buf, format_args!("{quota_val} {period}\n"));
-            if let Err(e) = f.write_all(line) {
+            if let Err(e) = write_control_line(&mut f, quota_line) {
                 error!("set_cpu_max: Failed to write {:?}: {}", max_file, e);
                 return Err(control_error(&max_file, e));
             }
         } else {
             let period_file = target.join("cpu.cfs_period_us");
-            let mut f = open_control(target, "cpu.cfs_period_us").map_err(|e| {
+            let quota_file = target.join("cpu.cfs_quota_us");
+            let mut pf = open_control(target, "cpu.cfs_period_us").map_err(|e| {
                 error!("set_cpu_max: Failed to open {:?}: {}", period_file, e);
                 e
             })?;
-            let mut buf = [0u8; 48];
-            let line = control_line(&mut buf, format_args!("{period}\n"));
-            if let Err(e) = f.write_all(line) {
-                error!("set_cpu_max: Failed to write {:?}: {}", period_file, e);
-                return Err(control_error(&period_file, e));
-            }
-            let quota_file = target.join("cpu.cfs_quota_us");
-            let mut f = open_control(target, "cpu.cfs_quota_us").map_err(|e| {
+            let mut qf = open_control(target, "cpu.cfs_quota_us").map_err(|e| {
                 error!("set_cpu_max: Failed to open {:?}: {}", quota_file, e);
                 e
             })?;
-            let mut buf = [0u8; 48];
-            let line = control_line(&mut buf, format_args!("{quota_val}\n"));
-            if let Err(e) = f.write_all(line) {
-                error!("set_cpu_max: Failed to write {:?}: {}", quota_file, e);
-                return Err(control_error(&quota_file, e));
-            }
+            let line = quota_line.to_vec();
+            let period_path = period_file.clone();
+            let quota_path = quota_file.clone();
+            v1_write_period_then_quota(
+                period_line,
+                &line,
+                |bytes| {
+                    write_control_line(&mut pf, bytes).map_err(|e| control_error(&period_path, e))
+                },
+                |bytes| {
+                    write_control_line(&mut qf, bytes).map_err(|e| control_error(&quota_path, e))
+                },
+            )
+            .inspect_err(|e| error!("set_cpu_max: v1 write failed: {e}"))?;
         }
         Ok(())
     }
@@ -631,10 +761,18 @@ impl CgroupController for CgroupManager {
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{}\n", weight_val));
             if let Err(e) = f.write_all(line) {
-                debug!("set_cpu_weight: Failed to write {:?}: {}", weight_file, e);
-                return Err(control_error(&weight_file, e));
+                let error = control_error(&weight_file, e);
+                self.report_weight_write_failure(target, &weight_file, &error);
+                debug!(
+                    "set_cpu_weight: Failed to write {:?}: {}",
+                    weight_file, error
+                );
+                return Err(error);
             }
         } else {
+            // Deliberately linear, matching systemd's `CPUWeight` → `cpu.shares`
+            // mapping. crun uses a logarithmic mapping; switching to it would
+            // change the meaning of every existing `.cgroups` rule on v1.
             let shares = (weight as f32 / 100.0 * 1024.0) as u32;
             let shares = shares.clamp(2, 262144);
             let shares_file = target.join("cpu.shares");
@@ -646,8 +784,13 @@ impl CgroupController for CgroupManager {
             let mut buf = [0u8; 48];
             let line = control_line(&mut buf, format_args!("{}\n", shares));
             if let Err(e) = f.write_all(line) {
-                debug!("set_cpu_weight: Failed to write {:?}: {}", shares_file, e);
-                return Err(control_error(&shares_file, e));
+                let error = control_error(&shares_file, e);
+                self.report_weight_write_failure(target, &shares_file, &error);
+                debug!(
+                    "set_cpu_weight: Failed to write {:?}: {}",
+                    shares_file, error
+                );
+                return Err(error);
             }
         }
         Ok(())
@@ -684,14 +827,157 @@ mod tests {
         }
 
         let mut buf = [0u8; 48];
-        let line = control_line(&mut buf, format_args!("{}\n", 1234));
+        let line = control_line(&mut buf, format_args!("{}\n", 1234)).to_vec();
         let mut writer = CountingWriter {
             writes: 0,
             bytes: Vec::new(),
         };
-        write_control_line(&mut writer, line).unwrap();
+        write_control_line(&mut writer, &line).unwrap();
         assert_eq!(writer.writes, 1, "the whole line must be one write()");
         assert_eq!(writer.bytes, b"1234\n");
+    }
+
+    /// The bounded retry used by `move_pid` for a transient `EINVAL`/`EINTR`
+    /// on `cgroup.procs`: two failures followed by success works, a persistent
+    /// error is returned immediately, and `EACCES` is never retried. The retry
+    /// helper is tested directly because a hermetic test cannot inject an
+    /// errno into the kernel's cgroup.procs write on a real file descriptor.
+    #[test]
+    fn move_pid_control_writes_retry_transient_errnos_only() {
+        assert_eq!(CONTROL_WRITE_ATTEMPTS, 3, "the retry must stay bounded");
+        struct FlakyWriter {
+            remaining_failures: usize,
+            writes: usize,
+        }
+        impl Write for FlakyWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                if self.remaining_failures > 0 {
+                    self.remaining_failures -= 1;
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                }
+                Ok(_buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut flaky = FlakyWriter {
+            remaining_failures: 2,
+            writes: 0,
+        };
+        write_control_line_with_retry(&mut flaky, b"1\n", CONTROL_WRITE_ATTEMPTS).unwrap();
+        assert_eq!(flaky.writes, 3, "two failures then success");
+
+        let mut flaky = FlakyWriter {
+            remaining_failures: 1,
+            writes: 0,
+        };
+        assert!(write_control_line_with_retry(&mut flaky, b"1\n", CONTROL_WRITE_ATTEMPTS).is_ok());
+        assert_eq!(flaky.writes, 2);
+
+        let mut persistent = FlakyWriter {
+            remaining_failures: CONTROL_WRITE_ATTEMPTS as usize,
+            writes: 0,
+        };
+        assert!(
+            write_control_line_with_retry(&mut persistent, b"1\n", CONTROL_WRITE_ATTEMPTS).is_err()
+        );
+        assert_eq!(
+            persistent.writes, CONTROL_WRITE_ATTEMPTS as usize,
+            "the retry is bounded"
+        );
+
+        struct DeniedWriter(FlakyWriter);
+        impl Write for DeniedWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                self.0.writes += 1;
+                Err(io::Error::from_raw_os_error(libc::EACCES))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut denied = DeniedWriter(FlakyWriter {
+            remaining_failures: 1,
+            writes: 0,
+        });
+        assert!(
+            write_control_line_with_retry(&mut denied, b"1\n", CONTROL_WRITE_ATTEMPTS).is_err()
+        );
+        assert_eq!(denied.0.writes, 1, "EACCES is not transient");
+    }
+
+    /// The v1 write order is period, quota, and nothing else in the normal
+    /// case. When the period is refused with `EINVAL`, the quota is temporarily
+    /// set to `-1`, the period is retried, and the intended quota restored.
+    #[test]
+    fn v1_period_write_retries_after_clearing_the_quota() {
+        let lines = std::cell::RefCell::new(Vec::<String>::new());
+        let mut period_fails = 1usize;
+        let result = v1_write_period_then_quota(
+            b"1000000\n",
+            b"500000\n",
+            |line| {
+                lines
+                    .borrow_mut()
+                    .push(format!("period: {}", String::from_utf8_lossy(line)));
+                if period_fails > 0 {
+                    period_fails -= 1;
+                    Err(CgroupError::Io(io::Error::from_raw_os_error(libc::EINVAL)))
+                } else {
+                    Ok(())
+                }
+            },
+            |line| {
+                lines
+                    .borrow_mut()
+                    .push(format!("quota: {}", String::from_utf8_lossy(line)));
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            lines.borrow().as_slice(),
+            [
+                "period: 1000000\n",
+                "quota: -1\n",
+                "period: 1000000\n",
+                "quota: 500000\n",
+            ]
+        );
+
+        // A different errno is not retried, so the intended quota is not
+        // written at all.
+        let lines = std::cell::RefCell::new(Vec::<String>::new());
+        let result = v1_write_period_then_quota(
+            b"1000000\n",
+            b"500000\n",
+            |line| {
+                lines
+                    .borrow_mut()
+                    .push(format!("period: {}", String::from_utf8_lossy(line)));
+                Err(CgroupError::Io(io::Error::from_raw_os_error(libc::EACCES)))
+            },
+            |line| {
+                lines
+                    .borrow_mut()
+                    .push(format!("quota: {}", String::from_utf8_lossy(line)));
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(lines.borrow().as_slice(), ["period: 1000000\n"]);
+
+        // A failure of the retry is propagated as a typed error.
+        let result = v1_write_period_then_quota(
+            b"1000000\n",
+            b"500000\n",
+            |_| Err(CgroupError::Io(io::Error::from_raw_os_error(libc::EINVAL))),
+            |_| Ok(()),
+        );
+        assert!(is_errno(&result.unwrap_err(), libc::EINVAL));
     }
 
     /// Integration tests in `tests/cgroup_manager.rs` drive the manager through
@@ -842,6 +1128,51 @@ mod weightless_reporting {
         let seen = m.reported_weightless.lock().expect("not poisoned");
         assert_eq!(seen.len(), 1, "three calls, one cgroup, one entry");
         assert!(seen.contains(a));
+    }
+
+    /// A real write failure must produce a warning carrying the cgroup path
+    /// and the error including its errno; once per cgroup rather than once per
+    /// process. Before the fix these failures were `debug!` and invisible at
+    /// the default log level.
+    #[test]
+    fn a_weight_write_failure_warning_names_the_cgroup_and_errno() {
+        let m = manager();
+        let a = Path::new("/sys/fs/cgroup/delegated/a");
+        let b = Path::new("/sys/fs/cgroup/delegated/b");
+        let file = a.join("cpu.weight");
+        let error = CgroupError::Io(io::Error::from_raw_os_error(libc::EACCES));
+
+        let message = CgroupManager::weight_write_failure_message(a, &file, &error);
+        assert!(
+            message.contains(&a.display().to_string()),
+            "the warning must name the cgroup: {message}"
+        );
+        assert!(
+            message.contains(&file.display().to_string()),
+            "the warning must name the control file: {message}"
+        );
+        assert!(
+            message.contains("Permission denied"),
+            "the warning must carry the errno: {message}"
+        );
+
+        m.report_weight_write_failure(a, &file, &error);
+        m.report_weight_write_failure(a, &file, &error);
+        m.report_weight_write_failure(b, &file, &error);
+        let seen = m
+            .reported_weight_write_failures
+            .lock()
+            .expect("the set is not poisoned");
+        assert_eq!(seen.len(), 2, "one warning per cgroup, not per call");
+        assert!(seen.contains(a));
+        assert!(seen.contains(b));
+        assert!(
+            !m.reported_weightless
+                .lock()
+                .expect("not poisoned")
+                .contains(a),
+            "a write failure is a different condition from a missing controller file"
+        );
     }
 
     /// A poisoned lock must not take the daemon down: the worst outcome of losing

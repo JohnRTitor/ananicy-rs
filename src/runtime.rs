@@ -1,7 +1,10 @@
 use {
     ananicy_core::spawn_named_thread,
     ananicy_platform::{
-        LinuxPlatform, cgroups::CgroupSettings, procfs::ProcfsScanner, x3d::X3DMode,
+        LinuxPlatform,
+        cgroups::{CgroupApplyStatus, CgroupSettings, CpuQuota},
+        procfs::ProcfsScanner,
+        x3d::X3DMode,
     },
     std::{
         sync::{atomic::Ordering::SeqCst, mpsc::Sender},
@@ -196,24 +199,62 @@ fn settings_from_rule(rule: &serde_json::Value) -> CgroupSettings {
     let number = |key: &str| {
         rule.get(key)
             .and_then(|value| value.as_u64())
-            .map(|value| value as u32)
+            .and_then(|value| match u32::try_from(value) {
+                Ok(value) => Some(value),
+                Err(_) => {
+                    warn!(
+                        "Cgroup rule: {key} = {value} is above u32::MAX; ignoring it rather than \
+                         truncating it modulo 2^32"
+                    );
+                    None
+                }
+            })
     };
 
+    let cpu_quota = number("CPUQuota").and_then(|quota| match quota {
+        // Zero is almost certainly a typo: on cgroup v2 it would starve the
+        // cgroup, and ananicy-cpp inherited the footgun. Leave the field unset
+        // so the kernel default (`max`/`-1`) stays in place and no control file
+        // is written at all.
+        0 => {
+            warn!(
+                "Cgroup rule: CPUQuota = 0 would give the cgroup no CPU time; ignoring it \
+                 and leaving the kernel default (unlimited) in place"
+            );
+            None
+        }
+        // Above 100 the value is a percentage nobody can ask for; clamp rather
+        // than silently giving the cgroup all the CPUs the rule did not ask for.
+        quota if quota > 100 => {
+            warn!("Cgroup rule: CPUQuota = {quota} is above 100%; clamping to 100%");
+            Some(CpuQuota::Percentage(100))
+        }
+        quota => Some(CpuQuota::Percentage(quota)),
+    });
+
     CgroupSettings {
-        cpu_quota: number("CPUQuota"),
+        cpu_quota,
         cpu_weight: number("CPUWeight"),
     }
 }
 
 /// Creates every cgroup a `.cgroups` rule asks for.
 ///
-/// Nothing here can fail the daemon. A rule that names a cgroup which cannot be
-/// created is reported by the cgroup manager and skipped; the point of this
-/// function is that running without one of them is still better than not running
-/// at all, so it deliberately has no failure path for a caller to take.
+/// Nothing here can fail the daemon. A rule whose cgroup cannot be created or
+/// whose settings are refused is warned about once here and skipped; the point
+/// of this function is that running without one of them is still better than
+/// not running at all, so it deliberately has no failure path for a caller to
+/// take.
 pub(crate) fn create_cgroups(rules: &Arc<Rules>) {
     for (name, value) in rules.get_cgroups() {
-        ananicy_platform::cgroups::create_cgroup(&name.0, settings_from_rule(value));
+        let settings = settings_from_rule(value);
+        match ananicy_platform::cgroups::create_cgroup(&name.0, settings) {
+            CgroupApplyStatus::Applied { .. } => {}
+            status => warn!(
+                "Cgroup rule for '{}' could not be fully applied: {status}",
+                name.0
+            ),
+        }
     }
     info!("Finished creating cgroups");
 }
@@ -260,7 +301,7 @@ mod tests {
         assert_eq!(
             settings_from_rule(&rule(r#"{"cgroup":"cpu80","CPUQuota":80}"#)),
             CgroupSettings {
-                cpu_quota: Some(80),
+                cpu_quota: Some(CpuQuota::Percentage(80)),
                 cpu_weight: None,
             }
         );
@@ -274,7 +315,7 @@ mod tests {
         assert_eq!(
             settings_from_rule(&rule(r#"{"cgroup":"both","CPUQuota":50,"CPUWeight":10}"#)),
             CgroupSettings {
-                cpu_quota: Some(50),
+                cpu_quota: Some(CpuQuota::Percentage(50)),
                 cpu_weight: Some(10),
             }
         );
@@ -285,6 +326,57 @@ mod tests {
         assert_eq!(
             settings_from_rule(&rule(r#"{"cgroup":"empty"}"#)),
             CgroupSettings::default()
+        );
+    }
+
+    /// P1/P2: zero and out-of-range values must not reach the kernel, and a
+    /// value above 100% is clamped rather than truncated.
+    #[test]
+    fn a_quota_is_rejected_when_zero_or_too_large_and_clamped_above_100() {
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"x","CPUQuota":0}"#)),
+            CgroupSettings::default(),
+            "a zero quota must leave the field unset (kernel default: max)"
+        );
+        assert_eq!(
+            settings_from_rule(&rule(&format!(
+                r#"{{"cgroup":"x","CPUQuota":{}}}"#,
+                u64::from(u32::MAX) + 1
+            ))),
+            CgroupSettings::default(),
+            "a value above u32::MAX must not be truncated to zero"
+        );
+        assert_eq!(
+            settings_from_rule(&rule(&format!(
+                r#"{{"cgroup":"x","CPUQuota":{}}}"#,
+                u64::from(u32::MAX) + 50
+            ))),
+            CgroupSettings::default(),
+            "a value above u32::MAX must not be truncated to a small percentage"
+        );
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"x","CPUQuota":100}"#)),
+            CgroupSettings {
+                cpu_quota: Some(CpuQuota::Percentage(100)),
+                ..Default::default()
+            },
+            "100% must be preserved exactly"
+        );
+        assert_eq!(
+            settings_from_rule(&rule(r#"{"cgroup":"x","CPUQuota":101}"#)),
+            CgroupSettings {
+                cpu_quota: Some(CpuQuota::Percentage(100)),
+                ..Default::default()
+            },
+            "above 100% is clamped"
+        );
+        assert_eq!(
+            settings_from_rule(&rule(&format!(
+                r#"{{"cgroup":"x","CPUWeight":{}}}"#,
+                u64::from(u32::MAX) + 1
+            ))),
+            CgroupSettings::default(),
+            "an out-of-range weight must be ignored rather than truncated"
         );
     }
 

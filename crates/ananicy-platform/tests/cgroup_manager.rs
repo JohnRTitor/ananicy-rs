@@ -10,6 +10,7 @@ use {
         CgroupError, CgroupInfo, CgroupVersion,
         manager::{CgroupController, CgroupManager, resolve_rule_name},
     },
+    ananicy_platform::cgroups::CpuQuota,
     common::{Failure, FakeController},
     std::{
         fs,
@@ -111,7 +112,9 @@ fn test_cgroup_manager_v2_write_files() {
     fs::File::create(child_path.join("cpu.weight")).unwrap();
 
     assert!(
-        manager.set_cpu_max(&child_path, 50).is_ok(),
+        manager
+            .set_cpu_max(&child_path, CpuQuota::Percentage(50))
+            .is_ok(),
         "Should successfully set cpu.max in Owned subtree"
     );
     let cores = std::thread::available_parallelism()
@@ -149,7 +152,9 @@ fn a_foreign_cgroup_never_receives_a_cpu_quota() {
     fs::File::create(foreign.join("cpu.max")).unwrap();
 
     assert!(
-        manager.set_cpu_max(&foreign, 50).is_err(),
+        manager
+            .set_cpu_max(&foreign, CpuQuota::Percentage(50))
+            .is_err(),
         "writing cpu.max into a foreign subtree must be refused"
     );
     assert_eq!(
@@ -353,7 +358,11 @@ fn all_v1_control_files_receive_their_exact_values() {
         fs::File::create(child.join(file)).unwrap();
     }
 
-    assert!(manager.set_cpu_max(&child, 50).is_ok());
+    assert!(
+        manager
+            .set_cpu_max(&child, CpuQuota::Percentage(50))
+            .is_ok()
+    );
     assert!(manager.set_cpu_weight(&child, 200).is_ok());
 
     let cores = std::thread::available_parallelism()
@@ -506,11 +515,107 @@ fn the_recording_controller_keeps_every_control_line() {
     let target = fake
         .hierarchy()
         .owned_cgroup("recorded.scope", &["cpu.max", "cpu.weight"]);
-    assert!(fake.set_cpu_max(&target, 25).is_ok());
+    assert!(fake.set_cpu_max(&target, CpuQuota::Percentage(25)).is_ok());
     assert!(fake.set_cpu_weight(&target, 300).is_ok());
-    assert_eq!(fake.lines_for("cpu.max"), ["25 100000\n"]);
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1);
+    assert_eq!(
+        fake.lines_for("cpu.max"),
+        [format!("{} 100000\n", 100_000 * cores * 25 / 100)]
+    );
     assert_eq!(fake.lines_for("cpu.weight"), ["300\n"]);
     assert_eq!(fake.writes().len(), 2);
+
+    // The same harness records `max` for an unlimited quota.
+    let fake = FakeController::new();
+    let target = fake
+        .hierarchy()
+        .owned_cgroup("unlimited.scope", &["cpu.max"]);
+    assert!(fake.set_cpu_max(&target, CpuQuota::Unlimited).is_ok());
+    assert_eq!(fake.lines_for("cpu.max"), ["max 100000\n"]);
+}
+
+/// The quota matrix at the write boundary: 100% is preserved, and `Unlimited`
+/// writes the kernel's `max` (v2) / `-1` (v1) rather than a zero-bandwidth
+/// limit. A percentage above 100 is clamped by the manager as before.
+#[test]
+fn quota_matrix_at_the_write_boundary() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service, info.mount_point);
+    let child = manager.ensure_child("quota-matrix.scope").unwrap();
+    let max_file = child.join("cpu.max");
+    fs::File::create(&max_file).unwrap();
+
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1);
+
+    for (quota, expected) in [
+        (
+            CpuQuota::Percentage(100),
+            format!("{} 100000\n", 100_000 * cores),
+        ),
+        (
+            CpuQuota::Percentage(50),
+            format!("{} 100000\n", 100_000 * cores * 50 / 100),
+        ),
+        (
+            CpuQuota::Percentage(u32::MAX),
+            format!("{} 100000\n", 100_000 * cores),
+        ),
+        (CpuQuota::Unlimited, "max 100000\n".to_string()),
+    ] {
+        // Truncate first: a regular file concatenates successive writes, so
+        // otherwise the earlier, longer line would remain after a shorter one.
+        fs::write(&max_file, "").unwrap();
+        manager.set_cpu_max(&child, quota).unwrap();
+        assert_eq!(
+            fs::read_to_string(&max_file).unwrap(),
+            expected,
+            "quota {quota:?} must produce the expected cpu.max line"
+        );
+    }
+
+    // On v1 the corresponding unlimited value is `-1`.
+    let temp = tempfile::tempdir().unwrap();
+    let mount = temp.path().to_path_buf();
+    fs::create_dir(mount.join("cpu")).unwrap();
+    let v1 = CgroupManager::new_with_root(
+        CgroupInfo {
+            version: CgroupVersion::V1,
+            mount_point: mount.clone(),
+        },
+        None,
+    );
+    let v1_child = v1.ensure_child("unlimited").unwrap();
+    let quota_file = v1_child.join("cpu.cfs_quota_us");
+    fs::File::create(v1_child.join("cpu.cfs_period_us")).unwrap();
+    fs::File::create(&quota_file).unwrap();
+    v1.set_cpu_max(&v1_child, CpuQuota::Unlimited).unwrap();
+    assert_eq!(fs::read_to_string(quota_file).unwrap(), "-1\n");
+}
+
+/// A real `EACCES` on the weight write path reaches the caller as a typed
+/// error, and the once-per-cgroup warning cache records the cgroup. The `warn!`
+/// itself is checked by the dedicated capturing-subscriber test in
+/// `weightless_reporting`; here the observable outcome is the typed error.
+#[test]
+fn a_weight_write_failure_is_visible_to_the_caller() {
+    let (_temp, info, ananicy_service) = delegated_v2_hierarchy();
+    let manager = manager(ananicy_service, info.mount_point.clone());
+    let target = manager.ensure_child("denied.scope").unwrap();
+    let weight_file = target.join("cpu.weight");
+    fs::File::create(&weight_file).unwrap();
+
+    // A directory in place of the control file makes the kernel refuse a write
+    // with EISDIR — a real write failure, distinct from a missing file.
+    fs::remove_file(&weight_file).unwrap();
+    fs::create_dir(&weight_file).unwrap();
+    assert!(
+        manager.set_cpu_weight(&target, 100).is_err(),
+        "a real write failure must not be swallowed"
+    );
 }
 
 #[test]

@@ -9,9 +9,12 @@
 #![allow(dead_code)]
 
 use {
-    ananicy_platform::cgroup::{
-        CgroupError, CgroupInfo, CgroupResult, CgroupVersion,
-        manager::{CgroupController, CgroupManager},
+    ananicy_platform::{
+        cgroup::{
+            CgroupError, CgroupInfo, CgroupResult, CgroupVersion,
+            manager::{CgroupController, CgroupManager},
+        },
+        cgroups::CpuQuota,
     },
     std::{
         cell::RefCell,
@@ -234,7 +237,7 @@ impl CgroupController for FakeController {
         Ok(())
     }
 
-    fn set_cpu_max(&self, target: &Path, quota: u32) -> CgroupResult<()> {
+    fn set_cpu_max(&self, target: &Path, quota: CpuQuota) -> CgroupResult<()> {
         self.check("set_cpu_max")?;
         if !self.owned(target) {
             return Err(CgroupError::Foreign);
@@ -242,7 +245,23 @@ impl CgroupController for FakeController {
         if !target.join("cpu.max").exists() {
             return Err(CgroupError::NotFound);
         }
-        self.record(target, "cpu.max", format!("{quota} 100000\n"));
+        // Mirror the real v2 renderer: `max` means no limit, a percentage is
+        // clamped and multiplied out against the CPU count with the same
+        // saturating u64 arithmetic.
+        let line = match quota {
+            CpuQuota::Unlimited => "max 100000\n".to_string(),
+            CpuQuota::Percentage(percent) => {
+                let cores = std::thread::available_parallelism()
+                    .map(|n| n.get() as u64)
+                    .unwrap_or(1);
+                let value = 100_000u64
+                    .saturating_mul(cores)
+                    .saturating_mul(u64::from(percent.min(100)))
+                    / 100;
+                format!("{value} 100000\n")
+            }
+        };
+        self.record(target, "cpu.max", line);
         Ok(())
     }
 

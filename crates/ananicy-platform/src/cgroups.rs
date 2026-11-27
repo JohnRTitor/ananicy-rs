@@ -1,14 +1,21 @@
+use std::{
+    fmt,
+    sync::{Arc, RwLock},
+};
+
 use {
     ananicy_core::worker::{
         PlatformError,
         PlatformError::{NotFound, Unsupported},
     },
-    std::sync::{Arc, RwLock},
     tracing::debug,
 };
 
 use crate::{
-    cgroup::manager::{CgroupController, CgroupManager},
+    cgroup::{
+        CgroupError,
+        manager::{CgroupController, CgroupManager},
+    },
     mounts::get_cgroup_info,
 };
 
@@ -57,36 +64,103 @@ pub fn has_cgroup_hierarchy() -> bool {
     get_cgroup_info().version != crate::cgroup::CgroupVersion::None
 }
 
+/// What a `.cgroups` rule's `CPUQuota` asks the kernel for.
+///
+/// `Unlimited` is the kernel default (`max` on v2, `-1` on v1). A rule that
+/// omits `CPUQuota` leaves the field unset, which also means "do not write the
+/// control file": the kernel default stays in place without this module
+/// touching it at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuQuota {
+    /// No bandwidth limit.
+    Unlimited,
+    /// A percentage of the machine's CPUs; the manager clamps it to `1..=100`.
+    Percentage(u32),
+}
+
 /// The resource settings a `.cgroups` rule can ask a cgroup to be created with.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CgroupSettings {
-    /// A percentage of the machine's CPUs, written to `cpu.max` on cgroup v2 and
-    /// to `cpu.cfs_quota_us` on cgroup v1. Clamped to `0..=100`.
-    pub cpu_quota: Option<u32>,
+    /// A bandwidth limit, written to `cpu.max` on cgroup v2 and to
+    /// `cpu.cfs_quota_us` on cgroup v1. `None` means no write at all.
+    pub cpu_quota: Option<CpuQuota>,
     /// A relative weight, written to `cpu.weight` on cgroup v2 and to
     /// `cpu.shares` on cgroup v1. The kernel default is 100, the range is
     /// `1..=10000`; anything outside it is clamped.
     pub cpu_weight: Option<u32>,
 }
 
+/// What happened to a cgroup a `.cgroups` rule asked to create.
+///
+/// This is deliberately small: the caller only needs to know whether the
+/// directory was created and whether all of the requested settings were
+/// applied, so it can warn once per cgroup and carry on with the other rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CgroupApplyStatus {
+    /// The cgroup was created (or adopted) and every requested setting applied.
+    Applied { created: bool },
+    /// The cgroup was created (or adopted), but at least one setting failed.
+    SettingsFailed { created: bool },
+    /// The cgroup could not be created or resolved; nothing was configured.
+    Failed,
+}
+
+impl CgroupApplyStatus {
+    /// Whether the cgroup directory was created by this call. Existing cgroups
+    /// still get their settings re-applied, so this says nothing about success.
+    pub fn created(self) -> bool {
+        matches!(
+            self,
+            Self::Applied { created: true } | Self::SettingsFailed { created: true }
+        )
+    }
+
+    /// Whether every requested setting was applied.
+    pub fn is_ok(self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+}
+
+impl fmt::Display for CgroupApplyStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Applied { created } => {
+                if *created {
+                    f.write_str("cgroup created and settings applied")
+                } else {
+                    f.write_str("existing cgroup settings re-applied")
+                }
+            }
+            Self::SettingsFailed { created } => {
+                if *created {
+                    f.write_str("cgroup created, but at least one setting failed")
+                } else {
+                    f.write_str("existing cgroup, but at least one setting failed")
+                }
+            }
+            Self::Failed => f.write_str("cgroup could not be created"),
+        }
+    }
+}
+
 /// Creates the cgroup a rule asks for and applies the rule's settings to it.
 ///
-/// Returns whether the cgroup was created, not whether the settings took effect.
-/// An existing cgroup is reported as not created but still has the settings
-/// applied, which is the point: a cgroup can already be there because a previous
-/// run made it, because another rule names it, or because it predates the rule
-/// being edited, and in none of those cases is its current configuration
-/// necessarily the one this rule asks for. Skipping the settings for an existing
-/// cgroup meant editing a `.cgroups` file had no effect until the cgroup was
-/// deleted by hand. The reference re-applies them unconditionally for the same
-/// reason.
-pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
+/// The returned status says both whether the cgroup was created and whether
+/// every setting took effect. An existing cgroup is reported as not created but
+/// still has the settings applied, which is the point: a cgroup can already be
+/// there because a previous run made it, because another rule names it, or
+/// because it predates the rule being edited, and in none of those cases is its
+/// current configuration necessarily the one this rule asks for. Skipping the
+/// settings for an existing cgroup meant editing a `.cgroups` file had no effect
+/// until the cgroup was deleted by hand. The reference re-applies them
+/// unconditionally for the same reason.
+pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> CgroupApplyStatus {
     let Some(manager) = get_manager() else {
         debug!(
             "cgroup {} not created: no hierarchy to create it in",
             cgroup_name
         );
-        return false;
+        return CgroupApplyStatus::Failed;
     };
 
     // Resolved once. `cgroup_exists` used to answer this by resolving the target
@@ -100,25 +174,29 @@ pub fn create_cgroup(cgroup_name: &str, settings: CgroupSettings) -> bool {
         // name again because creating it is where the path is actually needed.
         _ => match manager.ensure_child(cgroup_name) {
             Ok(target) => (target, true),
-            Err(_) => return false,
+            Err(e) => {
+                debug!("cgroup {cgroup_name} not created: {e}");
+                return CgroupApplyStatus::Failed;
+            }
         },
     };
 
-    // Applied either way. A failure to write is reported by the manager, which
-    // knows the difference between "the controller is not enabled here" and a
-    // real write error, and says so once per cgroup rather than once per
-    // process.
+    // Applied either way. The manager knows the difference between "the
+    // controller is not enabled here" and a real write error, and warns once
+    // per cgroup; the status here lets the caller report the rule that asked
+    // for it and continue with the remaining rules.
+    let mut failed = false;
     if let Some(quota) = settings.cpu_quota {
-        // Settings are re-applied on an existing cgroup, but `create_cgroup`
-        // still reports only whether it created the directory. Surfacing the
-        // individual write status belongs to the error-visibility work; the
-        // manager already logs each failure.
-        let _ = manager.set_cpu_max(&target, quota);
+        failed |= manager.set_cpu_max(&target, quota).is_err();
     }
     if let Some(weight) = settings.cpu_weight {
-        let _ = manager.set_cpu_weight(&target, weight);
+        failed |= manager.set_cpu_weight(&target, weight).is_err();
     }
-    created
+    if failed {
+        CgroupApplyStatus::SettingsFailed { created }
+    } else {
+        CgroupApplyStatus::Applied { created }
+    }
 }
 
 pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformError> {
@@ -132,20 +210,31 @@ pub fn add_pid_to_cgroup(pid: i32, cgroup_name: &str) -> Result<(), PlatformErro
     if !target.exists() {
         return Err(NotFound);
     }
-    if manager.move_pid(pid, &target).is_ok() {
-        Ok(())
-    } else {
-        Err(Unsupported)
+    match manager.move_pid(pid, &target) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // A process that exited during the move is not a rule failure: say
+            // what actually happened instead of collapsing every typed cgroup
+            // error into `Unsupported`.
+            debug!("cgroup {cgroup_name}: could not add pid {pid}: {e}");
+            if matches!(e, CgroupError::Gone) {
+                Err(NotFound)
+            } else {
+                Err(Unsupported)
+            }
+        }
     }
 }
 
 pub fn set_cpu_weight_for_cgroup(cgroup_name: &str, weight: u32) -> Result<(), PlatformError> {
     let manager = get_manager().ok_or(Unsupported)?;
     let target = manager.resolve_target_dir(cgroup_name).ok_or(NotFound)?;
-    if manager.set_cpu_weight(&target, weight).is_ok() {
-        Ok(())
-    } else {
-        Err(Unsupported)
+    match manager.set_cpu_weight(&target, weight) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            debug!("cgroup {cgroup_name}: could not set cpu weight: {e}");
+            Err(Unsupported)
+        }
     }
 }
 
@@ -193,10 +282,11 @@ mod tests {
             create_cgroup(
                 "reapply",
                 CgroupSettings {
-                    cpu_quota: Some(90),
+                    cpu_quota: Some(CpuQuota::Percentage(90)),
                     ..Default::default()
                 }
-            ),
+            )
+            .created(),
             "the first call creates it"
         );
 
@@ -212,16 +302,18 @@ mod tests {
         fs::write(&shares_file, "1024\n").expect("a shares file");
 
         // Second call: not created, but the settings must be written.
+        let status = create_cgroup(
+            "reapply",
+            CgroupSettings {
+                cpu_quota: Some(CpuQuota::Percentage(50)),
+                cpu_weight: Some(256),
+            },
+        );
         assert!(
-            !create_cgroup(
-                "reapply",
-                CgroupSettings {
-                    cpu_quota: Some(50),
-                    cpu_weight: Some(256),
-                },
-            ),
+            !status.created(),
             "an existing cgroup is reported as not created"
         );
+        assert!(status.is_ok(), "the settings were re-applied");
 
         let quota = fs::read_to_string(&quota_file).expect("read back the quota");
         let shares = fs::read_to_string(&shares_file).expect("read back the shares");
@@ -252,7 +344,7 @@ mod tests {
             })));
 
         // An operation uses the cached detection, and creates in it.
-        assert!(create_cgroup("cached", CgroupSettings::default()));
+        assert!(create_cgroup("cached", CgroupSettings::default()).created());
         assert!(
             hierarchy.path().join("cpu/cached").is_dir(),
             "the cgroup is created under the detected hierarchy"
